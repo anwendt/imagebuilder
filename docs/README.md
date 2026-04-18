@@ -26,8 +26,11 @@ All documents are intended to support ISAE audit requirements.
 | [REQ-001](requirements/REQ-001-functional-requirements.md) | Functional Requirements |
 | [REQ-002](requirements/REQ-002-non-functional-requirements.md) | Non-Functional Requirements |
 | [REQ-003](requirements/REQ-003-license-compliance-requirements.md) | License & Compliance Requirements |
-| [REQ-004](requirements/REQ-004-security-requirements.md) | Security Requirements |
+| [REQ-004](requirements/REQ-004-security-requirements.md) | Security Requirements (Baseline) |
 | [REQ-005](requirements/REQ-005-operational-requirements.md) | Operational Requirements |
+| [REQ-006](requirements/REQ-006-development-standards.md) | Development Standards — TDD & Twelve-Factor App |
+| [REQ-007](requirements/REQ-007-supply-chain-security.md) | Supply Chain Security — SLSA Build Level 1 & 2 |
+| [REQ-008](requirements/REQ-008-application-security-owasp.md) | Application Security — OWASP Top 10 & ASVS |
 
 ## Architecture Decision Records
 
