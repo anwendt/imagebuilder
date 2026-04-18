@@ -1,76 +1,76 @@
 # VM Image Builder — Claude Code Context
 
-Dieses Dokument enthält alle Architekturentscheidungen und Designprinzipien für den
-**VM Image Builder** — einen Kubernetes-nativen, deklarativen Image-Builder analog zu
-HashiCorp Packer, aber vollständig unter **Apache 2.0** lizenziert.
+This document contains all architectural decisions and design principles for the
+**VM Image Builder** — a Kubernetes-native, declarative image builder analogous to
+HashiCorp Packer, but fully licensed under **Apache 2.0**.
 
 ---
 
-## Projektziel
+## Project Goal
 
-Kubernetes Operator der es ermöglicht, VM-Images für verschiedene Plattformen über
-deklarative Kubernetes-Manifeste zu bauen. Analogie zu HashiCorp Packer, aber:
-- Vollständig **Apache 2.0** lizenziert (kein BSL, kein GPL-Linking)
-- Kubernetes-nativ (CRDs, Operator-Pattern, Reconciliation Loop)
-- Erweiterbar über **Plugin-System** für Plattformen und Provisioner
+A Kubernetes Operator that enables building VM images for various platforms via
+declarative Kubernetes manifests. Analogous to HashiCorp Packer, but:
+- Fully **Apache 2.0** licensed (no BSL, no GPL linking)
+- Kubernetes-native (CRDs, Operator Pattern, Reconciliation Loop)
+- Extensible via a **plugin system** for platforms and provisioners
 
 ---
 
-## Lizenz-Constraints — KRITISCH
+## License Constraints — CRITICAL
 
-**Packer ist BSL 1.1 seit 2023 — darf NICHT verwendet werden.**
+**Packer has been BSL 1.1 since 2023 — MUST NOT be used.**
 
-Erlaubte Abhängigkeiten:
-| Komponente | Lizenz | Verwendung |
+Permitted dependencies:
+| Component | License | Usage |
 |---|---|---|
-| controller-runtime / kubebuilder | Apache 2.0 | Operator-Framework |
+| controller-runtime / kubebuilder | Apache 2.0 | Operator Framework |
 | govmomi | Apache 2.0 | vSphere/VCF SDK |
 | gophercloud | Apache 2.0 | OpenStack SDK |
 | aws-sdk-go-v2 | Apache 2.0 | AWS SDK |
 | azure-sdk-go | MIT | Azure SDK |
 | google-cloud-go | Apache 2.0 | GCP SDK |
-| QEMU (Userspace) | Apache 2.0 | Build-Backend |
-| diskimage-builder | Apache 2.0 | Build-Backend (OpenStack) |
+| QEMU (Userspace) | Apache 2.0 | Build Backend |
+| diskimage-builder | Apache 2.0 | Build Backend (OpenStack) |
 | go-libvirt | Apache 2.0 | libvirt Bindings via Socket |
 
-**LGPL-Regel**: libvirt und libguestfs sind LGPL — sie werden ausschließlich als
-externe Prozesse über Unix-Sockets angesprochen, **nie statisch gelinkt**.
-Das hält das Projekt Apache-2.0-sauber.
+**LGPL Rule**: libvirt and libguestfs are LGPL — they are accessed exclusively as
+external processes via Unix sockets, **never statically linked**.
+This keeps the project Apache-2.0-clean.
 
 ---
 
-## Unterstützte Zielplattformen
+## Supported Target Platforms
 
-- vSphere (inkl. VMware Cloud Foundation)
+- vSphere (incl. VMware Cloud Foundation)
 - OpenStack
 - AWS (AMI)
 - Azure (Managed Image / Compute Gallery)
 - GCP (Custom Image)
 
-## Unterstützte Betriebssysteme
+## Supported Operating Systems
 
 - Linux: Ubuntu, Debian, RHEL/CentOS, Rocky, AlmaLinux, Fedora, SLES
 - Windows: Server 2019, 2022, 2025; Windows 10/11
 
 ---
 
-## Architektur-Übersicht
+## Architecture Overview
 
 ```
 VMImage Manifest (YAML)
     ↓
-Kubernetes API (CRD Validierung)
+Kubernetes API (CRD Validation)
     ↓
 Operator Controller (Reconciliation Loop)
     ↓
 Build Engine (Kubernetes Job)
-    ├── QEMU/libvirt Backend      → vSphere, VCF, lokal
+    ├── QEMU/libvirt Backend      → vSphere, VCF, local
     ├── diskimage-builder Backend → OpenStack
-    └── Cloud-API Backend         → AWS, Azure, GCP (direkt über SDK)
+    └── Cloud-API Backend         → AWS, Azure, GCP (directly via SDK)
     ↓
-Provisioner (sequenziell, Init-Container)
+Provisioner (sequential, Init Containers)
     ├── cloud-init, Shell, File, PowerShell (In-Process)
-    └── Ansible, Chef, Custom (Init-Container / OCI Image)
+    └── Ansible, Chef, Custom (Init Container / OCI Image)
     ↓
 Platform Provider (Pod, gRPC)
     ├── provider-vsphere
@@ -83,54 +83,54 @@ Platform Provider (Pod, gRPC)
 
 ---
 
-## Plugin-System — zwei unabhängige Ebenen
+## Plugin System — Two Independent Layers
 
-### Ebene 1: Platform Provider (analog Crossplane)
+### Layer 1: Platform Provider (analogous to Crossplane)
 
-Platform Provider sind **separate Container** die dynamisch über eine `PlatformProvider`-CRD
-nachgeladen werden. Der Core-Operator startet sie als Kubernetes-Deployments und kommuniziert
-über **gRPC auf Unix-Sockets**.
+Platform Providers are **separate containers** that are dynamically loaded via a `PlatformProvider` CRD.
+The core operator starts them as Kubernetes Deployments and communicates
+via **gRPC over Unix sockets**.
 
-**Kernprinzip**: Ein neuer Provider braucht keinen Fork, keinen Core-Patch — nur ein
-OCI-Image das das Protobuf-Interface implementiert.
+**Core principle**: A new provider requires no fork, no core patch — only an
+OCI image that implements the Protobuf interface.
 
 ```
-PlatformProvider CR → Core Operator → Deployment starten → gRPC Handshake → Registry
+PlatformProvider CR → Core Operator → Start Deployment → gRPC Handshake → Registry
 ```
 
-Jeder Provider implementiert:
-- `GetCapabilities()` — Name, Version, unterstützte Formate und OS-Familien
-- `ValidateConfig()` — Credentials und Endpunkt prüfen
-- `UploadArtifact()` — Streaming Upload des Build-Artifacts
-- `RegisterImage()` — Als Platform-Image registrieren (AMI, Template, UUID...)
-- `DeleteArtifact()` — Cleanup bei Fehler
+Each provider implements:
+- `GetCapabilities()` — Name, version, supported formats and OS families
+- `ValidateConfig()` — Validate credentials and endpoint
+- `UploadArtifact()` — Streaming upload of the build artifact
+- `RegisterImage()` — Register as platform image (AMI, Template, UUID...)
+- `DeleteArtifact()` — Cleanup on failure
 - `HealthCheck()` — Liveness
 
-**Datei**: `api/provider/v1/provider.proto` — das ist der stabile Vertrag, nie breaking ändern.
+**File**: `api/provider/v1/provider.proto` — this is the stable contract, never change it in a breaking way.
 
-### Ebene 2: Provisioner (drei Stufen)
+### Layer 2: Provisioner (Three Levels)
 
-| Stufe | Mechanismus | Verwendung |
+| Level | Mechanism | Usage |
 |---|---|---|
 | In-Process | Go Interface, compile-time | cloud-init, Shell, File, PowerShell, Sysprep |
-| Init-Container | OCI Image, dynamisch | Ansible, Chef, Puppet, SaltStack, Custom |
-| Sidecar | Parallel zum Build | Vault Agent, SSH-Proxy (nur wenn nötig) |
+| Init Container | OCI Image, dynamic | Ansible, Chef, Puppet, SaltStack, Custom |
+| Sidecar | Parallel to build | Vault Agent, SSH Proxy (only when needed) |
 
-**Init-Container Vertrag** (kein SDK nötig):
+**Init Container Contract** (no SDK required):
 ```
-/workspace/config.json  ← Operator schreibt (VM-Adresse, SSH-Key, Spec)
-/workspace/status.json  → Provisioner schreibt (success/error)
-Exit 0                  → Erfolg, nächster Init-Container startet
-Exit != 0               → Build schlägt fehl
+/workspace/config.json  ← Operator writes (VM address, SSH key, spec)
+/workspace/status.json  → Provisioner writes (success/error)
+Exit 0                  → Success, next init container starts
+Exit != 0               → Build fails
 ```
 
-Init-Container laufen **sequenziell** — das ist exakt die Semantik von Provisionern.
+Init containers run **sequentially** — this is exactly the semantics of provisioners.
 
 ---
 
-## CRD-Struktur
+## CRD Structure
 
-### VMImage (Haupt-Ressource)
+### VMImage (Main Resource)
 
 ```yaml
 apiVersion: imagebuilder.io/v1alpha1
@@ -177,7 +177,7 @@ status:
   conditions: [...]
 ```
 
-### PlatformProvider (Provider installieren)
+### PlatformProvider (Install a Provider)
 
 ```yaml
 apiVersion: imagebuilder.io/v1alpha1
@@ -189,7 +189,7 @@ spec:
   packagePullPolicy: IfNotPresent
 ```
 
-### ProviderConfig (Credentials pro Instanz)
+### ProviderConfig (Credentials per Instance)
 
 ```yaml
 apiVersion: imagebuilder.io/v1alpha1
@@ -207,64 +207,64 @@ spec:
 
 ---
 
-## Go-Konventionen in diesem Projekt
+## Go Conventions in This Project
 
 - **Go Version**: 1.22+
 - **Module**: `github.com/yourorg/imagebuilder`
-- **Fehlerbehandlung**: immer `fmt.Errorf("kontext: %w", err)`, nie panic in Produktionscode
-- **Logging**: `log/slog` (stdlib), strukturiert mit `slog.With()`
-- **Kontext**: Jede Funktion die I/O macht bekommt `ctx context.Context` als ersten Parameter
-- **Interfaces**: Klein halten — max 5-7 Methoden pro Interface (Go-Idiom)
-- **Tests**: Table-driven Tests mit `t.Run()`, Mocks über Interface-Implementierungen
-- **Generated Code**: Nie manuell editieren — Kommentar `// Code generated ... DO NOT EDIT.`
+- **Error handling**: always `fmt.Errorf("context: %w", err)`, never panic in production code
+- **Logging**: `log/slog` (stdlib), structured with `slog.With()`
+- **Context**: Every function doing I/O receives `ctx context.Context` as its first parameter
+- **Interfaces**: Keep small — max 5-7 methods per interface (Go idiom)
+- **Tests**: Table-driven tests with `t.Run()`, mocks via interface implementations
+- **Generated Code**: Never edit manually — comment `// Code generated ... DO NOT EDIT.`
 
 ---
 
-## Verzeichnisstruktur
+## Directory Structure
 
 ```
 imagebuilder/
-├── CLAUDE.md                          ← diese Datei
+├── CLAUDE.md                          ← this file
 ├── LICENSE                            ← Apache 2.0
-├── NOTICE                             ← Drittkomponenten (go-licenses generiert)
+├── NOTICE                             ← Third-party components (generated by go-licenses)
 ├── go.mod
 ├── go.sum
 │
 ├── api/
-│   ├── v1alpha1/                      ← CRD Go-Types (kubebuilder generiert)
+│   ├── v1alpha1/                      ← CRD Go types (generated by kubebuilder)
 │   │   ├── vmimage_types.go
 │   │   ├── platformprovider_types.go
 │   │   ├── providerconfig_types.go
-│   │   └── zz_generated.deepcopy.go  ← generiert, nie anfassen
+│   │   └── zz_generated.deepcopy.go  ← generated, do not touch
 │   └── provider/v1/
-│       └── provider.proto             ← gRPC Interface für Provider
+│       └── provider.proto             ← gRPC interface for providers
 │
 ├── pkg/
 │   ├── plugin/
 │   │   ├── platform/
-│   │   │   └── interface.go           ← Plugin-Interface (stabil, nie breaking ändern)
-│   │   ├── registry.go                ← Laufzeit-Registry aktiver Provider
+│   │   │   └── interface.go           ← Plugin interface (stable, never change in a breaking way)
+│   │   ├── registry.go                ← Runtime registry of active providers
 │   │   └── grpc/
-│   │       └── adapter.go             ← gRPC → Plugin-Interface Adapter
+│   │       └── adapter.go             ← gRPC → Plugin interface adapter
 │   │
 │   ├── provisioner/
-│   │   ├── interface.go               ← Provisioner-Interface
+│   │   ├── interface.go               ← Provisioner interface
 │   │   ├── cloudinit/
 │   │   ├── shell/
 │   │   ├── file/
 │   │   └── powershell/
 │   │
 │   ├── builder/
-│   │   ├── interface.go               ← Builder-Interface
-│   │   ├── qemu/                      ← QEMU/libvirt Backend
-│   │   └── diskimage/                 ← diskimage-builder Backend
+│   │   ├── interface.go               ← Builder interface
+│   │   ├── qemu/                      ← QEMU/libvirt backend
+│   │   └── diskimage/                 ← diskimage-builder backend
 │   │
 │   └── controller/
-│       ├── vmimage/                   ← VMImage Reconciler
-│       ├── provider/                  ← PlatformProvider Package-Controller
-│       └── buildpod/                  ← Pod-Assembler (Init-Container Logik)
+│       ├── vmimage/                   ← VMImage reconciler
+│       ├── provider/                  ← PlatformProvider package controller
+│       └── buildpod/                  ← Pod assembler (init container logic)
 │
-├── plugins/                           ← Built-in Platform Provider (compile-time)
+├── plugins/                           ← Built-in platform providers (compile-time)
 │   ├── vsphere/
 │   ├── openstack/
 │   ├── aws/
@@ -273,86 +273,86 @@ imagebuilder/
 │
 ├── cmd/
 │   └── operator/
-│       └── main.go                    ← Einstiegspunkt, Plugin-Imports
+│       └── main.go                    ← Entry point, plugin imports
 │
 └── config/
-    ├── crd/                           ← generierte CRD YAMLs
+    ├── crd/                           ← Generated CRD YAMLs
     ├── rbac/                          ← ClusterRole, ServiceAccount
-    └── samples/                       ← Beispiel-Manifeste
+    └── samples/                       ← Example manifests
 ```
 
 ---
 
-## Wichtige Designentscheidungen (ADRs)
+## Key Design Decisions (ADRs)
 
-### ADR-001: Kein Packer
-**Entscheidung**: Packer wird nicht verwendet.
-**Begründung**: BSL 1.1 seit 2023, nicht Apache-2.0-kompatibel, nicht redistributierbar.
-**Alternative**: Eigene Build-Engine mit QEMU/libvirt + diskimage-builder + direkte Cloud-APIs.
+### ADR-001: No Packer
+**Decision**: Packer will not be used.
+**Reason**: BSL 1.1 since 2023, not Apache-2.0-compatible, not redistributable.
+**Alternative**: Custom build engine with QEMU/libvirt + diskimage-builder + direct Cloud APIs.
 
-### ADR-002: Provider als separate Container (Crossplane-Modell)
-**Entscheidung**: Platform Provider laufen als eigene Kubernetes-Pods, nicht als Go-Plugins (.so).
-**Begründung**: Go's plugin-Mechanismus (.so) ist unbrauchbar (gleiche Go-Version, kein Windows,
-kein Cross-Compile). Separate Container ermöglichen unabhängige Versionierung, beliebige Sprachen,
-und saubere Lizenztrennung (ein proprietärer Provider kontaminiert nicht das Core-Projekt).
-**Kommunikation**: gRPC über Unix-Socket (nicht TCP — kein Netzwerk-Overhead im selben Pod).
+### ADR-002: Providers as Separate Containers (Crossplane Model)
+**Decision**: Platform providers run as dedicated Kubernetes pods, not as Go plugins (.so).
+**Reason**: Go's plugin mechanism (.so) is impractical (same Go version required, no Windows,
+no cross-compile). Separate containers enable independent versioning, arbitrary languages,
+and clean license separation (a proprietary provider does not contaminate the core project).
+**Communication**: gRPC over Unix socket (not TCP — no network overhead within the same pod).
 
-### ADR-003: Provisioner als Init-Container
-**Entscheidung**: Komplexe Provisioner (Ansible, Chef) laufen als Kubernetes Init-Container.
-**Begründung**: Init-Container laufen sequenziell — das entspricht exakt der Provisioner-Semantik.
-Kein gRPC-Overhead nötig, Vertrag ist simpel (config.json/status.json + Exit-Code).
-Community-Provisioner brauchen kein SDK, nur ein OCI-Image das den Dateipfad-Vertrag einhält.
+### ADR-003: Provisioners as Init Containers
+**Decision**: Complex provisioners (Ansible, Chef) run as Kubernetes init containers.
+**Reason**: Init containers run sequentially — this matches exactly the provisioner semantics.
+No gRPC overhead needed; the contract is simple (config.json/status.json + exit code).
+Community provisioners need no SDK, only an OCI image that follows the file-path contract.
 
-### ADR-004: LGPL-Abhängigkeiten nur als externe Prozesse
-**Entscheidung**: libvirt und libguestfs werden nur über CLI/Socket angesprochen.
-**Begründung**: Statisches oder dynamisches Linken gegen LGPL würde Apache-2.0-Redistribution
-einschränken. Prozess-Kommunikation ist lizenzrechtlich unbedenklich.
+### ADR-004: LGPL Dependencies Only as External Processes
+**Decision**: libvirt and libguestfs are accessed via CLI/socket only.
+**Reason**: Static or dynamic linking against LGPL would restrict Apache-2.0 redistribution.
+Process communication is license-safe.
 
-### ADR-005: Protobuf-Schema ist versionierter Vertrag
-**Entscheidung**: `api/provider/v1/provider.proto` ist das stabile Interface.
-**Konsequenz**: Breaking Changes → `api/provider/v2/`. Nie Felder aus v1 entfernen.
-Field-Numbers in Proto sind unveränderlich.
+### ADR-005: Protobuf Schema is a Versioned Contract
+**Decision**: `api/provider/v1/provider.proto` is the stable interface.
+**Consequence**: Breaking changes → `api/provider/v2/`. Never remove fields from v1.
+Field numbers in Proto are immutable.
 
-### ADR-006: Kein Go plugin-Mechanismus
-**Entscheidung**: Keine .so-Dateien, keine Go plugin-Package-Nutzung.
-**Alternative für compile-time Plugins**: `init()`-Pattern mit Blank-Import in main.go
-(analog zu database/sql Treibern). Für Runtime-Plugins: gRPC-Container.
+### ADR-006: No Go Plugin Mechanism
+**Decision**: No .so files, no use of the Go plugin package.
+**Alternative for compile-time plugins**: `init()` pattern with blank import in main.go
+(analogous to database/sql drivers). For runtime plugins: gRPC containers.
 
 ---
 
-## Build & Entwicklung
+## Build & Development
 
 ```bash
-# CRDs generieren (nach Änderungen an api/v1alpha1/)
+# Generate CRDs (after changes to api/v1alpha1/)
 make generate
 make manifests
 
-# Operator lokal starten (gegen aktuellen kubeconfig-Kontext)
+# Run operator locally (against current kubeconfig context)
 make run
 
 # Tests
 make test
 
-# Lizenz-Check (vor jedem Release)
+# License check (before every release)
 go install github.com/google/go-licenses@latest
 go-licenses check ./...
 
-# Provider-Image bauen
+# Build provider image
 docker build -t ghcr.io/yourorg/imagebuilder-provider-aws:dev ./plugins/aws/
 
-# NOTICE-Datei aktualisieren
+# Update NOTICE file
 go-licenses report ./... > NOTICE
 ```
 
 ---
 
-## Noch nicht entschieden / TODO
+## Not Yet Decided / TODO
 
-- [ ] Image-Caching-Strategie (Basis-ISOs in PVC oder S3-kompatibler Store)
-- [ ] Parallelisierung von Builds (max. concurrent builds per Node)
-- [ ] Webhook-Validierung für VMImage-Spec (kubebuilder Validating Webhook)
-- [ ] OCI-Signierung der Provider-Images (cosign / Sigstore)
-- [ ] Metrics (Prometheus) — Build-Dauer, Fehlerrate, Provider-Latenz
-- [ ] Multi-Arch Support (arm64)
-- [ ] Windows: cloudbase-init Integration finalisieren
-- [ ] Provider-SDK Repository aufsetzen
+- [ ] Image caching strategy (base ISOs in PVC or S3-compatible store)
+- [ ] Parallelization of builds (max concurrent builds per node)
+- [ ] Webhook validation for VMImage spec (kubebuilder Validating Webhook)
+- [ ] OCI signing of provider images (cosign / Sigstore)
+- [ ] Metrics (Prometheus) — build duration, error rate, provider latency
+- [ ] Multi-arch support (arm64)
+- [ ] Windows: finalize cloudbase-init integration
+- [ ] Set up provider SDK repository
