@@ -1,0 +1,179 @@
+// api/provider/v1/provider.proto
+//
+// This is the stable gRPC contract between the core operator and external
+// platform provider pods. Treat field numbers as permanent — never reuse them.
+//
+// Breaking changes require a new package: imagebuilder.provider.v2
+//
+// License: Apache 2.0
+
+syntax = "proto3";
+
+package imagebuilder.provider.v1;
+
+option go_package = "github.com/yourorg/imagebuilder/api/provider/v1;providerv1";
+
+// PlatformProvider is the gRPC service that every external provider pod must implement.
+// The operator connects to the provider via a Unix socket at /var/run/provider/plugin.sock
+// inside the provider pod (shared via emptyDir volume between operator sidecar and provider).
+service PlatformProvider {
+  // GetCapabilities is called once after the provider pod becomes ready.
+  // The operator uses the response to populate PlatformProvider.status.capabilities
+  // and to validate VMImage targets before starting a build.
+  rpc GetCapabilities(Empty) returns (CapabilitiesResponse);
+
+  // ValidateConfig checks a ProviderConfig before a build starts.
+  // Called every time a VMImage references a ProviderConfig backed by this provider.
+  rpc ValidateConfig(ValidateConfigRequest) returns (ValidateConfigResponse);
+
+  // UploadArtifact streams the build artifact from the operator to the provider.
+  // The provider uploads it to the target platform (S3, Glance, datastore, ...).
+  // Streaming allows large images (50GB+) without memory pressure.
+  rpc UploadArtifact(stream UploadChunk) returns (stream UploadProgress);
+
+  // RegisterImage makes the uploaded artifact available as a platform image.
+  // Called after UploadArtifact completes successfully.
+  rpc RegisterImage(RegisterRequest) returns (ImageRef);
+
+  // DeleteArtifact removes a previously uploaded artifact.
+  // Called on build failure or explicit cleanup. Must be idempotent.
+  rpc DeleteArtifact(DeleteRequest) returns (DeleteResponse);
+
+  // HealthCheck is called periodically by the operator.
+  // Return an error to signal the provider is unhealthy.
+  rpc HealthCheck(Empty) returns (HealthResponse);
+}
+
+// ---------------------------------------------------------------------------
+// Shared types
+// ---------------------------------------------------------------------------
+
+message Empty {}
+
+// ---------------------------------------------------------------------------
+// GetCapabilities
+// ---------------------------------------------------------------------------
+
+message CapabilitiesResponse {
+  // provider_name must match the PlatformProvider CR name e.g. "aws"
+  string provider_name     = 1;
+  string provider_version  = 2;  // semver e.g. "v1.2.0"
+
+  // formats this provider can receive e.g. ["vmdk", "ova"]
+  repeated string formats  = 3;
+
+  // os_families this provider supports: "linux", "windows"
+  repeated string os_families = 4;
+
+  // protocol_version of this proto schema e.g. "v1"
+  // Operator rejects providers with incompatible protocol versions.
+  string protocol_version  = 5;
+}
+
+// ---------------------------------------------------------------------------
+// ValidateConfig
+// ---------------------------------------------------------------------------
+
+message ValidateConfigRequest {
+  // provider_config_name is the name of the ProviderConfig CR
+  string provider_config_name = 1;
+
+  // credentials is the decoded secret content
+  map<string, bytes> credentials = 2;
+
+  // region / endpoint from ProviderConfigSpec
+  string region   = 3;
+  string endpoint = 4;
+  bool   insecure = 5;
+
+  // extra holds provider-specific key-value config
+  map<string, string> extra = 6;
+}
+
+message ValidateConfigResponse {
+  bool   valid   = 1;
+  string message = 2;  // human-readable error when valid=false
+}
+
+// ---------------------------------------------------------------------------
+// UploadArtifact (client streaming + server streaming)
+// ---------------------------------------------------------------------------
+
+message UploadChunk {
+  // data is the raw bytes of this chunk
+  bytes data   = 1;
+  int64 offset = 2;
+  bool  last   = 3;   // true on the final chunk
+
+  // These fields are only populated in the FIRST chunk (offset=0)
+  string format            = 10;  // ImageFormat e.g. "vmdk"
+  string checksum          = 11;  // sha256:hex of the complete artifact
+  int64  total_size_bytes  = 12;
+  string os_family         = 13;
+  map<string, string> metadata = 14;
+
+  // provider_config_name identifies which ProviderConfig to use
+  string provider_config_name = 15;
+}
+
+message UploadProgress {
+  int64  bytes_written = 1;
+  int64  total_bytes   = 2;
+  string phase         = 3;  // "uploading" | "converting" | "verifying"
+  string message       = 4;
+
+  // provider_ref is set in the final progress message (phase="done")
+  // It is passed back to RegisterImage.
+  string provider_ref  = 5;
+}
+
+// ---------------------------------------------------------------------------
+// RegisterImage
+// ---------------------------------------------------------------------------
+
+message RegisterRequest {
+  // provider_ref is the ProviderRef from the final UploadProgress message
+  string provider_ref = 1;
+
+  // image_name is the desired name for the registered image
+  string image_name = 2;
+
+  // tags to apply to the registered image
+  map<string, string> tags = 3;
+
+  // provider_config_name identifies which ProviderConfig to use
+  string provider_config_name = 4;
+
+  // format of the artifact that was uploaded
+  string format = 5;
+}
+
+message ImageRef {
+  string id       = 1;  // AMI-ID, Image-UUID, MOID, ...
+  string name     = 2;
+  string location = 3;  // region, datacenter, project
+  map<string, string> tags = 4;
+}
+
+// ---------------------------------------------------------------------------
+// DeleteArtifact
+// ---------------------------------------------------------------------------
+
+message DeleteRequest {
+  string provider_ref         = 1;
+  string provider_config_name = 2;
+}
+
+message DeleteResponse {
+  bool   deleted = 1;
+  string message = 2;
+}
+
+// ---------------------------------------------------------------------------
+// HealthCheck
+// ---------------------------------------------------------------------------
+
+message HealthResponse {
+  bool   healthy = 1;
+  string message = 2;
+}

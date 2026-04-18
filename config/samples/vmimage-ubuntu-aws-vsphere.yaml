@@ -1,0 +1,142 @@
+# config/samples/vmimage-ubuntu-aws-vsphere.yaml
+#
+# Example: Build a hardened Ubuntu 24.04 image and publish it to both AWS and vSphere.
+# Apply with: kubectl apply -f vmimage-ubuntu-aws-vsphere.yaml
+
+---
+apiVersion: imagebuilder.io/v1alpha1
+kind: VMImage
+metadata:
+  name: ubuntu-24-04-hardened
+  labels:
+    app.kubernetes.io/managed-by: imagebuilder
+spec:
+  os:
+    family: linux
+    distribution: ubuntu
+    version: "24.04"
+    arch: amd64
+
+  source:
+    type: cloud-image
+    url: https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+    checksum: sha256:placeholder-replace-with-real-checksum
+
+  provisioners:
+    # Step 1: in-process — generates the cloud-init ISO (no container needed)
+    - type: cloud-init
+      inline: |
+        #cloud-config
+        package_update: true
+        packages:
+          - curl
+          - git
+          - unattended-upgrades
+        users:
+          - name: imagebuilder
+            sudo: ALL=(ALL) NOPASSWD:ALL
+            shell: /bin/bash
+        runcmd:
+          - systemctl enable unattended-upgrades
+
+    # Step 2: init-container — Ansible hardening playbook
+    - type: ansible
+      # image is optional — operator uses its default if omitted
+      image: ghcr.io/yourorg/provisioner-ansible:v2.16
+      playbook: s3://my-build-bucket/playbooks/cis-ubuntu.yml
+      extraVars:
+        cis_level: "1"
+        install_aide: "true"
+
+    # Step 3: init-container — InSpec compliance check
+    - type: custom
+      image: ghcr.io/mycompany/provisioner-inspec:v1.0
+      args: ["--profile", "cis-ubuntu-22", "--reporter", "json:/workspace/inspec-results.json"]
+      env:
+        - name: CHEF_LICENSE
+          value: accept-no-persist
+
+  targets:
+    # Target 1: AWS AMI in eu-west-1
+    - providerConfigRef:
+        name: aws-eu-west-1
+      format: vmdk
+      tags:
+        team: platform
+        environment: production
+        cis-level: "1"
+
+    # Target 2: vSphere VM Template
+    - providerConfigRef:
+        name: vsphere-prod-dc01
+      format: ova
+      tags:
+        team: platform
+        environment: production
+
+  build:
+    timeout: 2h
+    nodeSelector:
+      imagebuilder.io/build-node: "true"
+    resources:
+      cpu: "4"
+      memory: 8Gi
+      storage: 50Gi
+
+---
+# ProviderConfig for AWS eu-west-1
+apiVersion: imagebuilder.io/v1alpha1
+kind: ProviderConfig
+metadata:
+  name: aws-eu-west-1
+spec:
+  provider: aws
+  credentials:
+    secretRef:
+      name: aws-credentials
+      key: credentials
+  region: eu-west-1
+  extra:
+    s3Bucket: my-imagebuilder-artifacts
+    roleName: ImageBuilderRole
+
+---
+# ProviderConfig for vSphere
+apiVersion: imagebuilder.io/v1alpha1
+kind: ProviderConfig
+metadata:
+  name: vsphere-prod-dc01
+spec:
+  provider: vsphere
+  credentials:
+    secretRef:
+      name: vsphere-credentials
+      key: credentials
+  endpoint: https://vcenter.example.com
+  insecure: false
+  extra:
+    datacenter: dc01
+    cluster: cluster01
+    datastore: vsanDatastore
+    network: "VM Network"
+    folder: /dc01/vm/templates
+
+---
+# PlatformProvider: install the AWS provider pod
+apiVersion: imagebuilder.io/v1alpha1
+kind: PlatformProvider
+metadata:
+  name: aws
+spec:
+  package: ghcr.io/yourorg/imagebuilder-provider-aws:v1.0.0
+  packagePullPolicy: IfNotPresent
+
+---
+# PlatformProvider: install the vSphere provider pod
+apiVersion: imagebuilder.io/v1alpha1
+kind: PlatformProvider
+metadata:
+  name: vsphere
+spec:
+  package: ghcr.io/yourorg/imagebuilder-provider-vsphere:v1.0.0
+  packagePullPolicy: IfNotPresent
