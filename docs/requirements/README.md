@@ -22,6 +22,8 @@ All documents are maintained as controlled artefacts and serve as audit evidence
 | [REQ-006](REQ-006-development-standards.md) | Development Standards — TDD & Twelve-Factor App | Draft |
 | [REQ-007](REQ-007-supply-chain-security.md) | Supply Chain Security — SLSA Build Level 1 & 2 | Draft |
 | [REQ-008](REQ-008-application-security-owasp.md) | Application Security — OWASP Top 10 & ASVS | Draft |
+| [REQ-009](REQ-009-owasp-samm.md) | Software Assurance Maturity — OWASP SAMM v2.0 | Draft |
+| [REQ-010](REQ-010-secure-coding-openssf.md) | Secure Coding Standards (SEI CERT) & OpenSSF Best Practices | Draft |
 
 ## Requirement ID Scheme
 
@@ -33,7 +35,22 @@ All documents are maintained as controlled artefacts and serve as audit evidence
 - **DR-xxx** — Development Requirement (TDD)
 - **TF-xxx** — Twelve-Factor App Requirement
 - **SC-xxx** — Supply Chain Security Requirement (SLSA)
-- **AS-xxx** — Application Security Requirement (OWASP)
+- **AS-xxx** — Application Security Requirement (OWASP Top 10)
+- **SAMM-xxx** — OWASP SAMM Maturity Requirement
+- **CERT-xxx** — SEI CERT Secure Coding Requirement
+- **OSSF-xxx** — OpenSSF Best Practices Requirement
+
+## Secure Development Standard
+
+The full development standard comprises:
+
+| Standard | Document |
+|---|---|
+| Test-Driven Development + Twelve-Factor App | REQ-006 |
+| Supply Chain Security (SLSA L1 & L2) | REQ-007 |
+| Application Security (OWASP Top 10 / ASVS) | REQ-008 |
+| Security Process Maturity (OWASP SAMM v2.0) | REQ-009 |
+| SEI CERT Secure Coding + OpenSSF Best Practices | REQ-010 |
 
 ## Change Control
 

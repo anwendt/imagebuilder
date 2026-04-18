@@ -31,6 +31,8 @@ All documents are intended to support ISAE audit requirements.
 | [REQ-006](requirements/REQ-006-development-standards.md) | Development Standards — TDD & Twelve-Factor App |
 | [REQ-007](requirements/REQ-007-supply-chain-security.md) | Supply Chain Security — SLSA Build Level 1 & 2 |
 | [REQ-008](requirements/REQ-008-application-security-owasp.md) | Application Security — OWASP Top 10 & ASVS |
+| [REQ-009](requirements/REQ-009-owasp-samm.md) | Software Assurance Maturity — OWASP SAMM v2.0 |
+| [REQ-010](requirements/REQ-010-secure-coding-openssf.md) | Secure Coding Standards (SEI CERT) & OpenSSF Best Practices |
 
 ## Architecture Decision Records
 
