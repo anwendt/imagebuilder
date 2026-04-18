@@ -1,0 +1,674 @@
+---
+document-id: ARCH-001
+title: System Architecture Description — VM Image Builder
+version: 1.0.0
+status: Draft
+date: 2026-04-18
+author: Platform Engineering
+classification: Internal
+purpose: ISAE Audit — System Description
+---
+
+# System Architecture Description — VM Image Builder
+
+## Document Control
+
+| Field | Value |
+|---|---|
+| Document ID | ARCH-001 |
+| Version | 1.0.0 |
+| Status | Draft |
+| Date | 2026-04-18 |
+| Author | Platform Engineering |
+| Classification | Internal |
+| Review Cycle | Per release or major architectural change |
+
+---
+
+## Table of Contents
+
+1. [System Overview](#1-system-overview)
+2. [Architectural Principles](#2-architectural-principles)
+3. [Component Architecture](#3-component-architecture)
+4. [Data Flow](#4-data-flow)
+5. [CRD Data Model](#5-crd-data-model)
+6. [Plugin System](#6-plugin-system)
+7. [Provisioner System](#7-provisioner-system)
+8. [Security Architecture](#8-security-architecture)
+9. [Deployment Architecture](#9-deployment-architecture)
+10. [Technology Stack](#10-technology-stack)
+11. [Interface Contracts](#11-interface-contracts)
+12. [Implementation Status](#12-implementation-status)
+13. [Traceability Summary](#13-traceability-summary)
+
+---
+
+## 1. System Overview
+
+### 1.1 Purpose
+
+The **VM Image Builder** is a Kubernetes-native operator that enables automated, declarative
+construction of virtual machine (VM) disk images for multiple cloud and on-premises
+infrastructure platforms.
+
+The system provides the same capabilities as HashiCorp Packer — building, customising, and
+publishing VM images — but is implemented as a Kubernetes Operator and released exclusively
+under the **Apache License 2.0**, making it suitable for commercial redistribution without
+license restrictions.
+
+### 1.2 Problem Statement
+
+Organisations operating multi-cloud or hybrid environments need a unified mechanism to
+build consistent, hardened VM base images across platforms such as AWS, Azure, GCP,
+VMware vSphere, and OpenStack. Existing tools (HashiCorp Packer) are either:
+- No longer Apache-licensed (BSL 1.1 since 2023, see ADR-001), or
+- Not integrated with Kubernetes-native workflows.
+
+### 1.3 System Boundaries
+
+**In Scope:**
+- Receiving and validating `VMImage` Custom Resource Definitions (CRDs)
+- Orchestrating VM image builds using QEMU/libvirt and diskimage-builder backends
+- Executing provisioners (cloud-init, Ansible, shell, PowerShell, custom)
+- Uploading and registering built images to target platforms (AWS, Azure, GCP, vSphere, OpenStack)
+- Managing platform provider lifecycle via `PlatformProvider` CRDs
+- Storing build status and results in Kubernetes resource status
+
+**Out of Scope:**
+- Provisioning or deploying VM instances from built images (this is a separate concern)
+- Image vulnerability scanning (intended to be a downstream provisioner step)
+- Long-term image storage management (delegated to the target platform)
+
+### 1.4 Stakeholders
+
+| Stakeholder | Role | Concern |
+|---|---|---|
+| Platform Engineering | Owner | Architecture, implementation, release |
+| DevOps / SRE Teams | Consumer | Building and consuming VM images |
+| Security Team | Reviewer | License compliance, secret management, supply chain |
+| ISAE Auditor | External | Control objectives, documentation completeness |
+
+---
+
+## 2. Architectural Principles
+
+The following principles govern all architectural decisions in this system.
+Each principle is referenced by one or more Architecture Decision Records (ADRs).
+
+| # | Principle | Rationale | ADR |
+|---|---|---|---|
+| P-01 | **Apache 2.0 First** — All statically linked dependencies must be Apache 2.0 or MIT licensed. | Legal requirement for redistribution. | ADR-001, ADR-004 |
+| P-02 | **Kubernetes-Native** — The operator uses Kubernetes primitives (CRDs, Jobs, Init Containers, RBAC) rather than custom scheduling or orchestration. | Reduced operational complexity; leverages existing cluster infrastructure. | ADR-003 |
+| P-03 | **Process Boundary = License Boundary** — LGPL-licensed tools are accessed only as external processes, never as linked libraries. | Preserves Apache 2.0 redistribution rights. | ADR-004 |
+| P-04 | **Declarative Configuration** — Users define desired image state; the operator is responsible for achieving it. | Kubernetes reconciliation model; self-healing on failure. | — |
+| P-05 | **Extensibility Without Core Changes** — New platform providers and provisioners can be added without modifying the core operator. | Enables community contributions and proprietary extensions. | ADR-002, ADR-003, ADR-006 |
+| P-06 | **Stable Contracts** — The gRPC provider interface (protobuf) is versioned and backward-compatible. Breaking changes require a new API version. | Decouples provider release cycle from operator release cycle. | ADR-005 |
+| P-07 | **Static Binaries** — `CGO_ENABLED=0`; no runtime C library dependencies in operator containers. | Simplified container images, reproducible builds, no linking-related license issues. | ADR-004, ADR-006 |
+| P-08 | **Least Privilege** — Operator and provider pods operate with the minimum required Kubernetes RBAC permissions. | Defense in depth. | REQ-004 |
+
+---
+
+## 3. Component Architecture
+
+### 3.1 High-Level Component Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Kubernetes Cluster                           │
+│                                                                     │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │                   imagebuilder-system namespace               │  │
+│  │                                                              │  │
+│  │  ┌─────────────────────────────────────────────────────┐    │  │
+│  │  │              Core Operator (Deployment)              │    │  │
+│  │  │                                                     │    │  │
+│  │  │  ┌──────────────────┐  ┌─────────────────────────┐ │    │  │
+│  │  │  │ VMImage Controller│  │PlatformProvider Controller│ │    │  │
+│  │  │  │  (Reconciler)    │  │  (Provider Lifecycle)   │ │    │  │
+│  │  │  └────────┬─────────┘  └───────────┬─────────────┘ │    │  │
+│  │  │           │                        │               │    │  │
+│  │  │  ┌────────▼──────────────────────────────────────┐ │    │  │
+│  │  │  │              Plugin Registry                   │ │    │  │
+│  │  │  └────────────────────────────────────────────────┘ │    │  │
+│  │  └──────────────────────────┬──────────────────────────┘    │  │
+│  │                             │ gRPC / Unix Socket             │  │
+│  │  ┌──────────────────────────▼──────────────────────────┐    │  │
+│  │  │              Platform Provider Pods                  │    │  │
+│  │  │  ┌──────────┐ ┌──────────┐ ┌──────────┐            │    │  │
+│  │  │  │ provider │ │ provider │ │ provider │  ...        │    │  │
+│  │  │  │   -aws   │ │ -vsphere │ │  -gcp    │            │    │  │
+│  │  │  └──────────┘ └──────────┘ └──────────┘            │    │  │
+│  │  └──────────────────────────────────────────────────────┘    │  │
+│  │                                                              │  │
+│  │  ┌──────────────────────────────────────────────────────┐    │  │
+│  │  │              Build Job Pods (per VMImage build)       │    │  │
+│  │  │                                                      │    │  │
+│  │  │  Init: cloud-init-writer                             │    │  │
+│  │  │  Init: provisioner-ansible:v2.16                     │    │  │
+│  │  │  Init: provisioner-inspec:v1.0                       │    │  │
+│  │  │  Main: artifact-uploader                             │    │  │
+│  │  └──────────────────────────────────────────────────────┘    │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                                                                     │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │                  Kubernetes API Server                        │  │
+│  │         VMImage CRD │ PlatformProvider CRD │ ProviderConfig   │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────┘
+                              │
+               External Cloud / On-Premises Platforms
+          ┌────────┬──────────┬────────┬──────────┬────────────┐
+          │  AWS   │  Azure   │  GCP   │ vSphere  │ OpenStack  │
+          └────────┴──────────┴────────┴──────────┴────────────┘
+```
+
+### 3.2 Component Descriptions
+
+#### 3.2.1 Core Operator
+
+The central control plane component. Runs as a Kubernetes Deployment (≥ 2 replicas for HA)
+with leader election.
+
+**Responsibilities:**
+- Watch and reconcile `VMImage`, `PlatformProvider`, and `ProviderConfig` CRDs
+- Orchestrate build Job creation and monitor progress
+- Manage platform provider pod lifecycle
+- Maintain the plugin registry of healthy providers
+- Expose metrics (`:8080`) and health probes (`:8081`)
+
+**Key packages:**
+- `pkg/controller/vmimage/` — VMImage reconciler
+- `pkg/controller/provider/` — PlatformProvider lifecycle controller
+- `pkg/controller/buildpod/` — Build Job and init-container assembly
+- `pkg/plugin/registry.go` — In-memory provider registry
+
+#### 3.2.2 Platform Provider Pods
+
+Separate Kubernetes Pods (one per `PlatformProvider` CRD) implementing the gRPC provider
+interface. Managed by the core operator as Kubernetes Deployments.
+
+**Responsibilities:**
+- Implement the 6 gRPC methods defined in `api/provider/v1/provider.proto`
+- Upload disk image artifacts to the target platform
+- Register the uploaded artifact as a platform-native image (AMI, OVA, etc.)
+- Report capabilities and health status
+
+**Built-in providers** (compile-time, blank import):
+`plugins/aws`, `plugins/azure`, `plugins/gcp`, `plugins/openstack`, `plugins/vsphere`
+
+**Community providers**: Any OCI image implementing the protobuf interface.
+
+#### 3.2.3 Build Job Pods
+
+Kubernetes Jobs created per VMImage build. Use init containers for sequential provisioner
+execution.
+
+**Responsibilities:**
+- Execute the build backend (QEMU, diskimage-builder, or cloud API)
+- Run provisioners sequentially (init container pattern)
+- Write build artifacts to the shared `/workspace` volume
+- Upload artifacts to target platforms via the platform provider (or directly via SDK)
+
+#### 3.2.4 Plugin Registry
+
+In-memory registry within the core operator process. Maintains the set of currently
+healthy and registered platform providers. Used by the VMImage controller to look up
+providers by name when processing targets.
+
+---
+
+## 4. Data Flow
+
+### 4.1 VMImage Build — End-to-End Flow
+
+```
+1. User applies VMImage manifest
+       kubectl apply -f vmimage.yaml
+
+2. Kubernetes API Server validates the CRD schema and persists the resource
+
+3. VMImage Controller detects the new resource (WATCH event)
+
+4. Controller validates the spec:
+   - Source image URL and checksum format
+   - Provisioner types are registered (in-process or known init-container type)
+   - All referenced ProviderConfigs exist
+   - All referenced providers are in Healthy state
+
+5. Controller sets status.phase = Building and emits a Kubernetes Event
+
+6. Controller creates a Kubernetes Job with:
+   - Init containers for each provisioner
+   - Main container for artifact upload
+   - emptyDir volume /workspace shared between all containers
+   - Environment references to ProviderConfig secrets (injected, not copied)
+
+7. Build Engine (QEMU/diskimage-builder/SDK):
+   - Downloads and verifies source image (checksum)
+   - Boots the VM (QEMU) or assembles the image (diskimage-builder)
+   - Writes the raw disk image to /workspace/artifact.*
+
+8. Provisioners run sequentially (init containers):
+   For each provisioner:
+     a. Operator writes /workspace/config.json
+     b. Init container runs
+     c. Provisioner writes /workspace/status.json
+     d. Exit 0 → next provisioner; exit != 0 → Job fails
+
+9. Controller detects Job completion (all init containers succeeded)
+   Sets status.phase = Uploading
+
+10. Artifact uploader (main container):
+    For each target:
+      a. Calls provider.UploadArtifact() via gRPC (streaming)
+      b. Calls provider.RegisterImage() with provider-specific metadata
+      c. Provider returns ImageRef (AMI ID, OVA path, template UUID, etc.)
+
+11. Controller updates VMImage.status:
+    - status.phase = Ready
+    - status.images[] with one entry per target platform
+
+12. On any failure:
+    - Provider.DeleteArtifact() is called for any partially-uploaded targets
+    - status.phase = Failed
+    - status.conditions updated with human-readable error
+    - Kubernetes Event emitted
+```
+
+### 4.2 Provider Registration Flow
+
+```
+1. User applies PlatformProvider manifest
+       kubectl apply -f provider-aws.yaml
+
+2. PlatformProvider Controller detects the new resource
+
+3. Controller creates a Kubernetes Deployment for the provider OCI image
+
+4. Provider pod starts and listens on Unix socket
+
+5. Controller initiates gRPC handshake → GetCapabilities()
+
+6. Capabilities response stored in PlatformProvider.status.capabilities
+
+7. Provider registered in Plugin Registry with name = capabilities.name
+
+8. PlatformProvider.status.phase = Healthy
+
+9. HealthCheck() called periodically; failures update status.phase = Unhealthy
+```
+
+---
+
+## 5. CRD Data Model
+
+### 5.1 VMImage
+
+The primary user-facing resource. Declares the desired state of a VM image build.
+
+```
+VMImage
+├── spec
+│   ├── os
+│   │   ├── family        (linux | windows)
+│   │   ├── distribution  (ubuntu | rhel | windows-server | ...)
+│   │   ├── version       (e.g. "24.04")
+│   │   └── arch          (amd64 | arm64)
+│   ├── source
+│   │   ├── type          (iso | cloud-image | marketplace)
+│   │   ├── url
+│   │   └── checksum      (sha256:...)
+│   ├── provisioners[]
+│   │   ├── type          (cloud-init | shell | file | powershell | ansible | ...)
+│   │   ├── inline        (for in-process types)
+│   │   ├── image         (for init-container types; optional)
+│   │   ├── playbook / script / path
+│   │   ├── args[]
+│   │   ├── env[]
+│   │   └── extraVars
+│   ├── targets[]
+│   │   ├── providerConfigRef.name
+│   │   ├── format        (ami | ova | vmdk | vhd | raw | qcow2)
+│   │   └── tags{}
+│   └── build
+│       ├── timeout
+│       ├── nodeSelector{}
+│       └── resources
+│           ├── cpu
+│           ├── memory
+│           └── storage
+└── status
+    ├── phase             (Pending | Building | Provisioning | Uploading | Ready | Failed)
+    ├── images[]
+    │   ├── provider
+    │   ├── imageRef      (AMI ID, template UUID, etc.)
+    │   └── location      (region, datacenter, etc.)
+    ├── conditions[]      (standard Kubernetes conditions)
+    ├── startTime
+    └── completionTime
+```
+
+### 5.2 PlatformProvider
+
+Declares that a provider should be installed and managed by the operator.
+
+```
+PlatformProvider
+├── spec
+│   ├── package           (OCI image reference)
+│   └── packagePullPolicy (Always | IfNotPresent | Never)
+└── status
+    ├── phase             (Installing | Healthy | Unhealthy | Unknown)
+    └── capabilities
+        ├── name
+        ├── version
+        ├── supportedFormats[]
+        └── supportedOSFamilies[]
+```
+
+### 5.3 ProviderConfig
+
+Stores provider-specific configuration and a reference to credentials.
+
+```
+ProviderConfig
+└── spec
+    ├── provider          (aws | azure | gcp | vsphere | openstack | ...)
+    ├── credentials
+    │   └── secretRef
+    │       ├── name      (Kubernetes Secret name)
+    │       └── key       (key within the Secret)
+    ├── region            (for cloud providers)
+    ├── endpoint          (for on-premises providers)
+    └── extra{}           (provider-specific key-value pairs)
+```
+
+**API Group**: `imagebuilder.io/v1alpha1`
+
+---
+
+## 6. Plugin System
+
+### 6.1 Two-Layer Architecture
+
+The plugin system has two independent extension layers with different mechanisms:
+
+```
+Layer 1: Platform Provider Plugins (gRPC out-of-process)
+─────────────────────────────────────────────────────────
+Purpose: Upload and register images on target platforms
+Mechanism: Kubernetes Deployment + gRPC over Unix socket
+Contract: api/provider/v1/provider.proto
+Lifecycle: Dynamic — add/remove at runtime via PlatformProvider CRD
+
+Layer 2: Provisioner Plugins
+─────────────────────────────────────────────────────────
+Sub-layer 2a: In-Process Provisioners (Go interface)
+  Purpose: Simple transformations (cloud-init, shell, file, PowerShell)
+  Mechanism: Go interface implementation + init() registration
+  Contract: pkg/provisioner/interface.go
+  Lifecycle: Compile-time — built into operator binary
+
+Sub-layer 2b: Init-Container Provisioners (OCI)
+  Purpose: Complex tools (Ansible, Chef, custom)
+  Mechanism: OCI image + filesystem contract (/workspace/config.json)
+  Contract: JSON file format (documented in ADR-003)
+  Lifecycle: Runtime — any OCI image compliant with the contract
+```
+
+### 6.2 Plugin Interface (Go)
+
+All platform plugins (including built-in providers) implement:
+
+```go
+type Plugin interface {
+    Name() string
+    Version() string
+    SupportedFormats() []string
+    SupportedOS() []OSFamily
+    Init(ctx context.Context, cfg PluginConfig) error
+    Validate(ctx context.Context) error
+    Upload(ctx context.Context, artifact BuildArtifact) (UploadResult, error)
+    Register(ctx context.Context, upload UploadResult, spec RegisterSpec) (ImageRef, error)
+    Cleanup(ctx context.Context, upload UploadResult) error
+    HealthCheck(ctx context.Context) error
+}
+```
+
+Source: `pkg/plugin/platform/interface.go`
+
+---
+
+## 7. Provisioner System
+
+### 7.1 Provisioner Types
+
+| Type | Mechanism | Executable | Examples |
+|---|---|---|---|
+| `cloud-init` | In-process | Go | User data, package install, runcmd |
+| `shell` | In-process | Go | Bash scripts via SSH |
+| `file` | In-process | Go | File copy/injection |
+| `powershell` | In-process | Go | Windows provisioning |
+| `sysprep` | In-process | Go | Windows image generalisation |
+| `ansible` | Init container | OCI image | Playbook execution via SSH |
+| `chef` | Init container | OCI image | Chef cookbook convergence |
+| `puppet` | Init container | OCI image | Puppet manifest application |
+| `saltstack` | Init container | OCI image | State application |
+| `custom` | Init container | OCI image | Any tool implementing the contract |
+
+### 7.2 Execution Order Guarantee
+
+Kubernetes guarantees that init containers execute **strictly sequentially**. Container N+1
+starts only after Container N exits with code 0. This provides the sequential ordering
+guarantee required by the provisioner model without custom orchestration logic.
+
+---
+
+## 8. Security Architecture
+
+### 8.1 Credential Management
+
+```
+ProviderConfig (CRD)
+  └── spec.credentials.secretRef
+        └── → Kubernetes Secret (namespace-scoped)
+                └── Contains: API keys, certificates, tokens
+
+Operator accesses Secret at build time only.
+Secret value is never logged, never stored in VMImage status,
+never written to /workspace.
+```
+
+### 8.2 Communication Security
+
+| Channel | Protocol | Security |
+|---|---|---|
+| Operator ↔ Provider (same Pod) | gRPC / Unix socket | No network exposure; OS-level isolation |
+| Operator ↔ Provider (remote) | gRPC / TCP | Mutual TLS (mTLS) required |
+| Operator ↔ Kubernetes API | HTTPS | TLS + ServiceAccount token |
+| Build Pod ↔ Cloud APIs | HTTPS | TLS + credentials from Secret |
+| Build Pod ↔ Source image | HTTPS | TLS + checksum verification |
+
+### 8.3 RBAC Model
+
+```
+Core Operator ServiceAccount
+  ClusterRole:
+    - get/list/watch/update: VMImage, PlatformProvider, ProviderConfig
+    - get/list/watch: Secrets (read-only, credentials)
+    - create/get/list/watch/delete: Jobs (build jobs)
+    - create/get/list/watch/delete: Deployments (provider pods)
+    - create/patch: Events
+
+Provider Pod ServiceAccount
+  ClusterRole:
+    - (none — providers do not access Kubernetes API)
+
+Build Job ServiceAccount
+  ClusterRole:
+    - (none — build jobs do not access Kubernetes API)
+```
+
+---
+
+## 9. Deployment Architecture
+
+### 9.1 Namespace Layout
+
+```
+imagebuilder-system/
+├── Deployment: imagebuilder-operator (≥ 2 replicas, leader election)
+├── Deployment: provider-aws (created by operator)
+├── Deployment: provider-vsphere (created by operator)
+├── ServiceAccount: imagebuilder-operator
+├── ServiceAccount: imagebuilder-provider
+└── CRDs: VMImage, PlatformProvider, ProviderConfig (cluster-scoped)
+
+<user-namespace>/
+├── VMImage resources (namespace-scoped)
+├── ProviderConfig resources (namespace-scoped)
+└── Secrets: cloud credentials (namespace-scoped)
+```
+
+### 9.2 Build Node Requirements
+
+QEMU-based builds (vSphere, OpenStack, local) require dedicated build nodes:
+
+```
+Node requirements:
+  - Linux kernel with KVM support (/dev/kvm)
+  - libvirtd running (accessed via Unix socket by go-libvirt)
+  - QEMU/KVM userspace tools
+  - Sufficient disk space for image build (50 GB+ recommended)
+
+Node selection:
+  VMImage.spec.build.nodeSelector:
+    imagebuilder.io/build-node: "true"
+
+  Node taint:
+    imagebuilder.io/build-node: "true:NoSchedule"
+  (prevents general workloads from landing on build nodes)
+```
+
+### 9.3 High Availability
+
+The operator supports active/passive HA via Kubernetes leader election:
+
+```
+imagebuilder-operator Pod 1 (Leader)  → Actively reconciling
+imagebuilder-operator Pod 2 (Standby) → Watching; takes over on leader failure
+imagebuilder-operator Pod 3 (Standby) → Watching; takes over on leader failure
+
+Leader election via: lease.coordination.k8s.io
+Lease name: imagebuilder-operator-leader
+```
+
+---
+
+## 10. Technology Stack
+
+| Layer | Technology | Version | License |
+|---|---|---|---|
+| Language | Go | 1.22+ | BSD-3-Clause |
+| Operator Framework | controller-runtime (kubebuilder) | v0.18.x | Apache 2.0 |
+| Kubernetes API | k8s.io/api, k8s.io/apimachinery, k8s.io/client-go | v0.30.x | Apache 2.0 |
+| gRPC | google.golang.org/grpc | v1.64.x | Apache 2.0 |
+| Serialisation | google.golang.org/protobuf | v1.34.x | BSD-3-Clause |
+| vSphere SDK | govmomi | latest | Apache 2.0 |
+| OpenStack SDK | gophercloud | latest | Apache 2.0 |
+| AWS SDK | aws-sdk-go-v2 | latest | Apache 2.0 |
+| Azure SDK | azure-sdk-for-go | latest | MIT |
+| GCP SDK | google-cloud-go | latest | Apache 2.0 |
+| libvirt binding | go-libvirt | latest | Apache 2.0 |
+| VM build backend | QEMU (userspace) | system | Apache 2.0 |
+| Image assembly | diskimage-builder | system | Apache 2.0 |
+| Logging | log/slog | stdlib | BSD-3-Clause |
+
+---
+
+## 11. Interface Contracts
+
+### 11.1 gRPC Provider Interface
+
+Defined in `api/provider/v1/provider.proto`. See [ADR-005](../adr/ADR-005-protobuf-versioned-contract.md)
+for versioning rules.
+
+```protobuf
+service PlatformProviderService {
+  rpc GetCapabilities(google.protobuf.Empty) returns (CapabilitiesResponse);
+  rpc ValidateConfig(ValidateConfigRequest) returns (ValidateConfigResponse);
+  rpc UploadArtifact(stream UploadChunk) returns (stream UploadProgress);
+  rpc RegisterImage(RegisterRequest) returns (ImageRef);
+  rpc DeleteArtifact(DeleteRequest) returns (DeleteResponse);
+  rpc HealthCheck(google.protobuf.Empty) returns (HealthResponse);
+}
+```
+
+### 11.2 Init Container Contract
+
+Filesystem-based. Defined normatively in [ADR-003](../adr/ADR-003-provisioners-as-init-containers.md).
+
+```
+/workspace/config.json  (operator writes before init container starts)
+/workspace/status.json  (provisioner writes before exiting)
+exit 0                  success
+exit != 0               failure
+```
+
+### 11.3 In-Process Provisioner Interface
+
+Go interface defined in `pkg/provisioner/interface.go`:
+
+```go
+type Provisioner interface {
+    Name() string
+    ExecutionType() ExecutionType   // always TypeInProcess
+    Validate(spec json.RawMessage) error
+    Run(ctx context.Context, req RunRequest) (RunResult, error)
+}
+```
+
+---
+
+## 12. Implementation Status
+
+| Component | Status | Notes |
+|---|---|---|
+| CRD types (VMImage, PlatformProvider, ProviderConfig) | Complete | `api/v1alpha1/` |
+| gRPC provider interface (provider.proto) | Complete | `api/provider/v1/` |
+| Plugin interface (Go) | Complete | `pkg/plugin/platform/interface.go` |
+| Plugin registry | Complete | `pkg/plugin/registry.go` |
+| Provisioner interface | Complete | `pkg/provisioner/interface.go` |
+| Operator entry point | Complete | `cmd/operator/main.go` |
+| AWS provider (partial) | In Progress | Upload: TODO; Register: TODO |
+| Azure provider | Stub | Not yet implemented |
+| GCP provider | Stub | Not yet implemented |
+| OpenStack provider | Stub | Not yet implemented |
+| vSphere provider | Stub | Not yet implemented |
+| VMImage controller | Not started | `pkg/controller/vmimage/` |
+| PlatformProvider controller | Not started | `pkg/controller/provider/` |
+| Build pod assembler | Not started | `pkg/controller/buildpod/` |
+| QEMU build backend | Not started | `pkg/builder/qemu/` |
+| diskimage-builder backend | Not started | `pkg/builder/diskimage/` |
+| In-process provisioners | Not started | `pkg/provisioner/cloudinit/` etc. |
+| CRD manifests (generated) | Not started | `config/crd/` |
+| RBAC manifests | Not started | `config/rbac/` |
+
+---
+
+## 13. Traceability Summary
+
+| Architecture Element | Requirements | ADRs |
+|---|---|---|
+| VMImage CRD | FR-001 – FR-010 | ADR-001 |
+| Platform Provider (gRPC container) | FR-011 – FR-016, FR-033 – FR-037 | ADR-002, ADR-005, ADR-006 |
+| Build Engine (QEMU/diskimage) | FR-017 – FR-021 | ADR-001, ADR-004 |
+| Provisioner system | FR-022 – FR-032 | ADR-003 |
+| Plugin registry | NFR-011 – NFR-015 | ADR-002, ADR-006 |
+| Credential management (Secrets) | SR-001 – SR-005 | ADR-002 |
+| RBAC / ServiceAccounts | SR-006 – SR-010 | REQ-004 |
+| Metrics / health probes | NFR-016 – NFR-020, OR-007 – OR-010 | — |
+| License compliance | LR-001 – LR-008 | ADR-001, ADR-004 |
+| gRPC interface versioning | NFR-014, OR-019 | ADR-005 |
+| Compile-time plugins | NFR-011, NFR-013 | ADR-006 |
+| Static binary / CGO_ENABLED=0 | LR-001, NFR-022 | ADR-004, ADR-006 |
