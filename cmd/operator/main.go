@@ -23,6 +23,8 @@ import (
 
 	imagebuilderv1alpha1 "github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/plugin"
+	vmimagecontroller "github.com/anwendt/imagebuilder/pkg/controller/vmimage"
+	providercontroller "github.com/anwendt/imagebuilder/pkg/controller/provider"
 
 	// Built-in platform plugins — each registers itself via init().
 	// Comment out any plugin to exclude it from the binary.
@@ -85,18 +87,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	// TODO: register controllers
-	// if err = (&controller.VMImageReconciler{
-	// 	Client:   mgr.GetClient(),
-	// 	Scheme:   mgr.GetScheme(),
-	// 	Registry: registry,
-	// }).SetupWithManager(mgr); err != nil {
-	// 	slog.Error("unable to create VMImage controller", slog.Any("error", err))
-	// 	os.Exit(1)
-	// }
+	if err = (&vmimagecontroller.VMImageReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Registry: registry,
+	}).SetupWithManager(mgr); err != nil {
+		slog.Error("unable to create VMImage controller", slog.Any("error", err))
+		os.Exit(1)
+	}
 
-	// TODO: register PlatformProvider controller
-	// TODO: register ProviderConfig controller
+	if err = (&providercontroller.PlatformProviderReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		slog.Error("unable to create PlatformProvider controller", slog.Any("error", err))
+		os.Exit(1)
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		slog.Error("unable to set up health check", slog.Any("error", err))

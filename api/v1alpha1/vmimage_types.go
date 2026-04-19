@@ -7,6 +7,16 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// Phase constants for VMImage lifecycle.
+const (
+	PhasePending      = "Pending"
+	PhaseBuilding     = "Building"
+	PhaseProvisioning = "Provisioning"
+	PhaseUploading    = "Uploading"
+	PhaseReady        = "Ready"
+	PhaseFailed       = "Failed"
+)
+
 // VMImageSpec defines the desired state of VMImage
 type VMImageSpec struct {
 	// OS describes the operating system to build
