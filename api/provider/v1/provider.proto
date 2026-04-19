@@ -11,7 +11,7 @@ syntax = "proto3";
 
 package imagebuilder.provider.v1;
 
-option go_package = "github.com/yourorg/imagebuilder/api/provider/v1;providerv1";
+option go_package = "github.com/anwendt/imagebuilder/api/provider/v1;providerv1";
 
 // PlatformProvider is the gRPC service that every external provider pod must implement.
 // The operator connects to the provider via a Unix socket at /var/run/provider/plugin.sock

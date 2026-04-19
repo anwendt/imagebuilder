@@ -51,11 +51,15 @@ type SourceSpec struct {
 	// +kubebuilder:validation:Enum=iso;cloud-image;marketplace
 	Type string `json:"type"`
 
-	// URL to download the source image from
+	// URL to download the source image from.
+	// Must use HTTPS — plain HTTP is rejected (AS-015, AS-047, REQ-008).
+	// +kubebuilder:validation:Pattern=`^https://`
 	// +optional
 	URL string `json:"url,omitempty"`
 
-	// Checksum in format "algorithm:hex" e.g. "sha256:abc123"
+	// Checksum in format "algorithm:hex" e.g. "sha256:abc123...".
+	// Accepted algorithms: sha256 (64 hex chars), sha512 (128 hex chars). AS-010.
+	// +kubebuilder:validation:Pattern=`^(sha256|sha512):[0-9a-f]{64,128}$`
 	// +optional
 	Checksum string `json:"checksum,omitempty"`
 
@@ -72,9 +76,11 @@ type MarketplaceRef struct {
 }
 
 type ProvisionerSpec struct {
-	// Type determines how the provisioner runs
+	// Type determines how the provisioner runs.
 	// In-process: cloud-init, shell, file, powershell, sysprep
 	// Init-container: ansible, chef, puppet, saltstack, custom
+	// Unknown values are rejected by the admission webhook (AS-026, AS-027, REQ-008).
+	// +kubebuilder:validation:Enum=cloud-init;shell;file;powershell;sysprep;ansible;chef;puppet;saltstack;custom
 	Type string `json:"type"`
 
 	// Image is the OCI image for init-container provisioners

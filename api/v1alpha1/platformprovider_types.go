@@ -118,9 +118,12 @@ type CredentialsSpec struct {
 }
 
 type SecretRef struct {
-	Name      string `json:"name"`
-	Namespace string `json:"namespace,omitempty"`
-	Key       string `json:"key,omitempty"`
+	Name string `json:"name"`
+	// Key is the data key within the Secret. If omitted, the whole Secret is used.
+	// +optional
+	Key string `json:"key,omitempty"`
+	// Namespace is intentionally omitted: the Secret must reside in the same namespace
+	// as the ProviderConfig to prevent cross-namespace credential access (AS-005, SR-005).
 }
 
 type ProviderConfigStatus struct {
@@ -131,12 +134,14 @@ type ProviderConfigStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.provider`
 // +kubebuilder:printcolumn:name="Region",type=string,JSONPath=`.spec.region`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // ProviderConfig holds credentials and endpoint config for a platform provider instance.
+// Intentionally namespace-scoped (no scope=Cluster): a VMImage may only reference a
+// ProviderConfig in its own namespace, preventing cross-namespace credential access.
+// See AS-005 (REQ-008) and SR-005 (REQ-004).
 type ProviderConfig struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

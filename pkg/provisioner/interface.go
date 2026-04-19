@@ -4,7 +4,7 @@
 // Init-container provisioners do NOT implement this interface; they communicate
 // via the filesystem contract (/workspace/config.json + /workspace/status.json).
 //
-// See CLAUDE.md §Plugin-System Ebene 2 for the full init-container contract.
+// See docs/adr/ADR-003-provisioners-as-init-containers.md for the full init-container contract.
 
 package provisioner
 
@@ -12,7 +12,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/yourorg/imagebuilder/api/v1alpha1"
+	"github.com/anwendt/imagebuilder/api/v1alpha1"
 )
 
 // Type classifies how a provisioner is executed.

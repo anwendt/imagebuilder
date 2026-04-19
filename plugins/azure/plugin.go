@@ -5,9 +5,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/yourorg/imagebuilder/api/v1alpha1"
-	"github.com/yourorg/imagebuilder/pkg/plugin"
-	"github.com/yourorg/imagebuilder/pkg/plugin/platform"
+	"github.com/anwendt/imagebuilder/api/v1alpha1"
+	"github.com/anwendt/imagebuilder/pkg/plugin"
+	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
 )
 
 func init() {

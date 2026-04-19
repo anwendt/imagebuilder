@@ -19,17 +19,18 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	imagebuilderv1alpha1 "github.com/yourorg/imagebuilder/api/v1alpha1"
-	"github.com/yourorg/imagebuilder/pkg/plugin"
+	imagebuilderv1alpha1 "github.com/anwendt/imagebuilder/api/v1alpha1"
+	"github.com/anwendt/imagebuilder/pkg/plugin"
 
 	// Built-in platform plugins — each registers itself via init().
 	// Comment out any plugin to exclude it from the binary.
-	_ "github.com/yourorg/imagebuilder/plugins/aws"
-	_ "github.com/yourorg/imagebuilder/plugins/azure"
-	_ "github.com/yourorg/imagebuilder/plugins/gcp"
-	_ "github.com/yourorg/imagebuilder/plugins/openstack"
-	_ "github.com/yourorg/imagebuilder/plugins/vsphere"
+	_ "github.com/anwendt/imagebuilder/plugins/aws"
+	_ "github.com/anwendt/imagebuilder/plugins/azure"
+	_ "github.com/anwendt/imagebuilder/plugins/gcp"
+	_ "github.com/anwendt/imagebuilder/plugins/openstack"
+	_ "github.com/anwendt/imagebuilder/plugins/vsphere"
 )
 
 var (
@@ -43,19 +44,29 @@ func init() {
 
 func main() {
 	var (
-		metricsAddr          string
-		probeAddr            string
-		leaderElect          bool
-		maxConcurrentBuilds  int
+		metricsAddr         string
+		probeAddr           string
+		leaderElect         bool
+		maxConcurrentBuilds int
+		logLevel            string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "Metrics endpoint address")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Health probe endpoint address")
 	flag.BoolVar(&leaderElect, "leader-elect", false, "Enable leader election for HA deployments")
 	flag.IntVar(&maxConcurrentBuilds, "max-concurrent-builds", 3, "Maximum parallel build jobs")
+	// OR-012: log level must be configurable at runtime without redeployment.
+	flag.StringVar(&logLevel, "log-level", "info", "Log level: debug, info, warn, error")
 	flag.Parse()
 
-	opts := zap.Options{Development: true}
+	var slogLevel slog.Level
+	if err := slogLevel.UnmarshalText([]byte(logLevel)); err != nil {
+		slogLevel = slog.LevelInfo
+	}
+	// TF-031/TF-032: structured JSON logs to stderr; collection is the cluster's concern.
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slogLevel})))
+
+	opts := zap.Options{Development: slogLevel == slog.LevelDebug}
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
 	// Log registered plugins
@@ -64,7 +75,7 @@ func main() {
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
-		MetricsBindAddress:     metricsAddr,
+		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         leaderElect,
 		LeaderElectionID:       "imagebuilder.io",

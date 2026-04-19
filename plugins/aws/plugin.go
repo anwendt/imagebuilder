@@ -3,7 +3,7 @@
 // Built-in AWS platform provider.
 // Registers itself via init() — activated by blank import in cmd/operator/main.go:
 //
-//	import _ "github.com/yourorg/imagebuilder/plugins/aws"
+//	import _ "github.com/anwendt/imagebuilder/plugins/aws"
 //
 // License: Apache 2.0
 // SDK: aws-sdk-go-v2 (Apache 2.0)
@@ -15,9 +15,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/yourorg/imagebuilder/api/v1alpha1"
-	"github.com/yourorg/imagebuilder/pkg/plugin"
-	"github.com/yourorg/imagebuilder/pkg/plugin/platform"
+	"github.com/anwendt/imagebuilder/api/v1alpha1"
+	"github.com/anwendt/imagebuilder/pkg/plugin"
+	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
 )
 
 func init() {
@@ -39,8 +39,9 @@ type awsConfig struct {
 	region          string
 	accessKeyID     string
 	secretAccessKey string
-	sessionToken    string // optional, for assume-role
-	roleARN         string // optional
+	sessionToken    string            // optional, for assume-role
+	roleARN         string            // optional
+	extraConfig     map[string]string // provider-specific config from ProviderConfig.spec.extra
 }
 
 // ---------------------------------------------------------------------------
@@ -83,6 +84,7 @@ func (p *AWSPlugin) Init(ctx context.Context, cfg platform.PluginConfig) error {
 		secretAccessKey: string(creds["secretAccessKey"]),
 		sessionToken:    string(creds["sessionToken"]),
 		roleARN:         cfg.Extra["roleArn"],
+		extraConfig:     cfg.Extra,
 	}
 
 	if p.config.region == "" {
@@ -126,12 +128,16 @@ func (p *AWSPlugin) Upload(ctx context.Context, artifact *platform.BuildArtifact
 	// 2. Multipart upload artifact.Path → s3://bucket/imagebuilder/{buildID}/disk.vmdk
 	// 3. Return S3 key as ProviderRef
 
-	s3Key := fmt.Sprintf("imagebuilder/%s/disk.%s", artifact.Metadata["buildID"], artifact.Format)
+	buildID := artifact.Metadata["buildID"]
+	if buildID == "" {
+		return nil, fmt.Errorf("aws plugin: artifact metadata missing required key 'buildID'")
+	}
+	s3Key := fmt.Sprintf("imagebuilder/%s/disk.%s", buildID, artifact.Format)
 
 	return &platform.UploadResult{
 		ProviderRef: s3Key,
 		Metadata: map[string]string{
-			"bucket": p.config.extra("s3Bucket"),
+			"bucket": p.config.extraConfig["s3Bucket"],
 			"key":    s3Key,
 		},
 	}, nil
@@ -163,12 +169,3 @@ func (p *AWSPlugin) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-func (c *awsConfig) extra(key string) string {
-	// placeholder — Extra map is on PluginConfig, not awsConfig
-	// Will be refactored when SDK clients are added
-	return ""
-}

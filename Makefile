@@ -3,22 +3,23 @@
 
 BINARY_NAME    := imagebuilder-operator
 IMAGE_TAG      ?= dev
-REGISTRY       ?= ghcr.io/yourorg
+REGISTRY       ?= ghcr.io/anwendt
 GO             := go
 GOFLAGS        ?=
+CGO_ENABLED    := 0
 
 # Tool versions
 CONTROLLER_GEN_VERSION := v0.15.0
 KUBEBUILDER_VERSION     := 3.15.0
 
-.PHONY: all build test lint generate manifests run docker-build license-check help
+.PHONY: all build test test-race lint vet gosec govulncheck staticcheck security-check generate manifests run docker-build license-check help
 
 all: generate manifests build
 
 ## Build
 
-build: ## Build the operator binary
-	$(GO) build $(GOFLAGS) -o bin/$(BINARY_NAME) ./cmd/operator/
+build: ## Build the operator binary (static, reproducible; ADR-004 CGO_ENABLED=0)
+	CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(GOFLAGS) -trimpath -o bin/$(BINARY_NAME) ./cmd/operator/
 
 run: generate manifests ## Run the operator locally (uses current kubeconfig context)
 	$(GO) run ./cmd/operator/ \
@@ -51,14 +52,31 @@ proto: ## Generate Go code from proto files (requires protoc + protoc-gen-go-grp
 
 ## Testing
 
-test: ## Run unit tests
-	$(GO) test ./... -v -count=1
+test: ## Run unit tests with race detector (CERT-CON-02)
+	$(GO) test ./... -v -count=1 -race
 
-test-integration: ## Run integration tests (requires a running cluster)
-	$(GO) test ./... -v -count=1 -tags=integration
+test-integration: ## Run integration tests (requires a running cluster or envtest)
+	$(GO) test ./... -v -count=1 -race -tags=integration
 
 lint: ## Run golangci-lint
 	golangci-lint run ./...
+
+vet: ## Run go vet (OSSF-Q-04, CERT-CON-04)
+	$(GO) vet ./...
+
+gosec: ## Run gosec SAST scanner (AS-060, CERT-MSC-04, REQ-010)
+	@which gosec > /dev/null 2>&1 || $(GO) install github.com/securego/gosec/v2/cmd/gosec@latest
+	gosec ./...
+
+govulncheck: ## Scan for known CVEs in Go module graph (AS-033, OSSF-S-06)
+	@which govulncheck > /dev/null 2>&1 || $(GO) install golang.org/x/vuln/cmd/govulncheck@latest
+	govulncheck ./...
+
+staticcheck: ## Run staticcheck static analyser (CERT-ERR-01, SAMM-I-SB-03)
+	@which staticcheck > /dev/null 2>&1 || $(GO) install honnef.co/go/tools/cmd/staticcheck@latest
+	staticcheck ./...
+
+security-check: vet gosec staticcheck govulncheck license-check ## Run all security gates (REQ-008, REQ-010)
 
 ## Compliance
 

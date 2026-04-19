@@ -3,7 +3,7 @@
 // Plugin registry — analog to database/sql driver registration.
 // Built-in plugins register themselves via init() with a blank import in main.go:
 //
-//	import _ "github.com/yourorg/imagebuilder/plugins/aws"
+//	import _ "github.com/anwendt/imagebuilder/plugins/aws"
 //
 // External (gRPC) plugins are registered by the PlatformProvider controller
 // once the provider pod is healthy and has completed the capability handshake.
@@ -15,7 +15,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/yourorg/imagebuilder/pkg/plugin/platform"
+	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
 )
 
 // Registry holds all active platform plugins.

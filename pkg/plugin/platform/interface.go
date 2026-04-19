@@ -12,7 +12,7 @@ package platform
 import (
 	"context"
 
-	"github.com/yourorg/imagebuilder/api/v1alpha1"
+	"github.com/anwendt/imagebuilder/api/v1alpha1"
 )
 
 // ImageFormat represents a VM image format.
