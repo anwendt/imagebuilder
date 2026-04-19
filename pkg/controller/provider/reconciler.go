@@ -61,6 +61,9 @@ func (r *PlatformProviderReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func (r *PlatformProviderReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	if r.log == nil {
+		r.log = slog.Default().With(slog.String("controller", "platformprovider"))
+	}
 	log := r.log.With(slog.String("name", req.Name), slog.String("namespace", req.Namespace))
 
 	pp := &v1alpha1.PlatformProvider{}
