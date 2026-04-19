@@ -67,6 +67,9 @@ func (r *VMImageReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // Reconcile is the main reconciliation loop. It is called whenever a VMImage
 // resource changes or a Job owned by a VMImage changes.
 func (r *VMImageReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	if r.log == nil {
+		r.log = slog.Default().With(slog.String("controller", "vmimage"))
+	}
 	log := r.log.With(slog.String("name", req.Name), slog.String("namespace", req.Namespace))
 
 	// 1. Fetch the VMImage resource.

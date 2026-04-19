@@ -44,10 +44,11 @@ manifests: controller-gen ## Generate CRD YAMLs and RBAC manifests
 		output:crd:artifacts:config=config/crd \
 		output:rbac:artifacts:config=config/rbac
 
-proto: ## Generate Go code from proto files (requires protoc + protoc-gen-go-grpc)
+proto: ## Generate Go code from proto files (requires protoc + protoc-gen-go + protoc-gen-go-grpc)
 	protoc \
-		--go_out=. --go_opt=paths=source_relative \
-		--go-grpc_out=. --go-grpc_opt=paths=source_relative \
+		--proto_path=api/provider/v1 \
+		--go_out=api/provider/v1 --go_opt=paths=source_relative \
+		--go-grpc_out=api/provider/v1 --go-grpc_opt=paths=source_relative \
 		api/provider/v1/provider.proto
 
 ## Testing

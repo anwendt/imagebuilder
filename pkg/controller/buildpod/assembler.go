@@ -37,14 +37,25 @@ const (
 	defaultBuilderImage = "ghcr.io/anwendt/imagebuilder-builder:latest"
 )
 
-// initContainerProvisioners are provisioner types that run as Kubernetes init containers.
-// All others are executed in-process by the main build container.
-var initContainerProvisioners = map[string]struct{}{
-	"ansible":    {},
-	"chef":       {},
-	"puppet":     {},
-	"saltstack":  {},
-	"custom":     {},
+// initContainerTypes lists provisioner types that run as Kubernetes init containers.
+// This mirrors the kubebuilder enum in ProvisionerSpec.Type (REQ-001, ADR-003).
+// Kept here as a static map so the assembler does not depend on runtime plugin
+// registration — the set of types is fixed at compile time by the CRD schema.
+var initContainerTypes = map[string]bool{
+	"ansible":   true,
+	"chef":      true,
+	"puppet":    true,
+	"saltstack": true,
+	"custom":    true,
+}
+
+// inProcessTypes lists provisioner types that run inside the main build container.
+var inProcessTypes = map[string]bool{
+	"cloud-init":  true,
+	"shell":       true,
+	"file":        true,
+	"powershell":  true,
+	"sysprep":     true,
 }
 
 // Assemble builds the Kubernetes Job spec for a VMImage build.
@@ -239,11 +250,14 @@ func jobLabels(img *v1alpha1.VMImage) map[string]string {
 }
 
 func isInitContainer(provisionerType string) bool {
-	_, ok := initContainerProvisioners[provisionerType]
-	if ok {
+	if initContainerTypes[provisionerType] {
 		return true
 	}
-	// Also check the provisioner registry: if not registered as in-process → init-container.
+	if inProcessTypes[provisionerType] {
+		return false
+	}
+	// Unknown type: fall back to the runtime provisioner registry.
+	// If not registered as in-process there either, treat as init-container.
 	return provisioner.IsInitContainer(provisionerType)
 }
 
