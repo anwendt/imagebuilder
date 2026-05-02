@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "webhook": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "enum": [true],
+          "description": "Production installs require validating webhooks to be enabled because the operator always serves admission webhooks and unsafe cross-field specs rely on webhook validation."
+        },
+        "failurePolicy": {
+          "type": "string",
+          "enum": ["Fail"],
+          "description": "Admission must fail closed. Kubernetes denies VMImage/ProviderConfig writes when the webhook is unavailable."
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "enum": [true],
+          "description": "Production installs require NetworkPolicies to default-deny namespace traffic and restrict provider gRPC to the operator trust boundary."
+        }
+      }
+    },
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}

@@ -19,6 +19,39 @@ All documents are intended to support ISAE audit requirements.
 |---|---|
 | [ARCHITECTURE.md](architecture/ARCHITECTURE.md) | Complete system architecture description (ISAE audit document) |
 
+## Getting Started
+
+| Document | Description |
+|---|---|
+| [Quickstart](getting-started/quickstart.md) | Install, test, and validate the operator in a cluster |
+
+## User Guide
+
+| Document | Description |
+|---|---|
+| [VMImage Authoring Guide](user-guide/vmimage.md) | Source, guest access, provisioners, targets, and artifact storage |
+
+## Operations
+
+| Document | Description |
+|---|---|
+| [Operator Operations Guide](operations/operator.md) | Deployment, flags, scheduling, metrics, webhooks, cleanup |
+| [AWS Remote Build](operations/aws-remote-build.md) | AWS remote build configuration, IAM, SSM provisioning, cleanup |
+| [Troubleshooting](operations/troubleshooting.md) | Common failure modes and diagnostics |
+
+## Security
+
+| Document | Description |
+|---|---|
+| [Security Guide](security/security.md) | Supply chain, runtime hardening, credentials, network policy, TLS |
+
+## Development
+
+| Document | Description |
+|---|---|
+| [Development Guide](development/development.md) | Tooling, generation, tests, builds, style |
+| [External Provider SDK](development/provider-sdk.md) | SDK and starter-template guide for external providers |
+
 ## Requirements
 
 | Document | Title |
@@ -44,6 +77,7 @@ All documents are intended to support ISAE audit requirements.
 | [ADR-004](adr/ADR-004-lgpl-as-external-processes.md) | LGPL Dependencies as External Processes Only | Accepted |
 | [ADR-005](adr/ADR-005-protobuf-versioned-contract.md) | Protobuf Schema as Versioned Provider Contract | Accepted |
 | [ADR-006](adr/ADR-006-no-go-plugin-mechanism.md) | No Go Plugin Mechanism (.so Files) | Accepted |
+| [ADR-007](adr/ADR-007-remote-build-provider-contract.md) | Remote Build as Provider-Owned Execution Mode | Accepted |
 
 ---
 

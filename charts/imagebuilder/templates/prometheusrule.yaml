@@ -1,0 +1,29 @@
+{{- if .Values.metrics.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "imagebuilder.fullname" . }}
+  namespace: {{ include "imagebuilder.namespace" . }}
+  labels:
+    {{- include "imagebuilder.labels" . | nindent 4 }}
+spec:
+  groups:
+    - name: imagebuilder.rules
+      rules:
+        - alert: ImageBuilderBuildFailures
+          expr: increase(imagebuilder_failures_total[15m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: VM image build or upload failures detected.
+            description: "{{ "{{" }} $value {{ "}}" }} imagebuilder failure(s) occurred in the last 15 minutes."
+        - alert: ImageBuilderCleanupFailures
+          expr: increase(imagebuilder_cleanup_failures_total[15m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: VM image cleanup failures detected.
+            description: "{{ "{{" }} $value {{ "}}" }} imagebuilder cleanup failure(s) occurred in the last 15 minutes."
+{{- end }}

@@ -131,7 +131,7 @@ Each principle is referenced by one or more Architecture Decision Records (ADRs)
 │  │  │  │              Plugin Registry                   │ │    │  │
 │  │  │  └────────────────────────────────────────────────┘ │    │  │
 │  │  └──────────────────────────┬──────────────────────────┘    │  │
-│  │                             │ gRPC / Unix Socket             │  │
+│  │                             │ gRPC / TCP via ClusterIP       │  │
 │  │  ┌──────────────────────────▼──────────────────────────┐    │  │
 │  │  │              Platform Provider Pods                  │    │  │
 │  │  │  ┌──────────┐ ┌──────────┐ ┌──────────┐            │    │  │
@@ -241,10 +241,13 @@ providers by name when processing targets.
    - Init containers for each provisioner
    - Main container for artifact upload
    - emptyDir volume /workspace shared between all containers
+   - Optional PVC volume /cache when spec.build.cache.ref is configured
    - Environment references to ProviderConfig secrets (injected, not copied)
 
 7. Build Engine (QEMU/diskimage-builder/SDK):
-   - Downloads and verifies source image (checksum)
+   - Reuses a verified checksum-addressed source cache entry when present
+   - Downloads and verifies source image (checksum) when cache is absent,
+     expired, or invalid
    - Boots the VM (QEMU) or assembles the image (diskimage-builder)
    - Writes the raw disk image to /workspace/artifact.*
 
@@ -285,7 +288,7 @@ providers by name when processing targets.
 
 3. Controller creates a Kubernetes Deployment for the provider OCI image
 
-4. Provider pod starts and listens on Unix socket
+4. Provider pod starts and listens on its ClusterIP gRPC Service
 
 5. Controller initiates gRPC handshake → GetCapabilities()
 
@@ -397,7 +400,7 @@ The plugin system has two independent extension layers with different mechanisms
 Layer 1: Platform Provider Plugins (gRPC out-of-process)
 ─────────────────────────────────────────────────────────
 Purpose: Upload and register images on target platforms
-Mechanism: Kubernetes Deployment + gRPC over Unix socket
+Mechanism: Kubernetes Deployment + ClusterIP Service + gRPC over TCP
 Contract: api/provider/v1/provider.proto
 Lifecycle: Dynamic — add/remove at runtime via PlatformProvider CRD
 
@@ -483,13 +486,27 @@ never written to /workspace.
 
 | Channel | Protocol | Security |
 |---|---|---|
-| Operator ↔ Provider (same Pod) | gRPC / Unix socket | No network exposure; OS-level isolation |
-| Operator ↔ Provider (remote) | gRPC / TCP | Mutual TLS (mTLS) required |
+| Operator ↔ Provider (default) | gRPC / TCP via ClusterIP | Default-deny NetworkPolicy, operator-only ingress to provider TCP/50051, ClusterIP-only Service, provider image policy |
+| Operator ↔ Provider (outside namespace-local trust boundary) | gRPC / TCP | `PlatformProvider.spec.transport.tls.mode: Mutual`, provider certificate identity verification, operator client certificate verification, plus NetworkPolicy/firewall restrictions |
+| Operator ↔ Provider (future same-Pod sidecar) | gRPC / Unix socket | No network exposure; OS-level isolation |
 | Operator ↔ Kubernetes API | HTTPS | TLS + ServiceAccount token |
 | Build Pod ↔ Cloud APIs | HTTPS | TLS + credentials from Secret |
 | Build Pod ↔ Source image | HTTPS | TLS + checksum verification |
 
-### 8.3 RBAC Model
+### 8.3 Source Cache Integrity
+
+Source image caching is explicit and PVC-backed. The cache key is
+checksum-addressed as `<algorithm>-<hex>.img`; the source URL is not part of the
+identity, so checksum rotation naturally creates a new cache entry.
+
+Cache entries are trusted only after checksum verification. Corrupt entries are
+deleted and refetched. Downloaded sources that fail checksum verification fail
+the build and are not stored. Optional TTL invalidation deletes entries older
+than `spec.build.cache.ttl` before verification. `retainPolicy: Always` keeps
+verified entries, while `retainPolicy: Never` removes a matching hit after use
+and does not persist fresh downloads.
+
+### 8.4 RBAC Model
 
 ```
 Core Operator ServiceAccount
@@ -622,9 +639,9 @@ Go interface defined in `pkg/provisioner/interface.go`:
 ```go
 type Provisioner interface {
     Name() string
-    ExecutionType() ExecutionType   // always TypeInProcess
-    Validate(spec json.RawMessage) error
-    Run(ctx context.Context, req RunRequest) (RunResult, error)
+    ExecutionType() Type
+    Validate(ctx context.Context, spec v1alpha1.ProvisionerSpec) error
+    Run(ctx context.Context, req *RunRequest) (*RunResult, error)
 }
 ```
 
@@ -640,29 +657,47 @@ type Provisioner interface {
 | Plugin registry | Complete | `pkg/plugin/registry.go` |
 | Provisioner interface | Complete | `pkg/provisioner/interface.go` |
 | Operator entry point | Complete | `cmd/operator/main.go` |
-| AWS provider (partial) | In Progress | Upload: TODO; Register: TODO |
-| Azure provider | Stub | Not yet implemented |
-| GCP provider | Stub | Not yet implemented |
-| OpenStack provider | Stub | Not yet implemented |
-| vSphere provider | Stub | Not yet implemented |
-| VMImage controller | Not started | `pkg/controller/vmimage/` |
-| PlatformProvider controller | Not started | `pkg/controller/provider/` |
-| Build pod assembler | Not started | `pkg/controller/buildpod/` |
-| QEMU build backend | Not started | `pkg/builder/qemu/` |
-| diskimage-builder backend | Not started | `pkg/builder/diskimage/` |
-| In-process provisioners | Not started | `pkg/provisioner/cloudinit/` etc. |
-| CRD manifests (generated) | Not started | `config/crd/` |
-| RBAC manifests | Not started | `config/rbac/` |
+| Built-in providers | Scaffolded | AWS has placeholder upload/register logic; other providers are stubs. External providers are supported through gRPC. |
+| External Provider SDK | Complete | `pkg/provider/sdk/`, starter template in `templates/provider/` |
+| VMImage controller | Complete | `pkg/controller/vmimage/` |
+| PlatformProvider controller | Complete | `pkg/controller/provider/` |
+| Build pod assembler | Complete | `pkg/controller/buildpod/` |
+| Upload pod assembler | Complete | `pkg/controller/uploadpod/` |
+| Source cache strategy | Complete | PVC-backed `spec.build.cache`, checksum-addressed keys, optional TTL invalidation, checksum-mismatch refetch, and retain policies |
+| QEMU build backend | Complete | Cloud image and ISO paths, guest readiness, provisioning, shutdown, hygiene, conversion |
+| Multi-arch core mapping | Complete | `spec.os.arch` validates `amd64` and `arm64`; local QEMU maps each arch to the matching system binary and device model; remote providers receive provider-neutral `osArch`. |
+| Remote build core contract | Complete | `build.mode`, provider capability checks, provider-neutral request/result contract, status/events, timeout handling, cleanup, durable operation refs, generic source refs, and hygiene attestation handling are implemented in the core. |
+| Deterministic core E2E coverage | Complete | Mocked-provider E2E tests cover remote success, timeout, cancellation/delete, cleanup failure, hygiene failure, upload/register restart recovery, restart during remote build, restart during upload/register, restart during cleanup, and restart during lease renewal. |
+| ISO installer media | Complete | NoCloud/autoinstall/kickstart/preseed/autounattend |
+| In-process provisioners | Complete | cloud-init, shell, file, PowerShell, sysprep, Ansible, Chef, Puppet, SaltStack, custom |
+| CRD manifests (generated) | Complete | `config/crd/` |
+| RBAC manifests | Complete | generated under `config/rbac/` when `make manifests` runs |
+| Deployment manifests | Complete | `config/deploy/`, `config/webhook/`, `config/certmanager/`, `config/policy/` |
 
 ---
 
-## 13. Traceability Summary
+## 13. Implementation Priorities
+
+The next implementation sequence is:
+
+1. Harden the first production remote build provider path, starting with AWS remote build
+   execution, cleanup, provider-side hygiene checks, and provider-backed integration tests.
+2. Extend remote build support to vSphere after the AWS path is stable.
+3. Optimize developer and CI runtime by reducing Docker build context and running
+   `make test-e2e` in CI.
+4. Extend remote build support to Azure, GCP, and OpenStack after the first provider paths are
+   stable.
+
+---
+
+## 14. Traceability Summary
 
 | Architecture Element | Requirements | ADRs |
 |---|---|---|
 | VMImage CRD | FR-001 – FR-010 | ADR-001 |
 | Platform Provider (gRPC container) | FR-011 – FR-016, FR-033 – FR-037 | ADR-002, ADR-005, ADR-006 |
 | Build Engine (QEMU/diskimage) | FR-017 – FR-021 | ADR-001, ADR-004 |
+| Remote Build Contract | FR-038 – FR-047 | ADR-007 |
 | Provisioner system | FR-022 – FR-032 | ADR-003 |
 | Plugin registry | NFR-011 – NFR-015 | ADR-002, ADR-006 |
 | Credential management (Secrets) | SR-001 – SR-005 | ADR-002 |

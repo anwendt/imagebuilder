@@ -27,6 +27,9 @@ type Registry struct {
 
 // NewRegistry creates an empty Registry.
 func NewRegistry(log *slog.Logger) *Registry {
+	if log == nil {
+		log = slog.Default()
+	}
 	return &Registry{
 		plugins: make(map[string]platform.Plugin),
 		log:     log,
@@ -37,6 +40,10 @@ func NewRegistry(log *slog.Logger) *Registry {
 // Returns an error if a plugin with the same name is already registered.
 // This is called from plugin init() functions and from the gRPC provider controller.
 func (r *Registry) Register(p platform.Plugin) error {
+	if err := platform.ValidatePluginContract(p); err != nil {
+		return err
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 

@@ -60,7 +60,7 @@ building of virtual machine (VM) images for multiple cloud and on-premises platf
 | FR-017 | The system SHALL support building images for Linux distributions: Ubuntu, Debian, RHEL/CentOS, Rocky Linux, AlmaLinux, Fedora, and SLES. | Must |
 | FR-018 | The system SHALL support building images for Windows Server 2019, 2022, and 2025. | Must |
 | FR-019 | The system SHALL support building images for Windows 10 and Windows 11 (desktop). | Should |
-| FR-020 | The system SHALL support both AMD64 (x86_64) architectures. | Must |
+| FR-020 | The system SHALL support AMD64 (x86_64) architecture. | Must |
 | FR-021 | The system SHALL support ARM64 architecture. | Should |
 
 ---
@@ -95,7 +95,40 @@ building of virtual machine (VM) images for multiple cloud and on-premises platf
 
 ---
 
-## 8. Traceability Matrix
+## 8. Remote Build Requirements
+
+Remote build means that VM instantiation, boot, provisioning, shutdown, image capture,
+and platform registration are executed by a platform provider on the target platform
+instead of by the local QEMU build backend in the build pod.
+
+| ID | Requirement | Priority |
+|---|---|---|
+| FR-038 | The system SHALL model build execution mode explicitly as local or remote in the VMImage build specification. | Must |
+| FR-039 | The system SHALL keep provider-specific remote build implementation details out of the core operator. | Must |
+| FR-040 | The system SHALL require providers to advertise remote build support through provider capabilities before the operator schedules a remote build. | Must |
+| FR-041 | The system SHALL pass a provider-neutral remote build request to the selected provider, including source, OS metadata, provisioner plan, guest access policy, timeouts, target format, and artifact requirements. | Must |
+| FR-042 | The system SHALL report remote build phase transitions in VMImage status using the same phase model as local builds, including source, boot, readiness, provisioning, sanitization, shutdown, upload, and registration. | Must |
+| FR-043 | The system SHALL support cancellation and cleanup for remote builds through provider-owned cleanup operations. | Must |
+| FR-044 | The system SHALL apply the same credential handling rules to remote builds as local builds, including no secrets in logs, ephemeral credentials where possible, and status output without secret material. | Must |
+| FR-045 | The system SHALL apply final image hygiene checks or provider-attested hygiene results before a remotely built image is marked Ready. | Must |
+| FR-046 | The system SHOULD support remote build implementations for AWS and vSphere first because they remove the local KVM requirement for the most common target platforms. | Should |
+| FR-047 | The system MAY support remote build implementations for Azure, GCP, and OpenStack after the core contract and the first provider implementations are stable. | May |
+
+---
+
+## 9. Source Cache Requirements
+
+| ID | Requirement | Priority |
+|---|---|---|
+| FR-048 | The system SHALL support an explicit PVC-backed source cache for local builds. | Should |
+| FR-049 | The system SHALL key source cache entries by verified checksum, not by source URL. | Must |
+| FR-050 | The system SHALL delete and refetch corrupt or expired source cache entries before using them. | Must |
+| FR-051 | The system SHALL fail the build and avoid updating the cache when a freshly downloaded source fails checksum verification. | Must |
+| FR-052 | The system SHALL support cache retention policy for keeping or removing matching cache entries after a build. | Should |
+
+---
+
+## 10. Traceability Matrix
 
 | Requirement | Architecture Component | ADR Reference |
 |---|---|---|
@@ -104,3 +137,5 @@ building of virtual machine (VM) images for multiple cloud and on-premises platf
 | FR-017 – FR-021 | Build Engine (QEMU/diskimage) | ADR-001, ADR-004 |
 | FR-022 – FR-032 | Provisioner System | ADR-003 |
 | FR-033 – FR-037 | PlatformProvider / ProviderConfig CRDs | ADR-002, ADR-005 |
+| FR-038 – FR-047 | Remote Build Contract and Provider Orchestration | ADR-002, ADR-005, ADR-007 |
+| FR-048 – FR-052 | Source Cache and Build Engine | ADR-001, ADR-004 |

@@ -100,7 +100,7 @@ verifiable requirements, and serves as an ISAE audit reference.
 | ID | Requirement | SAMM Level | Priority |
 |---|---|---|---|
 | SAMM-D-SA-01 | The architecture principles defined in `docs/architecture/ARCHITECTURE.md` Section 2 (P-01 to P-08) are the authoritative secure design patterns. They SHALL be applied to all new components without exception. | L2 | Must |
-| SAMM-D-SA-02 | Reusable security patterns (credential injection via `secretRef`, Unix-socket gRPC, init-container isolation) SHALL be documented in `docs/architecture/` as reference implementations for contributors. | L2 | Should |
+| SAMM-D-SA-02 | Reusable security patterns (credential injection via `secretRef`, provider gRPC transport controls, init-container isolation) SHALL be documented in `docs/architecture/` as reference implementations for contributors. | L2 | Should |
 | SAMM-D-SA-03 | Architecture Decision Records (ADRs) SHALL be created for any security-relevant design decision that deviates from the established patterns. | L2 | Must |
 
 ---

@@ -1,0 +1,80 @@
+nameOverride: ""
+fullnameOverride: ""
+
+namespace:
+  create: true
+  name: imagebuilder-system
+  podSecurity:
+    enforce: restricted
+    audit: restricted
+    warn: restricted
+
+image:
+  repository: ghcr.io/anwendt/imagebuilder-operator
+  tag: dev
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+
+serviceAccount:
+  create: true
+  name: ""
+
+leaderElection:
+  enabled: true
+
+schedulerNamespace: imagebuilder-system
+maxConcurrentBuilds: 3
+maxConcurrentBuildsPerNode: 1
+logLevel: info
+
+metrics:
+  enabled: true
+  bindAddress: ":8080"
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+  prometheusRule:
+    enabled: false
+
+webhook:
+  enabled: true
+  serviceName: imagebuilder-webhook-service
+  port: 443
+  targetPort: 9443
+  failurePolicy: Fail
+  timeoutSeconds: 10
+  matchPolicy: Equivalent
+  certManager:
+    enabled: true
+    issuerName: imagebuilder-selfsigned-issuer
+    certificateName: imagebuilder-webhook-serving-cert
+    secretName: imagebuilder-webhook-server-cert
+  caBundle: ""
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+networkPolicy:
+  enabled: true

@@ -70,8 +70,8 @@ isolation. These requirements are mandatory for ISAE audit compliance.
 
 | ID | Requirement | Priority |
 |---|---|---|
-| SR-021 | Communication between the core operator and platform provider pods SHALL use gRPC over Unix domain sockets within the same Pod (not TCP). This prevents network-layer interception. | Must |
-| SR-022 | If TCP-based gRPC is required (e.g., remote providers), mutual TLS (mTLS) SHALL be enforced. | Must |
+| SR-021 | Communication between the core operator and platform provider pods SHALL use the ADR-002 provider transport: gRPC over TCP through ClusterIP for the default Deployment model, or gRPC over Unix domain sockets for future same-Pod sidecar providers. | Must |
+| SR-022 | TCP-based provider gRPC SHALL be protected by NetworkPolicy and ClusterIP-only Services inside the local trust boundary; mutual TLS (mTLS) SHALL be enforced when the endpoint crosses namespace, cluster, or network trust boundaries. | Must |
 | SR-023 | Build pods SHALL have network egress restricted to the minimum required: source image download, cloud provider API endpoints. | Should |
 | SR-024 | The operator metrics endpoint (:8080) SHALL NOT be exposed outside the cluster without authentication. | Must |
 
@@ -96,5 +96,5 @@ isolation. These requirements are mandatory for ISAE audit compliance.
 | SR-006 – SR-010 | RBAC manifests, ServiceAccounts | — |
 | SR-011 – SR-015 | Pod spec templates, build nodes | ADR-003 |
 | SR-016 – SR-020 | PlatformProvider loader, go.sum, CI | ADR-002, ADR-005 |
-| SR-021 – SR-024 | gRPC/Unix socket, NetworkPolicy | ADR-002 |
+| SR-021 – SR-024 | Provider gRPC transport, NetworkPolicy | ADR-002 |
 | SR-025 – SR-028 | Operator logging, Kubernetes audit | — |

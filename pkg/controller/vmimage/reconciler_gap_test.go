@@ -10,13 +10,17 @@ package vmimage_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"testing"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -136,6 +140,443 @@ func TestReconcile_Pending_ValidProvider_MovesToBuilding(t *testing.T) {
 	}
 }
 
+func TestReconcile_Pending_ArtifactPVC_CreatesWorkspaceClaim(t *testing.T) {
+	storageClass := "fast-block"
+	provCfg := &v1alpha1.ProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "aws-cfg", Namespace: "default"},
+		Spec:       v1alpha1.ProviderConfigSpec{Provider: "aws"},
+	}
+	img := newImg("pvc-build", "default", v1alpha1.PhasePending)
+	img.Finalizers = []string{"imagebuilder.io/cleanup"}
+	img.Spec.Targets = []v1alpha1.TargetSpec{
+		{ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "aws-cfg"}, Format: "vmdk"},
+	}
+	img.Spec.Build.ArtifactStorage = &v1alpha1.ArtifactStorageSpec{
+		Type: "pvc",
+		PVC: &v1alpha1.ArtifactPVCSpec{
+			StorageClassName: &storageClass,
+			Size:             "50Gi",
+			AccessMode:       "ReadWriteOnce",
+			RetainPolicy:     "Never",
+		},
+	}
+
+	reg := plugin.NewRegistry(slog.Default())
+	_ = reg.Register(&fakeRegistryPlugin{name: "aws"})
+
+	s := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img, provCfg).Build()
+	r := &vmimage.VMImageReconciler{Client: c, Scheme: s, Registry: reg}
+
+	reconcileOnce(t, r, "pvc-build", "default")
+
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "pvc-build-workspace", Namespace: "default"}, pvc); err != nil {
+		t.Fatalf("workspace PVC was not created: %v", err)
+	}
+	if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != "fast-block" {
+		t.Fatalf("storageClassName = %#v, want fast-block", pvc.Spec.StorageClassName)
+	}
+	if got := pvc.Spec.AccessModes[0]; got != corev1.ReadWriteOnce {
+		t.Fatalf("accessMode = %q, want ReadWriteOnce", got)
+	}
+	if got := pvc.Spec.Resources.Requests.Storage().String(); got != "50Gi" {
+		t.Fatalf("storage request = %q, want 50Gi", got)
+	}
+}
+
+func TestReconcile_Pending_ArtifactPVC_ExistingClaimDoesNotCreatePVC(t *testing.T) {
+	provCfg := &v1alpha1.ProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "aws-cfg", Namespace: "default"},
+		Spec:       v1alpha1.ProviderConfigSpec{Provider: "aws"},
+	}
+	img := newImg("existing-pvc-build", "default", v1alpha1.PhasePending)
+	img.Finalizers = []string{"imagebuilder.io/cleanup"}
+	img.Spec.Targets = []v1alpha1.TargetSpec{
+		{ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "aws-cfg"}, Format: "vmdk"},
+	}
+	img.Spec.Build.ArtifactStorage = &v1alpha1.ArtifactStorageSpec{
+		Type: "pvc",
+		PVC: &v1alpha1.ArtifactPVCSpec{
+			ClaimName:  "shared-workspace",
+			AccessMode: "ReadWriteMany",
+		},
+	}
+
+	reg := plugin.NewRegistry(slog.Default())
+	_ = reg.Register(&fakeRegistryPlugin{name: "aws"})
+
+	s := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img, provCfg).Build()
+	r := &vmimage.VMImageReconciler{Client: c, Scheme: s, Registry: reg}
+
+	reconcileOnce(t, r, "existing-pvc-build", "default")
+
+	pvc := &corev1.PersistentVolumeClaim{}
+	err := c.Get(context.Background(), types.NamespacedName{Name: "existing-pvc-build-workspace", Namespace: "default"}, pvc)
+	if err == nil {
+		t.Fatal("operator should not create a per-build PVC when claimName is provided")
+	}
+}
+
+func TestReconcile_Pending_CallsProviderValidate(t *testing.T) {
+	provCfg := &v1alpha1.ProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "aws-cfg", Namespace: "default"},
+		Spec:       v1alpha1.ProviderConfigSpec{Provider: "aws"},
+	}
+	img := newImg("validate-called", "default", v1alpha1.PhasePending)
+	img.Finalizers = []string{"imagebuilder.io/cleanup"}
+	img.Spec.Targets = []v1alpha1.TargetSpec{
+		{
+			ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "aws-cfg"},
+			Format:            "vmdk",
+		},
+	}
+
+	providerPlugin := &fakeRegistryPlugin{name: "aws"}
+	reg := plugin.NewRegistry(slog.Default())
+	_ = reg.Register(providerPlugin)
+
+	s := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img, provCfg).Build()
+	r := &vmimage.VMImageReconciler{Client: c, Scheme: s, Registry: reg}
+
+	reconcileOnce(t, r, "validate-called", "default")
+
+	if providerPlugin.validateCalls != 1 {
+		t.Errorf("validateCalls = %d, want 1", providerPlugin.validateCalls)
+	}
+}
+
+func TestReconcile_Pending_ProviderValidateFailure_SetsFailed(t *testing.T) {
+	provCfg := &v1alpha1.ProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "aws-cfg", Namespace: "default"},
+		Spec:       v1alpha1.ProviderConfigSpec{Provider: "aws"},
+	}
+	img := newImg("validate-fails", "default", v1alpha1.PhasePending)
+	img.Finalizers = []string{"imagebuilder.io/cleanup"}
+	img.Spec.Targets = []v1alpha1.TargetSpec{
+		{
+			ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "aws-cfg"},
+			Format:            "ami",
+		},
+	}
+
+	reg := plugin.NewRegistry(slog.Default())
+	_ = reg.Register(&fakeRegistryPlugin{name: "aws", validateErr: fmt.Errorf("unsupported target format")})
+
+	s := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img, provCfg).Build()
+	r := &vmimage.VMImageReconciler{Client: c, Scheme: s, Registry: reg}
+
+	reconcileOnce(t, r, "validate-fails", "default")
+
+	updated := &v1alpha1.VMImage{}
+	c.Get(context.Background(), types.NamespacedName{Name: "validate-fails", Namespace: "default"}, updated) //nolint:errcheck
+	if updated.Status.Phase != v1alpha1.PhaseFailed {
+		t.Errorf("phase = %q, want Failed when provider validation fails", updated.Status.Phase)
+	}
+}
+
+func TestReconcile_RemoteBuild_ProviderUnsupported_SetsFailed(t *testing.T) {
+	provCfg := &v1alpha1.ProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "aws-cfg", Namespace: "default"},
+		Spec:       v1alpha1.ProviderConfigSpec{Provider: "aws"},
+	}
+	img := newImg("remote-unsupported", "default", v1alpha1.PhasePending)
+	img.Finalizers = []string{"imagebuilder.io/cleanup"}
+	img.Spec.Build.Mode = v1alpha1.BuildModeRemote
+	img.Spec.Targets = []v1alpha1.TargetSpec{
+		{ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "aws-cfg"}, Format: "ami"},
+	}
+
+	reg := plugin.NewRegistry(slog.Default())
+	_ = reg.Register(&fakeRegistryPlugin{name: "aws"})
+
+	s := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img, provCfg).Build()
+	r := &vmimage.VMImageReconciler{Client: c, Scheme: s, Registry: reg}
+
+	reconcileOnce(t, r, "remote-unsupported", "default")
+
+	updated := &v1alpha1.VMImage{}
+	c.Get(context.Background(), types.NamespacedName{Name: "remote-unsupported", Namespace: "default"}, updated) //nolint:errcheck
+	if updated.Status.Phase != v1alpha1.PhaseFailed {
+		t.Fatalf("phase = %q, want Failed", updated.Status.Phase)
+	}
+	if got := conditionReason(updated, "Failed"); got != "RemoteBuildUnsupported" {
+		t.Fatalf("Failed reason = %q, want RemoteBuildUnsupported", got)
+	}
+}
+
+func TestReconcile_RemoteBuild_CompletesWithProviderImage(t *testing.T) {
+	provCfg := &v1alpha1.ProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "aws-cfg", Namespace: "default"},
+		Spec:       v1alpha1.ProviderConfigSpec{Provider: "aws"},
+	}
+	img := newImg("remote-ready", "default", v1alpha1.PhasePending)
+	img.Finalizers = []string{"imagebuilder.io/cleanup"}
+	img.Spec.Build.Mode = v1alpha1.BuildModeRemote
+	img.Spec.Source.URL = ""
+	img.Spec.Source.ProviderRef = "ami-0123456789abcdef0"
+	img.Spec.Targets = []v1alpha1.TargetSpec{
+		{ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "aws-cfg"}, Format: "ami"},
+	}
+
+	providerPlugin := &fakeRemoteBuildPlugin{
+		fakeRegistryPlugin: fakeRegistryPlugin{name: "aws"},
+		result: &platform.RemoteBuildResult{
+			OperationRef: "remote-op-1",
+			Phase:        platform.RemoteBuildPhaseReady,
+			Message:      "registered",
+			Done:         true,
+			Images: []platform.RemoteImageRef{
+				{
+					ImageRef: platform.ImageRef{
+						ID:       "ami-123",
+						Location: "eu-west-1",
+					},
+					Format:   platform.FormatAMI,
+					Checksum: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+				},
+			},
+			Hygiene: &platform.RemoteHygieneResult{
+				Status:    "passed",
+				Message:   "bootstrap residue absent",
+				Checks:    []string{"temporary-user-removed", "bootstrap-files-removed"},
+				ResultRef: "provider://hygiene/report-1",
+			},
+		},
+	}
+	reg := plugin.NewRegistry(slog.Default())
+	_ = reg.Register(providerPlugin)
+
+	s := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img, provCfg).Build()
+	r := &vmimage.VMImageReconciler{Client: c, Scheme: s, Registry: reg}
+
+	reconcileOnce(t, r, "remote-ready", "default")
+	result := reconcileOnce(t, r, "remote-ready", "default")
+	if result.RequeueAfter != 0 {
+		t.Fatalf("result.RequeueAfter = %s, want 0 for completed remote build", result.RequeueAfter)
+	}
+
+	updated := &v1alpha1.VMImage{}
+	c.Get(context.Background(), types.NamespacedName{Name: "remote-ready", Namespace: "default"}, updated) //nolint:errcheck
+	if updated.Status.Phase != v1alpha1.PhaseReady {
+		t.Fatalf("phase = %q, want Ready", updated.Status.Phase)
+	}
+	if updated.Status.RemoteBuildRef == nil || *updated.Status.RemoteBuildRef != "remote-op-1" {
+		t.Fatalf("remoteBuildRef = %#v, want remote-op-1", updated.Status.RemoteBuildRef)
+	}
+	if len(updated.Status.Images) != 1 || updated.Status.Images[0].ImageRef != "ami-123" {
+		t.Fatalf("images = %#v, want one ami-123 image", updated.Status.Images)
+	}
+	if providerPlugin.remoteCalls != 1 {
+		t.Fatalf("remoteCalls = %d, want 1", providerPlugin.remoteCalls)
+	}
+	if providerPlugin.lastRequest == nil || providerPlugin.lastRequest.SourceProviderRef != "ami-0123456789abcdef0" {
+		t.Fatalf("remote source providerRef = %#v, want ami-0123456789abcdef0", providerPlugin.lastRequest)
+	}
+	if updated.Status.HygieneResult == nil || updated.Status.HygieneResult.Status != "passed" {
+		t.Fatalf("hygieneResult = %#v, want passed", updated.Status.HygieneResult)
+	}
+	if updated.Status.HygieneResult.ResultRef != "provider://hygiene/report-1" {
+		t.Fatalf("hygiene resultRef = %q, want provider://hygiene/report-1", updated.Status.HygieneResult.ResultRef)
+	}
+	if step, ok := stepStatus(updated, "Sanitization"); !ok || step.Reason != "RemoteHygienePassed" {
+		t.Fatalf("Sanitization step = %#v, want RemoteHygienePassed", step)
+	}
+}
+
+func TestReconcile_RemoteBuild_FailedHygieneCleansProviderResources(t *testing.T) {
+	provCfg := &v1alpha1.ProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "aws-cfg", Namespace: "default"},
+		Spec:       v1alpha1.ProviderConfigSpec{Provider: "aws"},
+	}
+	img := newImg("remote-hygiene-failed", "default", v1alpha1.PhasePending)
+	img.Finalizers = []string{"imagebuilder.io/cleanup"}
+	img.Spec.Build.Mode = v1alpha1.BuildModeRemote
+	img.Spec.Source.URL = ""
+	img.Spec.Source.ProviderRef = "ami-0123456789abcdef0"
+	img.Spec.Targets = []v1alpha1.TargetSpec{
+		{ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "aws-cfg"}, Format: "ami"},
+	}
+
+	providerPlugin := &fakeRemoteBuildPlugin{
+		fakeRegistryPlugin: fakeRegistryPlugin{name: "aws"},
+		result: &platform.RemoteBuildResult{
+			OperationRef: "remote-op-hygiene",
+			Phase:        platform.RemoteBuildPhaseReady,
+			Message:      "registered",
+			Done:         true,
+			Images: []platform.RemoteImageRef{
+				{
+					ImageRef: platform.ImageRef{
+						ID:       "ami-123",
+						Location: "eu-west-1",
+					},
+					Format: platform.FormatAMI,
+				},
+			},
+			Hygiene: &platform.RemoteHygieneResult{
+				Status:    "failed",
+				Message:   "temporary bootstrap user remains",
+				Checks:    []string{"temporary-user-removed"},
+				ResultRef: "provider://hygiene/report-failed",
+			},
+		},
+	}
+	reg := plugin.NewRegistry(slog.Default())
+	_ = reg.Register(providerPlugin)
+
+	s := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img, provCfg).Build()
+	r := &vmimage.VMImageReconciler{Client: c, Scheme: s, Registry: reg}
+
+	reconcileOnce(t, r, "remote-hygiene-failed", "default")
+	reconcileOnce(t, r, "remote-hygiene-failed", "default")
+
+	updated := &v1alpha1.VMImage{}
+	c.Get(context.Background(), types.NamespacedName{Name: "remote-hygiene-failed", Namespace: "default"}, updated) //nolint:errcheck
+	if updated.Status.Phase != v1alpha1.PhaseFailed {
+		t.Fatalf("phase = %q, want Failed", updated.Status.Phase)
+	}
+	if got := conditionReason(updated, "Failed"); got != "RemoteHygieneFailed" {
+		t.Fatalf("Failed reason = %q, want RemoteHygieneFailed", got)
+	}
+	if updated.Status.HygieneResult == nil || updated.Status.HygieneResult.Status != "failed" {
+		t.Fatalf("hygieneResult = %#v, want failed", updated.Status.HygieneResult)
+	}
+	if providerPlugin.cleanupCalls != 1 {
+		t.Fatalf("cleanupCalls = %d, want 1", providerPlugin.cleanupCalls)
+	}
+	if step, ok := stepStatus(updated, "Sanitization"); !ok || step.Reason != "RemoteHygieneFailed" {
+		t.Fatalf("Sanitization step = %#v, want RemoteHygieneFailed", step)
+	}
+}
+
+func TestReconcile_RemoteBuild_TimeoutCleansProviderResources(t *testing.T) {
+	provCfg := &v1alpha1.ProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "aws-cfg", Namespace: "default"},
+		Spec:       v1alpha1.ProviderConfigSpec{Provider: "aws"},
+	}
+	start := metav1.NewTime(metav1.Now().Add(-2 * time.Hour))
+	remoteRef := "aws://remote-build/build-123?instanceId=i-123"
+	img := newImg("remote-timeout", "default", v1alpha1.PhaseBuilding)
+	img.UID = "build-123"
+	img.Finalizers = []string{"imagebuilder.io/cleanup"}
+	img.Spec.Build.Mode = v1alpha1.BuildModeRemote
+	img.Spec.Build.Timeout = &metav1.Duration{Duration: time.Hour}
+	img.Spec.Targets = []v1alpha1.TargetSpec{
+		{ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "aws-cfg"}, Format: "ami"},
+	}
+	img.Status.StartTime = &start
+	img.Status.RemoteBuildRef = &remoteRef
+
+	providerPlugin := &fakeRemoteBuildPlugin{fakeRegistryPlugin: fakeRegistryPlugin{name: "aws"}}
+	reg := plugin.NewRegistry(slog.Default())
+	_ = reg.Register(providerPlugin)
+
+	s := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img, provCfg).Build()
+	r := &vmimage.VMImageReconciler{Client: c, Scheme: s, Registry: reg}
+
+	reconcileOnce(t, r, "remote-timeout", "default")
+
+	updated := &v1alpha1.VMImage{}
+	c.Get(context.Background(), types.NamespacedName{Name: "remote-timeout", Namespace: "default"}, updated) //nolint:errcheck
+	if updated.Status.Phase != v1alpha1.PhaseFailed {
+		t.Fatalf("phase = %q, want Failed", updated.Status.Phase)
+	}
+	if providerPlugin.cleanupCalls != 1 {
+		t.Fatalf("cleanupCalls = %d, want 1", providerPlugin.cleanupCalls)
+	}
+	if providerPlugin.cleanupRequest == nil || providerPlugin.cleanupRequest.OperationRef != remoteRef {
+		t.Fatalf("cleanup request = %#v, want operation ref %q", providerPlugin.cleanupRequest, remoteRef)
+	}
+}
+
+func TestReconcile_Delete_RemoteBuildCleansProviderResources(t *testing.T) {
+	provCfg := &v1alpha1.ProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "aws-cfg", Namespace: "default"},
+		Spec:       v1alpha1.ProviderConfigSpec{Provider: "aws"},
+	}
+	now := metav1.Now()
+	remoteRef := "aws://remote-build/build-123?instanceId=i-123"
+	img := newImg("remote-delete", "default", v1alpha1.PhaseBuilding)
+	img.UID = "build-123"
+	img.Finalizers = []string{"imagebuilder.io/cleanup"}
+	img.DeletionTimestamp = &now
+	img.Spec.Build.Mode = v1alpha1.BuildModeRemote
+	img.Spec.Targets = []v1alpha1.TargetSpec{
+		{ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "aws-cfg"}, Format: "ami"},
+	}
+	img.Status.RemoteBuildRef = &remoteRef
+
+	providerPlugin := &fakeRemoteBuildPlugin{fakeRegistryPlugin: fakeRegistryPlugin{name: "aws"}}
+	reg := plugin.NewRegistry(slog.Default())
+	_ = reg.Register(providerPlugin)
+
+	s := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img, provCfg).Build()
+	r := &vmimage.VMImageReconciler{Client: c, Scheme: s, Registry: reg}
+
+	reconcileOnce(t, r, "remote-delete", "default")
+
+	if providerPlugin.cleanupCalls != 1 {
+		t.Fatalf("cleanupCalls = %d, want 1", providerPlugin.cleanupCalls)
+	}
+	if providerPlugin.cleanupRequest == nil || providerPlugin.cleanupRequest.OperationRef != remoteRef {
+		t.Fatalf("cleanup request = %#v, want operation ref %q", providerPlugin.cleanupRequest, remoteRef)
+	}
+}
+
+func TestReconcile_Delete_RemoteBuildCleanupFailureUpdatesStatus(t *testing.T) {
+	provCfg := &v1alpha1.ProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "aws-cfg", Namespace: "default"},
+		Spec:       v1alpha1.ProviderConfigSpec{Provider: "aws"},
+	}
+	now := metav1.Now()
+	remoteRef := "aws://remote-build/build-123?instanceId=i-123"
+	img := newImg("remote-delete-cleanup-failed", "default", v1alpha1.PhaseBuilding)
+	img.UID = "build-123"
+	img.Finalizers = []string{"imagebuilder.io/cleanup"}
+	img.DeletionTimestamp = &now
+	img.Spec.Build.Mode = v1alpha1.BuildModeRemote
+	img.Spec.Targets = []v1alpha1.TargetSpec{
+		{ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "aws-cfg"}, Format: "ami"},
+	}
+	img.Status.RemoteBuildRef = &remoteRef
+
+	providerPlugin := &fakeRemoteBuildPlugin{
+		fakeRegistryPlugin: fakeRegistryPlugin{name: "aws"},
+		cleanupErr:         errors.New("delete temporary instance: access denied"),
+	}
+	reg := plugin.NewRegistry(slog.Default())
+	_ = reg.Register(providerPlugin)
+
+	s := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img, provCfg).Build()
+	recorder := record.NewFakeRecorder(10)
+	r := &vmimage.VMImageReconciler{Client: c, Scheme: s, Registry: reg, Recorder: recorder}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "remote-delete-cleanup-failed", Namespace: "default"}})
+	if err == nil {
+		t.Fatal("Reconcile should return cleanup error")
+	}
+
+	updated := &v1alpha1.VMImage{}
+	c.Get(context.Background(), types.NamespacedName{Name: "remote-delete-cleanup-failed", Namespace: "default"}, updated) //nolint:errcheck
+	if step, ok := stepStatus(updated, "Cleanup"); !ok || step.Reason != "RemoteBuildCleanupFailed" {
+		t.Fatalf("Cleanup step = %#v, want RemoteBuildCleanupFailed", step)
+	}
+	if got := conditionReason(updated, "CleanupFailed"); got != "RemoteBuildCleanupFailed" {
+		t.Fatalf("CleanupFailed reason = %q, want RemoteBuildCleanupFailed", got)
+	}
+	requireEvent(t, recorder, "RemoteBuildCleanupFailed")
+}
+
 // ---------------------------------------------------------------------------
 // setCondition: update-existing branch
 // (trigger two reconcile cycles so the same condition is set twice)
@@ -169,9 +610,10 @@ func TestReconcile_SetCondition_UpdatesExistingCondition(t *testing.T) {
 			},
 		},
 	}
+	pod := buildResultPod("cond-test-pod", "default", jobName, buildResultMessage(t))
 
 	s := testScheme(t)
-	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img, job).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img, job, pod).Build()
 	r := &vmimage.VMImageReconciler{Client: c, Scheme: s, Registry: plugin.Default()}
 
 	_, err := r.Reconcile(context.Background(), ctrl.Request{
@@ -258,24 +700,198 @@ func TestReconcile_Building_JobDisappeared_SetsFailed(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// reconcileUploading: upload job pipeline
+// ---------------------------------------------------------------------------
+
+func TestReconcile_Uploading_CreatesUploadJob(t *testing.T) {
+	provCfg := &v1alpha1.ProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "aws-cfg", Namespace: "default"},
+		Spec: v1alpha1.ProviderConfigSpec{
+			Provider:    "aws",
+			Credentials: v1alpha1.CredentialsSpec{SecretRef: v1alpha1.SecretRef{Name: "aws-secret"}},
+			Region:      "eu-west-1",
+		},
+	}
+	img := newImg("upload-pipeline", "default", v1alpha1.PhaseUploading)
+	img.Finalizers = []string{"imagebuilder.io/cleanup"}
+	img.Spec.Targets = []v1alpha1.TargetSpec{
+		{
+			ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "aws-cfg"},
+			Format:            "vmdk",
+		},
+	}
+	img.Status.BuildArtifact = &v1alpha1.ArtifactStatus{
+		Path:      "/workspace/artifact.vmdk",
+		Format:    "vmdk",
+		Checksum:  "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		SizeBytes: 42,
+		OS:        "linux",
+		Metadata:  map[string]string{"backend": "qemu-img"},
+	}
+	img.Spec.Build.ArtifactStorage = &v1alpha1.ArtifactStorageSpec{Type: "pvc"}
+
+	s := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img, provCfg).Build()
+	r := &vmimage.VMImageReconciler{Client: c, Scheme: s, Registry: plugin.Default()}
+
+	result := reconcileOnce(t, r, "upload-pipeline", "default")
+	if result.RequeueAfter == 0 {
+		t.Fatalf("result = %+v, want requeue after upload job creation", result)
+	}
+
+	updated := &v1alpha1.VMImage{}
+	c.Get(context.Background(), types.NamespacedName{Name: "upload-pipeline", Namespace: "default"}, updated) //nolint:errcheck
+	if updated.Status.UploadJobRef == nil || *updated.Status.UploadJobRef != "upload-pipeline-upload" {
+		t.Fatalf("uploadJobRef = %#v, want upload-pipeline-upload", updated.Status.UploadJobRef)
+	}
+	if len(updated.Status.UploadOperations) != 1 {
+		t.Fatalf("uploadOperations len = %d, want 1", len(updated.Status.UploadOperations))
+	}
+	op := updated.Status.UploadOperations[0]
+	if op.Provider != "aws" || op.ProviderConfig != "aws-cfg" || op.Format != "vmdk" || op.Phase != "Uploading" {
+		t.Fatalf("upload operation = %#v, want aws/aws-cfg/vmdk Uploading", op)
+	}
+	job := &batchv1.Job{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "upload-pipeline-upload", Namespace: "default"}, job); err != nil {
+		t.Fatalf("upload job was not created: %v", err)
+	}
+}
+
+func TestReconcile_Uploading_UploadJobFailed_SetsFailed(t *testing.T) {
+	jobName := "upload-fails-upload"
+	img := newImg("upload-fails", "default", v1alpha1.PhaseUploading)
+	img.Finalizers = []string{"imagebuilder.io/cleanup"}
+	img.Status.UploadJobRef = &jobName
+	img.Spec.Build.ArtifactStorage = &v1alpha1.ArtifactStorageSpec{Type: "pvc"}
+	img.Status.BuildArtifact = &v1alpha1.ArtifactStatus{
+		Path:      "/workspace/artifact.vmdk",
+		Format:    "vmdk",
+		Checksum:  "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		SizeBytes: 42,
+		OS:        "linux",
+	}
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: "default"},
+		Status: batchv1.JobStatus{
+			Conditions: []batchv1.JobCondition{{Type: batchv1.JobFailed, Status: corev1.ConditionTrue}},
+		},
+	}
+	pod := failedUploadPod("upload-fails-pod", "default", jobName, `{"error":"provider aws upload failed"}`)
+
+	s := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img, job, pod).Build()
+	r := &vmimage.VMImageReconciler{Client: c, Scheme: s, Registry: plugin.Default()}
+
+	reconcileOnce(t, r, "upload-fails", "default")
+
+	updated := &v1alpha1.VMImage{}
+	c.Get(context.Background(), types.NamespacedName{Name: "upload-fails", Namespace: "default"}, updated) //nolint:errcheck
+	if updated.Status.Phase != v1alpha1.PhaseFailed {
+		t.Fatalf("phase = %q, want Failed", updated.Status.Phase)
+	}
+	var found bool
+	for _, cond := range updated.Status.Conditions {
+		if cond.Type == "Failed" && cond.Message == "upload Job failed: provider aws upload failed" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("failed condition did not include upload termination detail: %#v", updated.Status.Conditions)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Fake plugin for registry (minimal — only Name() matters)
 // ---------------------------------------------------------------------------
 
 type fakeRegistryPlugin struct {
-	name string
+	name           string
+	validateErr    error
+	validateCalls  int
+	uploadResult   *platform.UploadResult
+	uploadErr      error
+	registerErr    error
+	imageRef       *platform.ImageRef
+	uploadCalls    int
+	registerCalls  int
+	cleanupCalls   int
+	uploadArtifact *platform.BuildArtifact
 }
 
-func (p *fakeRegistryPlugin) Name() string                                                    { return p.name }
-func (p *fakeRegistryPlugin) Version() string                                                 { return "v0.0.1" }
-func (p *fakeRegistryPlugin) SupportedFormats() []platform.ImageFormat                        { return nil }
-func (p *fakeRegistryPlugin) SupportedOS() []platform.OSFamily                                { return nil }
-func (p *fakeRegistryPlugin) Init(_ context.Context, _ platform.PluginConfig) error           { return nil }
-func (p *fakeRegistryPlugin) Validate(_ context.Context, _ v1alpha1.TargetSpec) error         { return nil }
-func (p *fakeRegistryPlugin) Upload(_ context.Context, _ *platform.BuildArtifact) (*platform.UploadResult, error) {
+func (p *fakeRegistryPlugin) Name() string                                          { return p.name }
+func (p *fakeRegistryPlugin) Version() string                                       { return "v0.0.1" }
+func (p *fakeRegistryPlugin) SupportedFormats() []platform.ImageFormat              { return nil }
+func (p *fakeRegistryPlugin) SupportedOS() []platform.OSFamily                      { return nil }
+func (p *fakeRegistryPlugin) Init(_ context.Context, _ platform.PluginConfig) error { return nil }
+func (p *fakeRegistryPlugin) Validate(_ context.Context, _ v1alpha1.TargetSpec) error {
+	p.validateCalls++
+	return p.validateErr
+}
+func (p *fakeRegistryPlugin) Upload(_ context.Context, artifact *platform.BuildArtifact) (*platform.UploadResult, error) {
+	p.uploadCalls++
+	p.uploadArtifact = artifact
+	if p.uploadErr != nil {
+		return nil, p.uploadErr
+	}
+	if p.uploadResult != nil {
+		return p.uploadResult, nil
+	}
 	return &platform.UploadResult{}, nil
 }
 func (p *fakeRegistryPlugin) Register(_ context.Context, _ *platform.UploadResult) (*platform.ImageRef, error) {
+	p.registerCalls++
+	if p.registerErr != nil {
+		return nil, p.registerErr
+	}
+	if p.imageRef != nil {
+		return p.imageRef, nil
+	}
 	return &platform.ImageRef{}, nil
 }
-func (p *fakeRegistryPlugin) Cleanup(_ context.Context, _ *platform.BuildArtifact) error { return nil }
-func (p *fakeRegistryPlugin) HealthCheck(_ context.Context) error                          { return nil }
+func (p *fakeRegistryPlugin) Cleanup(_ context.Context, _ *platform.BuildArtifact) error {
+	p.cleanupCalls++
+	return nil
+}
+func (p *fakeRegistryPlugin) HealthCheck(_ context.Context) error { return nil }
+
+type fakeRemoteBuildPlugin struct {
+	fakeRegistryPlugin
+	result         *platform.RemoteBuildResult
+	remoteErr      error
+	remoteCalls    int
+	lastRequest    *platform.RemoteBuildRequest
+	cleanupCalls   int
+	cleanupRequest *platform.RemoteBuildRequest
+	cleanupErr     error
+}
+
+func (p *fakeRemoteBuildPlugin) SupportedBuildModes() []string {
+	return []string{v1alpha1.BuildModeLocal, v1alpha1.BuildModeRemote}
+}
+
+func (p *fakeRemoteBuildPlugin) ReconcileRemoteBuild(_ context.Context, req *platform.RemoteBuildRequest) (*platform.RemoteBuildResult, error) {
+	p.remoteCalls++
+	p.lastRequest = req
+	if p.remoteErr != nil {
+		return nil, p.remoteErr
+	}
+	if p.result != nil {
+		return p.result, nil
+	}
+	return &platform.RemoteBuildResult{Phase: platform.RemoteBuildPhaseBooting, Message: "booting"}, nil
+}
+
+func (p *fakeRemoteBuildPlugin) CleanupRemoteBuild(_ context.Context, req *platform.RemoteBuildRequest) error {
+	p.cleanupCalls++
+	p.cleanupRequest = req
+	return p.cleanupErr
+}
+
+func conditionReason(img *v1alpha1.VMImage, conditionType string) string {
+	for _, cond := range img.Status.Conditions {
+		if cond.Type == conditionType {
+			return cond.Reason
+		}
+	}
+	return ""
+}

@@ -1,0 +1,24 @@
+apiVersion: imagebuilder.io/v1alpha1
+kind: ProviderConfig
+metadata:
+  name: example
+  namespace: imagebuilder-system
+spec:
+  provider: example
+  credentials:
+    secretRef:
+      name: example-provider-credentials
+      key: credentials
+  region: local
+  extra:
+    project: platform
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: example-provider-credentials
+  namespace: imagebuilder-system
+type: Opaque
+stringData:
+  credentials: |
+    {"token":"replace-me"}

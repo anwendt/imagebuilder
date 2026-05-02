@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -30,12 +31,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
+	"github.com/anwendt/imagebuilder/pkg/plugin"
+	plugingrpc "github.com/anwendt/imagebuilder/pkg/plugin/grpc"
+	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
 )
 
 const (
-	providerFinalizerName = "imagebuilder.io/provider-cleanup"
-	providerGRPCPort      = 50051
-	requeueAfter          = 30
+	providerFinalizerName     = "imagebuilder.io/provider-cleanup"
+	providerGRPCPort          = 50051
+	requeueAfter              = 30
+	providerTLSMountPath      = "/var/run/imagebuilder/provider-tls"
+	providerClientCAMountPath = "/var/run/imagebuilder/provider-client-ca"
 )
 
 // PlatformProviderReconciler reconciles PlatformProvider resources.
@@ -45,10 +51,13 @@ const (
 // +kubebuilder:rbac:groups=imagebuilder.io,resources=platformproviders/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
 type PlatformProviderReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	log    *slog.Logger
+	Scheme          *runtime.Scheme
+	Registry        *plugin.Registry
+	ConnectProvider func(ctx context.Context, address string) (platform.Plugin, error)
+	log             *slog.Logger
 }
 
 func (r *PlatformProviderReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -89,6 +98,12 @@ func (r *PlatformProviderReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	// Reconcile Deployment and Service.
+	if err := validateProviderPackagePolicy(pp); err != nil {
+		return r.setUnhealthy(ctx, pp, fmt.Sprintf("provider package policy rejected image: %v", err))
+	}
+	if err := validateProviderTransportPolicy(pp); err != nil {
+		return r.setUnhealthy(ctx, pp, fmt.Sprintf("provider transport policy rejected: %v", err))
+	}
 	if err := r.reconcileDeployment(ctx, pp, log); err != nil {
 		return r.setUnhealthy(ctx, pp, fmt.Sprintf("deployment reconcile failed: %v", err))
 	}
@@ -120,9 +135,10 @@ func (r *PlatformProviderReconciler) reconcileDeployment(ctx context.Context, pp
 		return fmt.Errorf("get deployment: %w", err)
 	}
 
-	// Update image if it changed.
-	existing.Spec.Template.Spec.Containers[0].Image = pp.Spec.Package
-	existing.Spec.Template.Spec.Containers[0].ImagePullPolicy = corev1.PullPolicy(pp.Spec.PackagePullPolicy)
+	existing.Spec.Replicas = desired.Spec.Replicas
+	existing.Spec.Template.Labels = desired.Spec.Template.Labels
+	existing.Spec.Template.Annotations = desired.Spec.Template.Annotations
+	existing.Spec.Template.Spec = desired.Spec.Template.Spec
 	if err := r.Update(ctx, existing); err != nil {
 		return fmt.Errorf("update deployment: %w", err)
 	}
@@ -140,10 +156,60 @@ func (r *PlatformProviderReconciler) buildDeployment(pp *v1alpha1.PlatformProvid
 		"app.kubernetes.io/managed-by":  "imagebuilder",
 		"imagebuilder.io/provider-name": pp.Name,
 	}
+	annotations := map[string]string{}
+	if pp.Spec.Security != nil && pp.Spec.Security.VerifySignature {
+		annotations["imagebuilder.io/signature-policy"] = "cosign-required"
+		annotations["imagebuilder.io/signature-image"] = pp.Spec.Package
+	}
 
 	var pullSecrets []corev1.LocalObjectReference
 	for _, s := range pp.Spec.PackagePullSecrets {
 		pullSecrets = append(pullSecrets, corev1.LocalObjectReference{Name: s})
+	}
+
+	container := corev1.Container{
+		Name:            "provider",
+		Image:           pp.Spec.Package,
+		ImagePullPolicy: pullPolicy,
+		Ports: []corev1.ContainerPort{
+			{Name: "grpc", ContainerPort: providerGRPCPort, Protocol: corev1.ProtocolTCP},
+		},
+		// SR-011: restricted security context.
+		SecurityContext: &corev1.SecurityContext{
+			AllowPrivilegeEscalation: boolPtr(false),
+			ReadOnlyRootFilesystem:   boolPtr(true),
+			RunAsNonRoot:             boolPtr(true),
+			Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{"ALL"},
+			},
+		},
+	}
+	var volumes []corev1.Volume
+	if tlsSpec := providerMutualTLS(pp); tlsSpec != nil {
+		container.Env = append(container.Env,
+			corev1.EnvVar{Name: "PROVIDER_GRPC_TLS_MODE", Value: "Mutual"},
+			corev1.EnvVar{Name: "PROVIDER_GRPC_TLS_CERT_FILE", Value: providerTLSMountPath + "/" + providerTLSCertKey(tlsSpec.ServerCertificateSecretRef)},
+			corev1.EnvVar{Name: "PROVIDER_GRPC_TLS_KEY_FILE", Value: providerTLSMountPath + "/" + providerTLSKeyKey(tlsSpec.ServerCertificateSecretRef)},
+			corev1.EnvVar{Name: "PROVIDER_GRPC_TLS_CLIENT_CA_FILE", Value: providerClientCAMountPath + "/" + providerTLSCAKey(tlsSpec.CASecretRef)},
+		)
+		container.VolumeMounts = append(container.VolumeMounts,
+			corev1.VolumeMount{Name: "provider-tls", MountPath: providerTLSMountPath, ReadOnly: true},
+			corev1.VolumeMount{Name: "provider-client-ca", MountPath: providerClientCAMountPath, ReadOnly: true},
+		)
+		volumes = append(volumes,
+			corev1.Volume{
+				Name: "provider-tls",
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{SecretName: tlsSpec.ServerCertificateSecretRef.Name},
+				},
+			},
+			corev1.Volume{
+				Name: "provider-client-ca",
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{SecretName: tlsSpec.CASecretRef.Name},
+				},
+			},
+		)
 	}
 
 	return &appsv1.Deployment{
@@ -156,28 +222,17 @@ func (r *PlatformProviderReconciler) buildDeployment(pp *v1alpha1.PlatformProvid
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{MatchLabels: labels},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: annotations},
 				Spec: corev1.PodSpec{
 					ImagePullSecrets: pullSecrets,
-					Containers: []corev1.Container{
-						{
-							Name:            "provider",
-							Image:           pp.Spec.Package,
-							ImagePullPolicy: pullPolicy,
-							Ports: []corev1.ContainerPort{
-								{Name: "grpc", ContainerPort: providerGRPCPort, Protocol: corev1.ProtocolTCP},
-							},
-							// SR-011: restricted security context.
-							SecurityContext: &corev1.SecurityContext{
-								AllowPrivilegeEscalation: boolPtr(false),
-								ReadOnlyRootFilesystem:   boolPtr(true),
-								RunAsNonRoot:             boolPtr(true),
-								Capabilities: &corev1.Capabilities{
-									Drop: []corev1.Capability{"ALL"},
-								},
-							},
-						},
-					},
+					// AS-028: provider pods do not need API server access.
+					AutomountServiceAccountToken: boolPtr(false),
+					// AS-053: explicitly forbid host namespace sharing.
+					HostNetwork: false,
+					HostPID:     false,
+					HostIPC:     false,
+					Containers:  []corev1.Container{container},
+					Volumes:     volumes,
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: boolPtr(true),
 						SeccompProfile: &corev1.SeccompProfile{
@@ -251,8 +306,23 @@ func (r *PlatformProviderReconciler) reconcileHealth(ctx context.Context, pp *v1
 	ready := dep.Status.ReadyReplicas > 0
 	if ready {
 		if pp.Status.Phase == "Healthy" {
+			if err := r.healthCheckRegisteredProvider(ctx, pp); err != nil {
+				return r.setUnhealthy(ctx, pp, fmt.Sprintf("provider health check failed: %v", err))
+			}
 			// Already healthy — nothing to update.
 			return ctrl.Result{RequeueAfter: requeueAfter * 1e9}, nil
+		}
+		if r.Registry != nil {
+			providerPlugin, err := r.connectProvider(ctx, pp)
+			if err != nil {
+				return r.setUnhealthy(ctx, pp, fmt.Sprintf("provider handshake failed: %v", err))
+			}
+			if !r.Registry.Supports(providerPlugin.Name()) {
+				if err := r.Registry.Register(providerPlugin); err != nil {
+					return r.setUnhealthy(ctx, pp, fmt.Sprintf("provider registry update failed: %v", err))
+				}
+			}
+			pp.Status.Capabilities = capabilitiesFromPlugin(providerPlugin)
 		}
 		log.Info("provider deployment is ready — marking Healthy")
 		pp.Status.Phase = "Healthy"
@@ -282,6 +352,9 @@ func (r *PlatformProviderReconciler) reconcileHealth(ctx context.Context, pp *v1
 
 func (r *PlatformProviderReconciler) reconcileDelete(ctx context.Context, pp *v1alpha1.PlatformProvider, log *slog.Logger) (ctrl.Result, error) {
 	log.Info("reconciling deletion of platform provider")
+	if r.Registry != nil && pp.Status.Capabilities != nil {
+		r.Registry.Deregister(pp.Status.Capabilities.ProviderName)
+	}
 	// Owned Deployment and Service are garbage-collected via ownerReferences.
 	controllerutil.RemoveFinalizer(pp, providerFinalizerName)
 	if err := r.Update(ctx, pp); err != nil {
@@ -311,6 +384,229 @@ func providerDeploymentName(pp *v1alpha1.PlatformProvider) string {
 
 func providerServiceName(pp *v1alpha1.PlatformProvider) string {
 	return fmt.Sprintf("provider-%s", pp.Name)
+}
+
+func (r *PlatformProviderReconciler) connectProvider(ctx context.Context, pp *v1alpha1.PlatformProvider) (platform.Plugin, error) {
+	address := fmt.Sprintf("%s.%s.svc:%d", providerServiceName(pp), pp.Namespace, providerGRPCPort)
+	if r.ConnectProvider != nil {
+		return r.ConnectProvider(ctx, address)
+	}
+
+	tlsConfig, err := r.providerTLSConfig(ctx, pp)
+	if err != nil {
+		return nil, err
+	}
+	adapter := plugingrpc.NewAdapterWithTLS(address, tlsConfig)
+	if err := adapter.Connect(ctx); err != nil {
+		return nil, err
+	}
+	return adapter, nil
+}
+
+func (r *PlatformProviderReconciler) providerTLSConfig(ctx context.Context, pp *v1alpha1.PlatformProvider) (*plugingrpc.ProviderTLSConfig, error) {
+	if pp.Spec.Transport == nil || pp.Spec.Transport.TLS == nil ||
+		pp.Spec.Transport.TLS.Mode == "" || pp.Spec.Transport.TLS.Mode == "Disabled" {
+		return nil, nil
+	}
+	tlsSpec := pp.Spec.Transport.TLS
+	if tlsSpec.Mode != "Mutual" {
+		return nil, fmt.Errorf("unsupported provider transport tls mode %q", tlsSpec.Mode)
+	}
+	if tlsSpec.CASecretRef == nil {
+		return nil, fmt.Errorf("provider mTLS requires spec.transport.tls.caSecretRef")
+	}
+	if tlsSpec.ClientCertificateSecretRef == nil {
+		return nil, fmt.Errorf("provider mTLS requires spec.transport.tls.clientCertificateSecretRef")
+	}
+	ca, err := r.secretData(ctx, tlsSpec.CASecretRef, providerTLSCAKey(tlsSpec.CASecretRef))
+	if err != nil {
+		return nil, fmt.Errorf("load provider mTLS CA bundle: %w", err)
+	}
+	cert, err := r.secretData(ctx, tlsSpec.ClientCertificateSecretRef, providerTLSCertKey(tlsSpec.ClientCertificateSecretRef))
+	if err != nil {
+		return nil, fmt.Errorf("load provider mTLS client certificate: %w", err)
+	}
+	key, err := r.secretData(ctx, tlsSpec.ClientCertificateSecretRef, providerTLSKeyKey(tlsSpec.ClientCertificateSecretRef))
+	if err != nil {
+		return nil, fmt.Errorf("load provider mTLS client key: %w", err)
+	}
+	serverName := tlsSpec.ServerName
+	if serverName == "" {
+		serverName = fmt.Sprintf("%s.%s.svc", providerServiceName(pp), pp.Namespace)
+	}
+	return &plugingrpc.ProviderTLSConfig{
+		ServerName: serverName,
+		CABundle:   ca,
+		ClientCert: cert,
+		ClientKey:  key,
+	}, nil
+}
+
+func (r *PlatformProviderReconciler) secretData(ctx context.Context, ref *v1alpha1.ProviderTLSSecretRef, key string) ([]byte, error) {
+	if ref == nil {
+		return nil, fmt.Errorf("secret reference is required")
+	}
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ref.Namespace}, secret); err != nil {
+		return nil, err
+	}
+	value := secret.Data[key]
+	if len(value) == 0 {
+		return nil, fmt.Errorf("secret %s/%s key %q is empty or missing", ref.Namespace, ref.Name, key)
+	}
+	return value, nil
+}
+
+func providerTLSCAKey(ref *v1alpha1.ProviderTLSSecretRef) string {
+	if ref.CAKey != "" {
+		return ref.CAKey
+	}
+	return "ca.crt"
+}
+
+func providerTLSCertKey(ref *v1alpha1.ProviderTLSSecretRef) string {
+	if ref.CertKey != "" {
+		return ref.CertKey
+	}
+	return "tls.crt"
+}
+
+func providerTLSKeyKey(ref *v1alpha1.ProviderTLSSecretRef) string {
+	if ref.KeyKey != "" {
+		return ref.KeyKey
+	}
+	return "tls.key"
+}
+
+func (r *PlatformProviderReconciler) healthCheckRegisteredProvider(ctx context.Context, pp *v1alpha1.PlatformProvider) error {
+	if r.Registry == nil || pp.Status.Capabilities == nil || pp.Status.Capabilities.ProviderName == "" {
+		return nil
+	}
+
+	providerPlugin, err := r.Registry.Get(pp.Status.Capabilities.ProviderName)
+	if err != nil {
+		providerPlugin, err = r.connectProvider(ctx, pp)
+		if err != nil {
+			return err
+		}
+		if !r.Registry.Supports(providerPlugin.Name()) {
+			if err := r.Registry.Register(providerPlugin); err != nil {
+				return err
+			}
+		}
+	}
+	return providerPlugin.HealthCheck(ctx)
+}
+
+func capabilitiesFromPlugin(p platform.Plugin) *v1alpha1.ProviderCapabilities {
+	formats := p.SupportedFormats()
+	formatStrings := make([]string, 0, len(formats))
+	for _, format := range formats {
+		formatStrings = append(formatStrings, string(format))
+	}
+
+	families := p.SupportedOS()
+	familyStrings := make([]string, 0, len(families))
+	for _, family := range families {
+		familyStrings = append(familyStrings, string(family))
+	}
+
+	return &v1alpha1.ProviderCapabilities{
+		ProviderName:    p.Name(),
+		ProviderVersion: p.Version(),
+		Formats:         formatStrings,
+		OSFamilies:      familyStrings,
+		BuildModes:      buildModesFromPlugin(p),
+		ProtocolVersion: platform.ProtocolVersionV1,
+	}
+}
+
+func buildModesFromPlugin(p platform.Plugin) []string {
+	modes := []string{v1alpha1.BuildModeLocal}
+	if remote, ok := p.(platform.RemoteBuildPlugin); ok {
+		seen := map[string]bool{v1alpha1.BuildModeLocal: true}
+		for _, mode := range remote.SupportedBuildModes() {
+			if mode == "" || seen[mode] {
+				continue
+			}
+			seen[mode] = true
+			modes = append(modes, mode)
+		}
+	}
+	return modes
+}
+
+func validateProviderPackagePolicy(pp *v1alpha1.PlatformProvider) error {
+	if pp.Spec.Package == "" {
+		return fmt.Errorf("spec.package is required")
+	}
+	security := pp.Spec.Security
+	if security == nil {
+		return nil
+	}
+	if security.RequireDigest || security.VerifySignature {
+		if !strings.Contains(pp.Spec.Package, "@sha256:") {
+			return fmt.Errorf("spec.package must be pinned by digest when requireDigest or verifySignature is enabled")
+		}
+	}
+	if len(security.AllowedRegistries) > 0 {
+		allowed := false
+		for _, prefix := range security.AllowedRegistries {
+			prefix = strings.TrimSuffix(prefix, "/")
+			if pp.Spec.Package == prefix || strings.HasPrefix(pp.Spec.Package, prefix+"/") {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return fmt.Errorf("spec.package registry is not in spec.security.allowedRegistries")
+		}
+	}
+	return nil
+}
+
+func validateProviderTransportPolicy(pp *v1alpha1.PlatformProvider) error {
+	tlsSpec := providerMutualTLS(pp)
+	if tlsSpec == nil {
+		if pp.Spec.Transport != nil && pp.Spec.Transport.TLS != nil &&
+			pp.Spec.Transport.TLS.Mode != "" && pp.Spec.Transport.TLS.Mode != "Disabled" {
+			return fmt.Errorf("spec.transport.tls.mode must be Disabled or Mutual")
+		}
+		return nil
+	}
+	if tlsSpec.CASecretRef == nil {
+		return fmt.Errorf("spec.transport.tls.caSecretRef is required when mode=Mutual")
+	}
+	if tlsSpec.ClientCertificateSecretRef == nil {
+		return fmt.Errorf("spec.transport.tls.clientCertificateSecretRef is required when mode=Mutual")
+	}
+	if tlsSpec.ServerCertificateSecretRef == nil {
+		return fmt.Errorf("spec.transport.tls.serverCertificateSecretRef is required when mode=Mutual")
+	}
+	for field, ref := range map[string]*v1alpha1.ProviderTLSSecretRef{
+		"caSecretRef":                tlsSpec.CASecretRef,
+		"clientCertificateSecretRef": tlsSpec.ClientCertificateSecretRef,
+		"serverCertificateSecretRef": tlsSpec.ServerCertificateSecretRef,
+	} {
+		if ref.Name == "" {
+			return fmt.Errorf("spec.transport.tls.%s.name is required", field)
+		}
+		if ref.Namespace == "" {
+			return fmt.Errorf("spec.transport.tls.%s.namespace is required", field)
+		}
+	}
+	return nil
+}
+
+func providerMutualTLS(pp *v1alpha1.PlatformProvider) *v1alpha1.ProviderTransportTLSSpec {
+	if pp.Spec.Transport == nil || pp.Spec.Transport.TLS == nil {
+		return nil
+	}
+	tlsSpec := pp.Spec.Transport.TLS
+	if tlsSpec.Mode != "Mutual" {
+		return nil
+	}
+	return tlsSpec
 }
 
 func setCondition(pp *v1alpha1.PlatformProvider, condType string, status metav1.ConditionStatus, reason, msg string) {

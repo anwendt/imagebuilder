@@ -3,19 +3,22 @@
 // Assembles the Kubernetes Job that runs the VM image build.
 //
 // Job structure:
-//   Init containers  — one per init-container provisioner (ansible, chef, …)
+//   Init containers  — one per external init-container provisioner, when enabled
 //   Main container   — QEMU build engine + in-process provisioners + upload
 //
 // Filesystem contract (ADR-003):
 //   /workspace/config.json  — operator writes ProvisionerInput before each init-container
 //   /workspace/status.json  — init-container writes ProvisionerOutput before exit
 //
-// The workspace volume is a shared emptyDir mounted into every container.
+// The workspace volume is either a per-build emptyDir or an artifact PVC,
+// depending on spec.build.artifactStorage.
 
 package buildpod
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -29,8 +32,18 @@ import (
 )
 
 const (
-	workspaceMount = "/workspace"
-	workspaceVol   = "workspace"
+	workspaceMount      = "/workspace"
+	workspaceVol        = "workspace"
+	cacheMount          = "/cache"
+	cacheVol            = "build-cache"
+	guestCredsMount     = "/credentials/guest"
+	guestCredsVol       = "guest-credentials"
+	generatedCredsMount = "/credentials/generated"
+	generatedCredsVol   = "generated-credentials"
+	tmpMount            = "/tmp"
+	tmpVol              = "tmp"
+	kvmMount            = "/dev/kvm"
+	kvmVol              = "dev-kvm"
 
 	// defaultBuilderImage is used when no custom image is specified in BuildSpec.
 	// Override via BUILDER_IMAGE env var in the operator deployment.
@@ -41,21 +54,20 @@ const (
 // This mirrors the kubebuilder enum in ProvisionerSpec.Type (REQ-001, ADR-003).
 // Kept here as a static map so the assembler does not depend on runtime plugin
 // registration — the set of types is fixed at compile time by the CRD schema.
-var initContainerTypes = map[string]bool{
-	"ansible":   true,
-	"chef":      true,
-	"puppet":    true,
-	"saltstack": true,
-	"custom":    true,
-}
+var initContainerTypes = map[string]bool{}
 
 // inProcessTypes lists provisioner types that run inside the main build container.
 var inProcessTypes = map[string]bool{
-	"cloud-init":  true,
-	"shell":       true,
-	"file":        true,
-	"powershell":  true,
-	"sysprep":     true,
+	"ansible":    true,
+	"chef":       true,
+	"cloud-init": true,
+	"custom":     true,
+	"shell":      true,
+	"file":       true,
+	"powershell": true,
+	"puppet":     true,
+	"saltstack":  true,
+	"sysprep":    true,
 }
 
 // Assemble builds the Kubernetes Job spec for a VMImage build.
@@ -91,6 +103,14 @@ func Assemble(img *v1alpha1.VMImage, scheme *runtime.Scheme) (*batchv1.Job, erro
 					Containers:     []corev1.Container{mainContainer},
 					Volumes:        volumes,
 					NodeSelector:   img.Spec.Build.NodeSelector,
+					NodeName:       img.Status.ScheduledNodeName,
+					// AS-028: do not mount a service account token — the build pod
+					// has no API server access; mounting a token is a needless attack surface.
+					AutomountServiceAccountToken: boolPtr(false),
+					// AS-053: explicitly forbid host namespace sharing.
+					HostNetwork: false,
+					HostPID:     false,
+					HostIPC:     false,
 					// SR-011: drop all capabilities, non-root UID, read-only root fs where possible.
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: boolPtr(true),
@@ -183,26 +203,95 @@ func buildMainContainer(img *v1alpha1.VMImage) corev1.Container {
 		}
 	}
 
+	// Encode boot_command as a JSON array so the build engine can parse it
+	// without needing to understand any quoting or escaping conventions.
+	// Empty slice → empty JSON array "[]"; nil slice → omitted env var.
+	bootCmdEnv := bootCommandEnv(img.Spec.Source.BootCommand)
+	provisionersEnv := provisionersEnv(inProcessProvisioners(img.Spec.Provisioners))
+
+	env := []corev1.EnvVar{
+		{Name: "BUILD_ID", Value: buildID(img)},
+		{Name: "VMIMAGE_NAME", Value: img.Name},
+		{Name: "VMIMAGE_NAMESPACE", Value: img.Namespace},
+		{Name: "OS_FAMILY", Value: img.Spec.OS.Family},
+		{Name: "OS_DISTRIBUTION", Value: img.Spec.OS.Distribution},
+		{Name: "OS_VERSION", Value: img.Spec.OS.Version},
+		{Name: "OS_ARCH", Value: img.Spec.OS.Arch},
+		{Name: "SOURCE_TYPE", Value: img.Spec.Source.Type},
+		{Name: "SOURCE_URL", Value: img.Spec.Source.URL},
+		{Name: "SOURCE_CHECKSUM", Value: img.Spec.Source.Checksum},
+		{Name: "WORKSPACE_DIR", Value: workspaceMount},
+	}
+	if len(img.Spec.Targets) > 0 {
+		env = append(env,
+			corev1.EnvVar{Name: "TARGET_PROVIDER_CONFIG", Value: img.Spec.Targets[0].ProviderConfigRef.Name},
+			corev1.EnvVar{Name: "TARGET_FORMAT", Value: img.Spec.Targets[0].Format},
+		)
+	}
+	if bootCmdEnv != nil {
+		env = append(env, *bootCmdEnv)
+	}
+	if provisionersEnv != nil {
+		env = append(env, *provisionersEnv)
+	}
+	env = append(env, guestAccessEnv(img.Spec.Build.GuestAccess)...)
+
+	volumeMounts := []corev1.VolumeMount{
+		{Name: workspaceVol, MountPath: workspaceMount},
+		{Name: tmpVol, MountPath: tmpMount},
+	}
+	if hasGuestCredentials(img) {
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      guestCredsVol,
+			MountPath: guestCredsMount,
+			ReadOnly:  true,
+		})
+	}
+	if generatesGuestCredentials(img) {
+		env = append(env, corev1.EnvVar{Name: "GUEST_CREDENTIALS_DIR", Value: generatedCredsMount})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      generatedCredsVol,
+			MountPath: generatedCredsMount,
+		})
+	}
+	if hasCacheRef(img) {
+		env = append(env, corev1.EnvVar{Name: "CACHE_DIR", Value: cacheMount})
+		if img.Spec.Build.Cache != nil {
+			if img.Spec.Build.Cache.TTL != nil {
+				env = append(env, corev1.EnvVar{Name: "CACHE_TTL", Value: img.Spec.Build.Cache.TTL.Duration.String()})
+			}
+			if img.Spec.Build.Cache.RetainPolicy != "" {
+				env = append(env, corev1.EnvVar{Name: "CACHE_RETAIN_POLICY", Value: img.Spec.Build.Cache.RetainPolicy})
+			}
+		}
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{Name: cacheVol, MountPath: cacheMount})
+	}
+	if kvmEnabled(img) {
+		env = append(env, corev1.EnvVar{Name: "QEMU_ENABLE_KVM", Value: "true"})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      kvmVol,
+			MountPath: kvmMount,
+		})
+	}
+
 	return corev1.Container{
-		Name:  "build",
-		Image: builderImage,
-		Env: []corev1.EnvVar{
-			{Name: "VMIMAGE_NAME", Value: img.Name},
-			{Name: "VMIMAGE_NAMESPACE", Value: img.Namespace},
-			{Name: "OS_FAMILY", Value: img.Spec.OS.Family},
-			{Name: "OS_DISTRIBUTION", Value: img.Spec.OS.Distribution},
-			{Name: "OS_VERSION", Value: img.Spec.OS.Version},
-			{Name: "OS_ARCH", Value: img.Spec.OS.Arch},
-			{Name: "SOURCE_TYPE", Value: img.Spec.Source.Type},
-			{Name: "SOURCE_URL", Value: img.Spec.Source.URL},
-			{Name: "SOURCE_CHECKSUM", Value: img.Spec.Source.Checksum},
-		},
-		Resources: res,
-		VolumeMounts: []corev1.VolumeMount{
-			{Name: workspaceVol, MountPath: workspaceMount},
-		},
+		Name:            "build",
+		Image:           builderImage,
+		Env:             env,
+		Resources:       res,
+		VolumeMounts:    volumeMounts,
 		SecurityContext: restrictedSecCtx(),
 	}
+}
+
+func buildID(img *v1alpha1.VMImage) string {
+	if img.UID != "" {
+		return string(img.UID)
+	}
+	if img.Namespace != "" {
+		return img.Namespace + "/" + img.Name
+	}
+	return img.Name
 }
 
 // ---------------------------------------------------------------------------
@@ -211,8 +300,9 @@ func buildMainContainer(img *v1alpha1.VMImage) corev1.Container {
 
 func buildVolumes(img *v1alpha1.VMImage) []corev1.Volume {
 	volumes := []corev1.Volume{
+		workspaceVolume(img),
 		{
-			Name: workspaceVol,
+			Name: tmpVol,
 			VolumeSource: corev1.VolumeSource{
 				EmptyDir: &corev1.EmptyDirVolumeSource{},
 			},
@@ -220,18 +310,117 @@ func buildVolumes(img *v1alpha1.VMImage) []corev1.Volume {
 	}
 
 	// Optional build cache PVC (FR-003, NFR-024).
-	if img.Spec.Build.CacheRef != nil && *img.Spec.Build.CacheRef != "" {
+	if hasCacheRef(img) {
 		volumes = append(volumes, corev1.Volume{
-			Name: "build-cache",
+			Name: cacheVol,
 			VolumeSource: corev1.VolumeSource{
 				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-					ClaimName: *img.Spec.Build.CacheRef,
+					ClaimName: cacheRef(img),
+				},
+			},
+		})
+	}
+	if hasGuestCredentials(img) {
+		volumes = append(volumes, guestCredentialsVolume(img))
+	}
+	if generatesGuestCredentials(img) {
+		volumes = append(volumes, corev1.Volume{
+			Name: generatedCredsVol,
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{
+					Medium: corev1.StorageMediumMemory,
+				},
+			},
+		})
+	}
+	if kvmEnabled(img) {
+		deviceType := corev1.HostPathCharDev
+		volumes = append(volumes, corev1.Volume{
+			Name: kvmVol,
+			VolumeSource: corev1.VolumeSource{
+				HostPath: &corev1.HostPathVolumeSource{
+					Path: kvmMount,
+					Type: &deviceType,
 				},
 			},
 		})
 	}
 
 	return volumes
+}
+
+func guestCredentialsVolume(img *v1alpha1.VMImage) corev1.Volume {
+	ref := img.Spec.Build.GuestAccess.Credentials.SecretRef
+	defaultMode := int32(0o400)
+	items := []corev1.KeyToPath{}
+	if key := sshPrivateKeyKey(img); key != "" {
+		items = append(items, corev1.KeyToPath{Key: key, Path: "id_ed25519"})
+	}
+	if key := passwordKey(img); key != "" {
+		items = append(items, corev1.KeyToPath{Key: key, Path: "password"})
+	}
+	return corev1.Volume{
+		Name: guestCredsVol,
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName:  ref.Name,
+				Items:       items,
+				DefaultMode: &defaultMode,
+			},
+		},
+	}
+}
+
+func workspaceVolume(img *v1alpha1.VMImage) corev1.Volume {
+	if usesArtifactPVC(img) {
+		return corev1.Volume{
+			Name: workspaceVol,
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: WorkspaceClaimName(img),
+				},
+			},
+		}
+	}
+	return corev1.Volume{
+		Name: workspaceVol,
+		VolumeSource: corev1.VolumeSource{
+			EmptyDir: &corev1.EmptyDirVolumeSource{},
+		},
+	}
+}
+
+// WorkspaceClaimName returns the PVC claim mounted as /workspace for a VMImage.
+func WorkspaceClaimName(img *v1alpha1.VMImage) string {
+	if img.Spec.Build.ArtifactStorage != nil &&
+		img.Spec.Build.ArtifactStorage.PVC != nil &&
+		img.Spec.Build.ArtifactStorage.PVC.ClaimName != "" {
+		return img.Spec.Build.ArtifactStorage.PVC.ClaimName
+	}
+	return fmt.Sprintf("%s-workspace", img.Name)
+}
+
+func usesArtifactPVC(img *v1alpha1.VMImage) bool {
+	return img.Spec.Build.ArtifactStorage != nil &&
+		img.Spec.Build.ArtifactStorage.Type == "pvc"
+}
+
+func hasCacheRef(img *v1alpha1.VMImage) bool {
+	return cacheRef(img) != ""
+}
+
+func cacheRef(img *v1alpha1.VMImage) string {
+	if img.Spec.Build.Cache != nil && img.Spec.Build.Cache.Ref != "" {
+		return img.Spec.Build.Cache.Ref
+	}
+	if img.Spec.Build.CacheRef != nil {
+		return *img.Spec.Build.CacheRef
+	}
+	return ""
+}
+
+func kvmEnabled(img *v1alpha1.VMImage) bool {
+	return img.Spec.Build.Security != nil && img.Spec.Build.Security.EnableKVM
 }
 
 // ---------------------------------------------------------------------------
@@ -246,6 +435,7 @@ func jobLabels(img *v1alpha1.VMImage) map[string]string {
 	return map[string]string{
 		"app.kubernetes.io/managed-by": "imagebuilder",
 		"imagebuilder.io/vmimage":      img.Name,
+		"imagebuilder.io/job-kind":     "build",
 	}
 }
 
@@ -259,6 +449,10 @@ func isInitContainer(provisionerType string) bool {
 	// Unknown type: fall back to the runtime provisioner registry.
 	// If not registered as in-process there either, treat as init-container.
 	return provisioner.IsInitContainer(provisionerType)
+}
+
+func isInProcess(provisionerType string) bool {
+	return !isInitContainer(provisionerType)
 }
 
 func defaultImageForProvisioner(provisionerType string) string {
@@ -293,6 +487,7 @@ func restrictedSecCtx() *corev1.SecurityContext {
 		AllowPrivilegeEscalation: boolPtr(false),
 		ReadOnlyRootFilesystem:   boolPtr(true),
 		RunAsNonRoot:             boolPtr(true),
+		Privileged:               boolPtr(false),
 		Capabilities: &corev1.Capabilities{
 			Drop: []corev1.Capability{"ALL"},
 		},
@@ -300,3 +495,154 @@ func restrictedSecCtx() *corev1.SecurityContext {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// bootCommandEnv encodes the boot command slice as a JSON array and returns
+// the corresponding EnvVar. Returns nil when the slice is empty (no env var
+// added — the build engine treats an absent BOOT_COMMAND as "no boot commands").
+//
+// Uses SetEscapeHTML(false) so that Packer-style tokens like <enter>, <tab>
+// are preserved literally instead of being escaped to \u003center\u003e.
+func bootCommandEnv(cmds []string) *corev1.EnvVar {
+	if len(cmds) == 0 {
+		return nil
+	}
+	var buf strings.Builder
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(cmds); err != nil {
+		// Encoding []string never errors; guard defensively.
+		return nil
+	}
+	// json.Encoder appends a trailing newline; strip it.
+	value := strings.TrimRight(buf.String(), "\n")
+	return &corev1.EnvVar{
+		Name:  "BOOT_COMMAND",
+		Value: value,
+	}
+}
+
+func provisionersEnv(provisioners []v1alpha1.ProvisionerSpec) *corev1.EnvVar {
+	if len(provisioners) == 0 {
+		return nil
+	}
+	data, err := marshalJSONEnv(provisioners)
+	if err != nil {
+		return nil
+	}
+	return &corev1.EnvVar{Name: "PROVISIONERS", Value: data}
+}
+
+func inProcessProvisioners(provisioners []v1alpha1.ProvisionerSpec) []v1alpha1.ProvisionerSpec {
+	var filtered []v1alpha1.ProvisionerSpec
+	for _, p := range provisioners {
+		if isInProcess(p.Type) {
+			filtered = append(filtered, p)
+		}
+	}
+	return filtered
+}
+
+func guestAccessEnv(access *v1alpha1.GuestAccessSpec) []corev1.EnvVar {
+	if access == nil {
+		return nil
+	}
+	env := []corev1.EnvVar{
+		{Name: "GUEST_ACCESS_PROTOCOL", Value: access.Protocol},
+		{Name: "GUEST_ACCESS_HOST", Value: access.Host},
+		{Name: "GUEST_ACCESS_HOST_PORT", Value: fmt.Sprintf("%d", access.HostPort)},
+		{Name: "GUEST_ACCESS_GUEST_PORT", Value: fmt.Sprintf("%d", access.GuestPort)},
+		{Name: "GUEST_ACCESS_USER", Value: access.User},
+		{Name: "GUEST_ACCESS_SSH_KEY_PATH", Value: guestSSHKeyPath(access)},
+		{Name: "GUEST_ACCESS_PASSWORD_PATH", Value: guestPasswordPath(access)},
+	}
+	if access.Timeout != nil {
+		env = append(env, corev1.EnvVar{Name: "GUEST_ACCESS_TIMEOUT", Value: access.Timeout.Duration.String()})
+	}
+	if access.WinRM != nil {
+		if access.WinRM.HTTPS != nil {
+			env = append(env, corev1.EnvVar{Name: "GUEST_ACCESS_WINRM_HTTPS", Value: fmt.Sprintf("%t", *access.WinRM.HTTPS)})
+		}
+		env = append(env, corev1.EnvVar{Name: "GUEST_ACCESS_WINRM_INSECURE_SKIP_VERIFY", Value: fmt.Sprintf("%t", access.WinRM.InsecureSkipVerify)})
+	}
+	if access.Credentials != nil && access.Credentials.Generate != nil {
+		env = append(env,
+			corev1.EnvVar{Name: "GUEST_CREDENTIALS_GENERATE_SSH_KEY", Value: fmt.Sprintf("%t", access.Credentials.Generate.SSHKey)},
+			corev1.EnvVar{Name: "GUEST_CREDENTIALS_GENERATE_PASSWORD", Value: fmt.Sprintf("%t", access.Credentials.Generate.Password)},
+		)
+		if access.Credentials.Generate.PasswordLength != 0 {
+			env = append(env, corev1.EnvVar{
+				Name:  "GUEST_CREDENTIALS_GENERATE_PASSWORD_LENGTH",
+				Value: fmt.Sprintf("%d", access.Credentials.Generate.PasswordLength),
+			})
+		}
+	}
+	if access.Credentials != nil && access.Credentials.Injection != nil && access.Credentials.Injection.Method != "" {
+		env = append(env, corev1.EnvVar{Name: "GUEST_CREDENTIALS_INJECTION_METHOD", Value: access.Credentials.Injection.Method})
+	}
+	return env
+}
+
+func hasGuestCredentials(img *v1alpha1.VMImage) bool {
+	return img.Spec.Build.GuestAccess != nil &&
+		img.Spec.Build.GuestAccess.Credentials != nil &&
+		img.Spec.Build.GuestAccess.Credentials.SecretRef != nil &&
+		img.Spec.Build.GuestAccess.Credentials.SecretRef.Name != ""
+}
+
+func generatesGuestCredentials(img *v1alpha1.VMImage) bool {
+	return img.Spec.Build.GuestAccess != nil &&
+		img.Spec.Build.GuestAccess.Credentials != nil &&
+		img.Spec.Build.GuestAccess.Credentials.Generate != nil
+}
+
+func sshPrivateKeyKey(img *v1alpha1.VMImage) string {
+	if !hasGuestCredentials(img) {
+		return ""
+	}
+	key := img.Spec.Build.GuestAccess.Credentials.SecretRef.SSHPrivateKeyKey
+	if key == "" {
+		key = "id_ed25519"
+	}
+	return key
+}
+
+func passwordKey(img *v1alpha1.VMImage) string {
+	if !hasGuestCredentials(img) {
+		return ""
+	}
+	key := img.Spec.Build.GuestAccess.Credentials.SecretRef.PasswordKey
+	if key == "" {
+		key = "password"
+	}
+	return key
+}
+
+func guestSSHKeyPath(access *v1alpha1.GuestAccessSpec) string {
+	if access.SSHKeyPath != "" {
+		return access.SSHKeyPath
+	}
+	if access.Credentials != nil && access.Credentials.SecretRef != nil && access.Credentials.SecretRef.Name != "" {
+		return guestCredsMount + "/id_ed25519"
+	}
+	return ""
+}
+
+func guestPasswordPath(access *v1alpha1.GuestAccessSpec) string {
+	if access.PasswordPath != "" {
+		return access.PasswordPath
+	}
+	if access.Credentials != nil && access.Credentials.SecretRef != nil && access.Credentials.SecretRef.Name != "" {
+		return guestCredsMount + "/password"
+	}
+	return ""
+}
+
+func marshalJSONEnv(value any) (string, error) {
+	var buf strings.Builder
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(value); err != nil {
+		return "", err
+	}
+	return strings.TrimRight(buf.String(), "\n"), nil
+}

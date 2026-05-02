@@ -1,0 +1,27 @@
+{{- if and .Values.webhook.enabled .Values.webhook.certManager.enabled }}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ .Values.webhook.certManager.issuerName }}
+  namespace: {{ include "imagebuilder.namespace" . }}
+  labels:
+    {{- include "imagebuilder.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ .Values.webhook.certManager.certificateName }}
+  namespace: {{ include "imagebuilder.namespace" . }}
+  labels:
+    {{- include "imagebuilder.labels" . | nindent 4 }}
+spec:
+  secretName: {{ .Values.webhook.certManager.secretName }}
+  dnsNames:
+    - {{ .Values.webhook.serviceName }}.{{ include "imagebuilder.namespace" . }}.svc
+    - {{ .Values.webhook.serviceName }}.{{ include "imagebuilder.namespace" . }}.svc.cluster.local
+  issuerRef:
+    name: {{ .Values.webhook.certManager.issuerName }}
+    kind: Issuer
+{{- end }}

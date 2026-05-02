@@ -1,0 +1,17 @@
+apiVersion: v2
+name: imagebuilder
+description: Kubernetes-native VM Image Builder operator
+type: application
+version: 0.1.0
+appVersion: "dev"
+home: https://github.com/anwendt/imagebuilder
+sources:
+  - https://github.com/anwendt/imagebuilder
+keywords:
+  - imagebuilder
+  - vm
+  - operator
+  - qemu
+  - packer-alternative
+maintainers:
+  - name: Platform Engineering

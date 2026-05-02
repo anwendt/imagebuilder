@@ -15,6 +15,10 @@ import (
 	"log/slog"
 	"os"
 
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
+	coordinationv1 "k8s.io/api/coordination/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -22,9 +26,10 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	imagebuilderv1alpha1 "github.com/anwendt/imagebuilder/api/v1alpha1"
-	"github.com/anwendt/imagebuilder/pkg/plugin"
-	vmimagecontroller "github.com/anwendt/imagebuilder/pkg/controller/vmimage"
 	providercontroller "github.com/anwendt/imagebuilder/pkg/controller/provider"
+	vmimagecontroller "github.com/anwendt/imagebuilder/pkg/controller/vmimage"
+	"github.com/anwendt/imagebuilder/pkg/observability"
+	"github.com/anwendt/imagebuilder/pkg/plugin"
 
 	// Built-in platform plugins — each registers itself via init().
 	// Comment out any plugin to exclude it from the binary.
@@ -42,21 +47,29 @@ var (
 
 func init() {
 	_ = imagebuilderv1alpha1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = batchv1.AddToScheme(scheme)
+	_ = coordinationv1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
 }
 
 func main() {
 	var (
-		metricsAddr         string
-		probeAddr           string
-		leaderElect         bool
-		maxConcurrentBuilds int
-		logLevel            string
+		metricsAddr                string
+		probeAddr                  string
+		leaderElect                bool
+		maxConcurrentBuilds        int
+		maxConcurrentBuildsPerNode int
+		schedulerNamespace         string
+		logLevel                   string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "Metrics endpoint address")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Health probe endpoint address")
 	flag.BoolVar(&leaderElect, "leader-elect", false, "Enable leader election for HA deployments")
 	flag.IntVar(&maxConcurrentBuilds, "max-concurrent-builds", 3, "Maximum parallel build jobs")
+	flag.IntVar(&maxConcurrentBuildsPerNode, "max-concurrent-builds-per-node", 1, "Maximum parallel build jobs per node selector")
+	flag.StringVar(&schedulerNamespace, "scheduler-namespace", os.Getenv("POD_NAMESPACE"), "Namespace used for build slot Leases; defaults to each VMImage namespace when empty")
 	// OR-012: log level must be configurable at runtime without redeployment.
 	flag.StringVar(&logLevel, "log-level", "info", "Log level: debug, info, warn, error")
 	flag.Parse()
@@ -70,6 +83,7 @@ func main() {
 
 	opts := zap.Options{Development: slogLevel == slog.LevelDebug}
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	observability.Register()
 
 	// Log registered plugins
 	registry := plugin.Default()
@@ -88,19 +102,32 @@ func main() {
 	}
 
 	if err = (&vmimagecontroller.VMImageReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Registry: registry,
+		Client:                     mgr.GetClient(),
+		Scheme:                     mgr.GetScheme(),
+		Registry:                   registry,
+		MaxConcurrentBuilds:        maxConcurrentBuilds,
+		MaxConcurrentBuildsPerNode: maxConcurrentBuildsPerNode,
+		SchedulerNamespace:         schedulerNamespace,
 	}).SetupWithManager(mgr); err != nil {
 		slog.Error("unable to create VMImage controller", slog.Any("error", err))
 		os.Exit(1)
 	}
 
 	if err = (&providercontroller.PlatformProviderReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Registry: registry,
 	}).SetupWithManager(mgr); err != nil {
 		slog.Error("unable to create PlatformProvider controller", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	if err = (&imagebuilderv1alpha1.VMImage{}).SetupWebhookWithManager(mgr); err != nil {
+		slog.Error("unable to create VMImage webhook", slog.Any("error", err))
+		os.Exit(1)
+	}
+	if err = (&imagebuilderv1alpha1.ProviderConfig{}).SetupWebhookWithManager(mgr); err != nil {
+		slog.Error("unable to create ProviderConfig webhook", slog.Any("error", err))
 		os.Exit(1)
 	}
 

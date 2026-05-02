@@ -1,0 +1,21 @@
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: imagebuilder-selfsigned-issuer
+  namespace: imagebuilder-system
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: imagebuilder-webhook-serving-cert
+  namespace: imagebuilder-system
+spec:
+  secretName: imagebuilder-webhook-server-cert
+  dnsNames:
+    - imagebuilder-webhook-service.imagebuilder-system.svc
+    - imagebuilder-webhook-service.imagebuilder-system.svc.cluster.local
+  issuerRef:
+    name: imagebuilder-selfsigned-issuer
+    kind: Issuer

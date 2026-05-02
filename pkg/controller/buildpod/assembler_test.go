@@ -20,7 +20,9 @@
 package buildpod_test
 
 import (
+	"encoding/json"
 	"testing"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -45,6 +47,22 @@ func newScheme(t *testing.T) *runtime.Scheme {
 		t.Fatalf("add batchv1 scheme: %v", err)
 	}
 	return s
+}
+
+func envMap(env []corev1.EnvVar) map[string]string {
+	out := make(map[string]string, len(env))
+	for _, e := range env {
+		out[e.Name] = e.Value
+	}
+	return out
+}
+
+func durationPtr(d time.Duration) *metav1.Duration {
+	return &metav1.Duration{Duration: d}
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }
 
 func baseImage() *v1alpha1.VMImage {
@@ -120,6 +138,9 @@ func TestAssemble_JobLabels(t *testing.T) {
 	if job.Labels["app.kubernetes.io/managed-by"] != "imagebuilder" {
 		t.Errorf("label app.kubernetes.io/managed-by missing or wrong")
 	}
+	if job.Labels["imagebuilder.io/job-kind"] != "build" {
+		t.Errorf("label imagebuilder.io/job-kind = %q, want build", job.Labels["imagebuilder.io/job-kind"])
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +193,23 @@ func TestAssemble_RestartPolicyNever(t *testing.T) {
 	}
 }
 
+func TestAssemble_UsesScheduledNodeName(t *testing.T) {
+	img := baseImage()
+	img.Spec.Build.NodeSelector = map[string]string{"imagebuilder.io/build-node": "true"}
+	img.Status.ScheduledNodeName = "node-a"
+
+	job, err := buildpod.Assemble(img, newScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble failed: %v", err)
+	}
+	if job.Spec.Template.Spec.NodeName != "node-a" {
+		t.Fatalf("nodeName = %q, want node-a", job.Spec.Template.Spec.NodeName)
+	}
+	if job.Spec.Template.Spec.NodeSelector["imagebuilder.io/build-node"] != "true" {
+		t.Fatalf("nodeSelector = %#v", job.Spec.Template.Spec.NodeSelector)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Main container
 // ---------------------------------------------------------------------------
@@ -201,14 +239,18 @@ func TestAssemble_MainContainerEnvVars(t *testing.T) {
 		envMap[e.Name] = e.Value
 	}
 	checks := map[string]string{
-		"OS_FAMILY":        "linux",
-		"OS_DISTRIBUTION":  "ubuntu",
-		"OS_VERSION":       "24.04",
-		"OS_ARCH":          "amd64",
-		"SOURCE_TYPE":      "cloud-image",
-		"SOURCE_URL":       "https://example.com/ubuntu-24.04.img",
-		"VMIMAGE_NAME":     "ubuntu-2404",
-		"VMIMAGE_NAMESPACE": "default",
+		"OS_FAMILY":              "linux",
+		"OS_DISTRIBUTION":        "ubuntu",
+		"OS_VERSION":             "24.04",
+		"OS_ARCH":                "amd64",
+		"SOURCE_TYPE":            "cloud-image",
+		"SOURCE_URL":             "https://example.com/ubuntu-24.04.img",
+		"SOURCE_CHECKSUM":        "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab",
+		"WORKSPACE_DIR":          "/workspace",
+		"TARGET_FORMAT":          "vmdk",
+		"TARGET_PROVIDER_CONFIG": "aws-prod",
+		"VMIMAGE_NAME":           "ubuntu-2404",
+		"VMIMAGE_NAMESPACE":      "default",
 	}
 	for k, want := range checks {
 		if got := envMap[k]; got != want {
@@ -238,10 +280,10 @@ func TestAssemble_NoInitContainers_InProcessProvisioners(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Init containers for init-container provisioners
+// Built-in provisioners stay in the builder container
 // ---------------------------------------------------------------------------
 
-func TestAssemble_InitContainers_AnsibleProvisioner(t *testing.T) {
+func TestAssemble_NoInitContainer_AnsibleProvisioner(t *testing.T) {
 	img := baseImage()
 	img.Spec.Provisioners = []v1alpha1.ProvisionerSpec{
 		{Type: "ansible", Image: "ghcr.io/anwendt/imagebuilder-provisioner-ansible:v1.0.0"},
@@ -250,43 +292,33 @@ func TestAssemble_InitContainers_AnsibleProvisioner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Assemble failed: %v", err)
 	}
-	if n := len(job.Spec.Template.Spec.InitContainers); n != 1 {
-		t.Fatalf("expected 1 init container, got %d", n)
-	}
-	ic := job.Spec.Template.Spec.InitContainers[0]
-	if ic.Image != "ghcr.io/anwendt/imagebuilder-provisioner-ansible:v1.0.0" {
-		t.Errorf("init container image = %q, unexpected", ic.Image)
+	if n := len(job.Spec.Template.Spec.InitContainers); n != 0 {
+		t.Fatalf("expected 0 init containers, got %d", n)
 	}
 }
 
 func TestAssemble_InitContainers_Order(t *testing.T) {
 	img := baseImage()
 	img.Spec.Provisioners = []v1alpha1.ProvisionerSpec{
-		{Type: "shell", Inline: "echo first"},          // in-process — no init container
-		{Type: "ansible", Image: "ansible:latest"},     // init-container step 0
-		{Type: "chef", Image: "chef:latest"},           // init-container step 1
+		{Type: "shell", Inline: "echo first"},
+		{Type: "ansible", Image: "ansible:latest"},
+		{Type: "chef", Image: "chef:latest"},
 	}
 	job, err := buildpod.Assemble(img, newScheme(t))
 	if err != nil {
 		t.Fatalf("Assemble failed: %v", err)
 	}
 	ics := job.Spec.Template.Spec.InitContainers
-	if len(ics) != 2 {
-		t.Fatalf("expected 2 init containers, got %d", len(ics))
-	}
-	if ics[0].Image != "ansible:latest" {
-		t.Errorf("first init container image = %q, want ansible:latest", ics[0].Image)
-	}
-	if ics[1].Image != "chef:latest" {
-		t.Errorf("second init container image = %q, want chef:latest", ics[1].Image)
+	if len(ics) != 0 {
+		t.Fatalf("expected 0 init containers, got %d", len(ics))
 	}
 }
 
 func TestAssemble_InitContainer_StepEnvVar(t *testing.T) {
 	img := baseImage()
 	img.Spec.Provisioners = []v1alpha1.ProvisionerSpec{
-		{Type: "ansible", Image: "ansible:latest"},
-		{Type: "puppet", Image: "puppet:latest"},
+		{Type: "external-one", Image: "external-one:latest"},
+		{Type: "external-two", Image: "external-two:latest"},
 	}
 	job, err := buildpod.Assemble(img, newScheme(t))
 	if err != nil {
@@ -309,7 +341,7 @@ func TestAssemble_InitContainer_StepEnvVar(t *testing.T) {
 func TestAssemble_InitContainer_MissingImage_ReturnsError(t *testing.T) {
 	img := baseImage()
 	img.Spec.Provisioners = []v1alpha1.ProvisionerSpec{
-		{Type: "custom"}, // custom has no built-in default image and no image specified
+		{Type: "external"},
 	}
 	_, err := buildpod.Assemble(img, newScheme(t))
 	if err == nil {
@@ -335,6 +367,56 @@ func TestAssemble_WorkspaceVolume(t *testing.T) {
 	if !found {
 		t.Error("workspace emptyDir volume not found in job spec")
 	}
+}
+
+func TestAssemble_WorkspaceVolume_UsesArtifactPVC(t *testing.T) {
+	img := baseImage()
+	img.Spec.Build.ArtifactStorage = &v1alpha1.ArtifactStorageSpec{
+		Type: "pvc",
+		PVC: &v1alpha1.ArtifactPVCSpec{
+			AccessMode: "ReadWriteOnce",
+		},
+	}
+	job, err := buildpod.Assemble(img, newScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble failed: %v", err)
+	}
+	for _, v := range job.Spec.Template.Spec.Volumes {
+		if v.Name == "workspace" {
+			if v.PersistentVolumeClaim == nil {
+				t.Fatalf("workspace volume should use PVC, got %#v", v.VolumeSource)
+			}
+			if v.PersistentVolumeClaim.ClaimName != "ubuntu-2404-workspace" {
+				t.Fatalf("claimName = %q, want ubuntu-2404-workspace", v.PersistentVolumeClaim.ClaimName)
+			}
+			return
+		}
+	}
+	t.Fatal("workspace volume not found")
+}
+
+func TestAssemble_WorkspaceVolume_UsesExistingArtifactPVC(t *testing.T) {
+	img := baseImage()
+	img.Spec.Build.ArtifactStorage = &v1alpha1.ArtifactStorageSpec{
+		Type: "pvc",
+		PVC: &v1alpha1.ArtifactPVCSpec{
+			ClaimName:  "shared-image-workspace",
+			AccessMode: "ReadWriteMany",
+		},
+	}
+	job, err := buildpod.Assemble(img, newScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble failed: %v", err)
+	}
+	for _, v := range job.Spec.Template.Spec.Volumes {
+		if v.Name == "workspace" {
+			if v.PersistentVolumeClaim == nil || v.PersistentVolumeClaim.ClaimName != "shared-image-workspace" {
+				t.Fatalf("workspace PVC = %#v, want shared-image-workspace", v.PersistentVolumeClaim)
+			}
+			return
+		}
+	}
+	t.Fatal("workspace volume not found")
 }
 
 func TestAssemble_WorkspaceVolumeMountedInMainContainer(t *testing.T) {
@@ -376,6 +458,81 @@ func TestAssemble_CacheVolume_AddedWhenCacheRefSet(t *testing.T) {
 	}
 	if !found {
 		t.Error("build-cache PVC volume not found when CacheRef is set")
+	}
+}
+
+func TestAssemble_CacheVolume_MountedInMainContainer(t *testing.T) {
+	img := baseImage()
+	ref := "source-cache"
+	img.Spec.Build.CacheRef = &ref
+
+	job, err := buildpod.Assemble(img, newScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble failed: %v", err)
+	}
+	c := job.Spec.Template.Spec.Containers[0]
+	var found bool
+	for _, m := range c.VolumeMounts {
+		if m.Name == "build-cache" && m.MountPath == "/cache" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("build-cache volume not mounted in main container at /cache")
+	}
+}
+
+func TestAssemble_CacheDirEnv_AddedWhenCacheRefSet(t *testing.T) {
+	img := baseImage()
+	ref := "source-cache"
+	img.Spec.Build.CacheRef = &ref
+
+	job, err := buildpod.Assemble(img, newScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble failed: %v", err)
+	}
+	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		if e.Name == "CACHE_DIR" {
+			if e.Value != "/cache" {
+				t.Errorf("CACHE_DIR = %q, want /cache", e.Value)
+			}
+			return
+		}
+	}
+	t.Error("CACHE_DIR env var missing when CacheRef is set")
+}
+
+func TestAssemble_SourceCacheSpec_AddsVolumeAndPolicyEnv(t *testing.T) {
+	img := baseImage()
+	img.Spec.Build.Cache = &v1alpha1.SourceCacheSpec{
+		Ref:          "structured-source-cache",
+		TTL:          &metav1.Duration{Duration: 6 * time.Hour},
+		RetainPolicy: "Never",
+	}
+
+	job, err := buildpod.Assemble(img, newScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble failed: %v", err)
+	}
+	var foundVolume bool
+	for _, v := range job.Spec.Template.Spec.Volumes {
+		if v.Name == "build-cache" && v.PersistentVolumeClaim != nil &&
+			v.PersistentVolumeClaim.ClaimName == "structured-source-cache" {
+			foundVolume = true
+		}
+	}
+	if !foundVolume {
+		t.Fatal("build-cache PVC volume not found for spec.build.cache.ref")
+	}
+	env := envMap(job.Spec.Template.Spec.Containers[0].Env)
+	if env["CACHE_DIR"] != "/cache" {
+		t.Fatalf("CACHE_DIR = %q, want /cache", env["CACHE_DIR"])
+	}
+	if env["CACHE_TTL"] != "6h0m0s" {
+		t.Fatalf("CACHE_TTL = %q, want 6h0m0s", env["CACHE_TTL"])
+	}
+	if env["CACHE_RETAIN_POLICY"] != "Never" {
+		t.Fatalf("CACHE_RETAIN_POLICY = %q, want Never", env["CACHE_RETAIN_POLICY"])
 	}
 }
 
@@ -430,11 +587,86 @@ func TestAssemble_ContainerSecurityContext_DropAllCapabilities(t *testing.T) {
 	if sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
 		t.Error("RunAsNonRoot should be true")
 	}
+	if sc.Privileged == nil || *sc.Privileged {
+		t.Error("Privileged should be false")
+	}
 	if sc.Capabilities == nil || len(sc.Capabilities.Drop) == 0 {
 		t.Error("Capabilities.Drop should be set")
 	}
 	if sc.Capabilities.Drop[0] != "ALL" {
 		t.Errorf("Capabilities.Drop[0] = %q, want ALL", sc.Capabilities.Drop[0])
+	}
+}
+
+func TestAssemble_ReadOnlyRootFilesystem_HasWritableTmpVolume(t *testing.T) {
+	job, err := buildpod.Assemble(baseImage(), newScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble failed: %v", err)
+	}
+	var foundTmpVolume, foundTmpMount bool
+	for _, v := range job.Spec.Template.Spec.Volumes {
+		if v.Name == "tmp" && v.EmptyDir != nil {
+			foundTmpVolume = true
+		}
+	}
+	for _, m := range job.Spec.Template.Spec.Containers[0].VolumeMounts {
+		if m.Name == "tmp" && m.MountPath == "/tmp" {
+			foundTmpMount = true
+		}
+	}
+	if !foundTmpVolume || !foundTmpMount {
+		t.Fatalf("tmp volume=%v mount=%v", foundTmpVolume, foundTmpMount)
+	}
+}
+
+func TestAssemble_KVMDisabledByDefault(t *testing.T) {
+	job, err := buildpod.Assemble(baseImage(), newScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble failed: %v", err)
+	}
+	for _, v := range job.Spec.Template.Spec.Volumes {
+		if v.Name == "dev-kvm" {
+			t.Fatal("/dev/kvm must not be mounted by default")
+		}
+	}
+	for _, m := range job.Spec.Template.Spec.Containers[0].VolumeMounts {
+		if m.Name == "dev-kvm" || m.MountPath == "/dev/kvm" {
+			t.Fatal("/dev/kvm mount must not be present by default")
+		}
+	}
+}
+
+func TestAssemble_KVMEnabledMountsHostDeviceWithoutPrivilege(t *testing.T) {
+	img := baseImage()
+	img.Spec.Source.Type = "iso"
+	img.Spec.Build.Security = &v1alpha1.BuildSecuritySpec{EnableKVM: true}
+
+	job, err := buildpod.Assemble(img, newScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble failed: %v", err)
+	}
+	var foundVolume, foundMount bool
+	for _, v := range job.Spec.Template.Spec.Volumes {
+		if v.Name == "dev-kvm" && v.HostPath != nil && v.HostPath.Path == "/dev/kvm" &&
+			v.HostPath.Type != nil && *v.HostPath.Type == corev1.HostPathCharDev {
+			foundVolume = true
+		}
+	}
+	envMap := map[string]string{}
+	container := job.Spec.Template.Spec.Containers[0]
+	for _, e := range container.Env {
+		envMap[e.Name] = e.Value
+	}
+	for _, m := range container.VolumeMounts {
+		if m.Name == "dev-kvm" && m.MountPath == "/dev/kvm" {
+			foundMount = true
+		}
+	}
+	if !foundVolume || !foundMount || envMap["QEMU_ENABLE_KVM"] != "true" {
+		t.Fatalf("kvm volume=%v mount=%v env=%q", foundVolume, foundMount, envMap["QEMU_ENABLE_KVM"])
+	}
+	if container.SecurityContext == nil || container.SecurityContext.Privileged == nil || *container.SecurityContext.Privileged {
+		t.Fatalf("kvm build container must remain unprivileged: %#v", container.SecurityContext)
 	}
 }
 
@@ -469,5 +701,286 @@ func TestAssemble_ResourceLimits_EmptyWhenNotSet(t *testing.T) {
 	res := job.Spec.Template.Spec.Containers[0].Resources
 	if !res.Limits.Cpu().IsZero() {
 		t.Error("CPU limit should be zero when not set in BuildSpec")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// automountServiceAccountToken / host namespaces (AS-028, AS-053)
+// ---------------------------------------------------------------------------
+
+func TestAssemble_AutomountServiceAccountToken_False(t *testing.T) {
+	job, err := buildpod.Assemble(baseImage(), newScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble failed: %v", err)
+	}
+	sat := job.Spec.Template.Spec.AutomountServiceAccountToken
+	if sat == nil || *sat != false {
+		t.Error("AutomountServiceAccountToken should be explicitly false (AS-028)")
+	}
+}
+
+func TestAssemble_HostNamespaces_AllFalse(t *testing.T) {
+	job, err := buildpod.Assemble(baseImage(), newScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble failed: %v", err)
+	}
+	spec := job.Spec.Template.Spec
+	if spec.HostNetwork {
+		t.Error("HostNetwork should be false (AS-053)")
+	}
+	if spec.HostPID {
+		t.Error("HostPID should be false (AS-053)")
+	}
+	if spec.HostIPC {
+		t.Error("HostIPC should be false (AS-053)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// boot_command
+// ---------------------------------------------------------------------------
+
+func TestAssemble_BootCommand_AbsentWhenEmpty(t *testing.T) {
+	// baseImage uses cloud-image source with no boot command.
+	job, err := buildpod.Assemble(baseImage(), newScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble failed: %v", err)
+	}
+	envMap := make(map[string]string)
+	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		envMap[e.Name] = e.Value
+	}
+	if _, ok := envMap["BOOT_COMMAND"]; ok {
+		t.Error("BOOT_COMMAND env var should be absent when bootCommand is empty")
+	}
+}
+
+func TestAssemble_BootCommand_PresentAsJSONArray(t *testing.T) {
+	img := baseImage()
+	img.Spec.Source.Type = "iso"
+	img.Spec.Source.BootCommand = []string{
+		"<tab>",
+		" inst.ks=http://192.0.2.1/ks.cfg",
+		"<enter><wait10>",
+	}
+
+	job, err := buildpod.Assemble(img, newScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble failed: %v", err)
+	}
+	envMap := make(map[string]string)
+	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		envMap[e.Name] = e.Value
+	}
+	val, ok := envMap["BOOT_COMMAND"]
+	if !ok {
+		t.Fatal("BOOT_COMMAND env var missing when bootCommand is set")
+	}
+	// Must be a valid JSON array.
+	var parsed []string
+	if err := json.Unmarshal([]byte(val), &parsed); err != nil {
+		t.Fatalf("BOOT_COMMAND value %q is not valid JSON: %v", val, err)
+	}
+	if len(parsed) != 3 {
+		t.Errorf("decoded BOOT_COMMAND has %d entries, want 3", len(parsed))
+	}
+	if parsed[0] != "<tab>" {
+		t.Errorf("BOOT_COMMAND[0] = %q, want <tab>", parsed[0])
+	}
+}
+
+func TestAssemble_BootCommand_SingleEntry(t *testing.T) {
+	img := baseImage()
+	img.Spec.Source.Type = "iso"
+	img.Spec.Source.BootCommand = []string{"<enter>"}
+
+	job, err := buildpod.Assemble(img, newScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble failed: %v", err)
+	}
+	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		if e.Name == "BOOT_COMMAND" {
+			if e.Value != `["<enter>"]` {
+				t.Errorf("BOOT_COMMAND = %q, want [\"<enter>\"]", e.Value)
+			}
+			return
+		}
+	}
+	t.Error("BOOT_COMMAND env var not found")
+}
+
+func TestAssemble_GuestAccess_ExposedAsEnv(t *testing.T) {
+	img := baseImage()
+	img.Spec.Source.Type = "iso"
+	img.Spec.Build.GuestAccess = &v1alpha1.GuestAccessSpec{
+		Protocol:   "winrm",
+		Host:       "127.0.0.1",
+		HostPort:   55986,
+		User:       "Administrator",
+		SSHKeyPath: "/workspace/id_ed25519",
+		GuestPort:  5986,
+		Timeout:    durationPtr(12 * time.Minute),
+		WinRM: &v1alpha1.WinRMAccessSpec{
+			HTTPS:              boolPtr(true),
+			InsecureSkipVerify: true,
+		},
+	}
+
+	job, err := buildpod.Assemble(img, newScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble failed: %v", err)
+	}
+	envMap := make(map[string]string)
+	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		envMap[e.Name] = e.Value
+	}
+	if envMap["GUEST_ACCESS_PROTOCOL"] != "winrm" ||
+		envMap["GUEST_ACCESS_HOST"] != "127.0.0.1" ||
+		envMap["GUEST_ACCESS_HOST_PORT"] != "55986" ||
+		envMap["GUEST_ACCESS_GUEST_PORT"] != "5986" ||
+		envMap["GUEST_ACCESS_USER"] != "Administrator" ||
+		envMap["GUEST_ACCESS_SSH_KEY_PATH"] != "/workspace/id_ed25519" ||
+		envMap["GUEST_ACCESS_TIMEOUT"] != "12m0s" ||
+		envMap["GUEST_ACCESS_WINRM_HTTPS"] != "true" ||
+		envMap["GUEST_ACCESS_WINRM_INSECURE_SKIP_VERIFY"] != "true" {
+		t.Fatalf("guest access env = %#v", envMap)
+	}
+}
+
+func TestAssemble_GuestAccess_CredentialsSecretMounted(t *testing.T) {
+	img := baseImage()
+	img.Spec.Source.Type = "iso"
+	img.Spec.Build.GuestAccess = &v1alpha1.GuestAccessSpec{
+		Protocol: "winrm",
+		HostPort: 55986,
+		User:     "Administrator",
+		Credentials: &v1alpha1.GuestCredentialsSpec{
+			SecretRef: &v1alpha1.GuestCredentialsSecretRef{
+				Name:             "guest-credentials",
+				SSHPrivateKeyKey: "ssh-key",
+				PasswordKey:      "winrm-password",
+			},
+		},
+	}
+
+	job, err := buildpod.Assemble(img, newScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble failed: %v", err)
+	}
+	envMap := make(map[string]string)
+	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		envMap[e.Name] = e.Value
+	}
+	if envMap["GUEST_ACCESS_SSH_KEY_PATH"] != "/credentials/guest/id_ed25519" ||
+		envMap["GUEST_ACCESS_PASSWORD_PATH"] != "/credentials/guest/password" {
+		t.Fatalf("guest credential env = %#v", envMap)
+	}
+	var foundVolume, foundMount bool
+	for _, v := range job.Spec.Template.Spec.Volumes {
+		if v.Name == "guest-credentials" && v.Secret != nil && v.Secret.SecretName == "guest-credentials" {
+			foundVolume = true
+			if v.Secret.DefaultMode == nil || *v.Secret.DefaultMode != 0o400 {
+				t.Fatalf("secret defaultMode = %#v, want 0400", v.Secret.DefaultMode)
+			}
+			if len(v.Secret.Items) != 2 || v.Secret.Items[0].Path != "id_ed25519" || v.Secret.Items[1].Path != "password" {
+				t.Fatalf("secret items = %#v", v.Secret.Items)
+			}
+		}
+	}
+	for _, m := range job.Spec.Template.Spec.Containers[0].VolumeMounts {
+		if m.Name == "guest-credentials" && m.MountPath == "/credentials/guest" && m.ReadOnly {
+			foundMount = true
+		}
+	}
+	if !foundVolume || !foundMount {
+		t.Fatalf("guest credentials volume=%v mount=%v", foundVolume, foundMount)
+	}
+}
+
+func TestAssemble_GuestAccess_GeneratedCredentialsExposedAsNonSecretEnv(t *testing.T) {
+	img := baseImage()
+	img.Spec.Source.Type = "iso"
+	img.Spec.Build.GuestAccess = &v1alpha1.GuestAccessSpec{
+		Protocol: "ssh",
+		HostPort: 2222,
+		Credentials: &v1alpha1.GuestCredentialsSpec{
+			Generate: &v1alpha1.GuestGeneratedCredentialsSpec{
+				SSHKey:         true,
+				Password:       true,
+				PasswordLength: 40,
+			},
+			Injection: &v1alpha1.GuestCredentialInjectionSpec{Method: "cloud-init"},
+		},
+	}
+
+	job, err := buildpod.Assemble(img, newScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble failed: %v", err)
+	}
+	envMap := make(map[string]string)
+	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		envMap[e.Name] = e.Value
+	}
+	checks := map[string]string{
+		"GUEST_CREDENTIALS_GENERATE_SSH_KEY":         "true",
+		"GUEST_CREDENTIALS_GENERATE_PASSWORD":        "true",
+		"GUEST_CREDENTIALS_GENERATE_PASSWORD_LENGTH": "40",
+		"GUEST_CREDENTIALS_INJECTION_METHOD":         "cloud-init",
+	}
+	for name, want := range checks {
+		if envMap[name] != want {
+			t.Fatalf("%s = %q, want %q; env=%#v", name, envMap[name], want, envMap)
+		}
+	}
+	for _, v := range job.Spec.Template.Spec.Volumes {
+		if v.Name == "guest-credentials" {
+			t.Fatal("generated credentials must not mount a Kubernetes Secret volume")
+		}
+	}
+	var foundGeneratedVolume, foundGeneratedMount bool
+	for _, v := range job.Spec.Template.Spec.Volumes {
+		if v.Name == "generated-credentials" && v.EmptyDir != nil &&
+			v.EmptyDir.Medium == corev1.StorageMediumMemory {
+			foundGeneratedVolume = true
+		}
+	}
+	for _, m := range job.Spec.Template.Spec.Containers[0].VolumeMounts {
+		if m.Name == "generated-credentials" && m.MountPath == "/credentials/generated" {
+			foundGeneratedMount = true
+		}
+	}
+	if envMap["GUEST_CREDENTIALS_DIR"] != "/credentials/generated" ||
+		!foundGeneratedVolume || !foundGeneratedMount {
+		t.Fatalf("generated credentials dir=%q volume=%v mount=%v",
+			envMap["GUEST_CREDENTIALS_DIR"], foundGeneratedVolume, foundGeneratedMount)
+	}
+}
+
+func TestAssemble_Provisioners_PresentAsJSONArray(t *testing.T) {
+	img := baseImage()
+	img.Spec.Provisioners = []v1alpha1.ProvisionerSpec{
+		{Type: "cloud-init", Inline: "#cloud-config"},
+		{Type: "shell", Inline: "echo ok"},
+		{Type: "ansible", Playbook: "site.yml"},
+	}
+
+	job, err := buildpod.Assemble(img, newScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble failed: %v", err)
+	}
+	envMap := make(map[string]string)
+	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		envMap[e.Name] = e.Value
+	}
+	value, ok := envMap["PROVISIONERS"]
+	if !ok {
+		t.Fatal("PROVISIONERS env var missing")
+	}
+	var parsed []v1alpha1.ProvisionerSpec
+	if err := json.Unmarshal([]byte(value), &parsed); err != nil {
+		t.Fatalf("PROVISIONERS value %q is not valid JSON: %v", value, err)
+	}
+	if len(parsed) != 3 || parsed[0].Type != "cloud-init" || parsed[1].Inline != "echo ok" || parsed[2].Type != "ansible" {
+		t.Fatalf("decoded provisioners = %#v", parsed)
 	}
 }

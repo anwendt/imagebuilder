@@ -1,0 +1,1024 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: vmimages.imagebuilder.io
+spec:
+  group: imagebuilder.io
+  names:
+    kind: VMImage
+    listKind: VMImageList
+    plural: vmimages
+    singular: vmimage
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.os.distribution
+      name: OS
+      type: string
+    - jsonPath: .spec.os.version
+      name: Version
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: VMImage is the Schema for the vmimages API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: VMImageSpec defines the desired state of VMImage
+            properties:
+              build:
+                description: Build controls build-job behaviour
+                properties:
+                  artifactStorage:
+                    description: |-
+                      ArtifactStorage controls where build artifacts and workspace files are stored.
+                      Defaults to emptyDir for ephemeral development builds. Use pvc for shared or
+                      block storage backed builds.
+                    properties:
+                      pvc:
+                        description: PVC configures persistent workspace storage.
+                        properties:
+                          accessMode:
+                            default: ReadWriteOnce
+                            description: |-
+                              AccessMode selects shared vs block-style semantics.
+                              ReadWriteMany is suitable for shared storage; ReadWriteOnce and
+                              ReadWriteOncePod are suitable for block storage.
+                            enum:
+                            - ReadWriteOnce
+                            - ReadWriteMany
+                            - ReadWriteOncePod
+                            type: string
+                          claimName:
+                            description: |-
+                              ClaimName uses an existing PVC instead of creating a per-build PVC.
+                              This is intended for explicitly managed shared storage.
+                            type: string
+                          retainPolicy:
+                            default: Never
+                            description: |-
+                              RetainPolicy controls cleanup of operator-created PVCs.
+                              Never retains no PVC after success or failure; OnFailure keeps it only
+                              when the VMImage fails; Always keeps it.
+                            enum:
+                            - Never
+                            - OnFailure
+                            - Always
+                            type: string
+                          size:
+                            description: |-
+                              Size is the requested PVC size. Defaults to spec.build.resources.storage
+                              when set, otherwise 20Gi.
+                            type: string
+                          storageClassName:
+                            description: StorageClassName is used when the operator
+                              creates the PVC.
+                            type: string
+                        type: object
+                      type:
+                        default: emptyDir
+                        description: Type is the workspace storage strategy.
+                        enum:
+                        - emptyDir
+                        - pvc
+                        type: string
+                    type: object
+                  cache:
+                    description: Cache configures checksum-addressed source image
+                      caching for local builds.
+                    properties:
+                      ref:
+                        description: Ref references the PVC mounted as the source
+                          cache.
+                        type: string
+                      retainPolicy:
+                        default: Always
+                        description: |-
+                          RetainPolicy controls whether verified cache entries remain after a build.
+                          Always keeps entries for reuse. Never removes the matching entry after a
+                          cache hit and does not persist freshly downloaded entries.
+                        enum:
+                        - Always
+                        - Never
+                        type: string
+                      ttl:
+                        description: |-
+                          TTL invalidates a cache entry when the cached file's mtime is older than
+                          the configured duration. Omitted means entries do not expire by age.
+                        type: string
+                    type: object
+                  cacheRef:
+                    description: |-
+                      CacheRef is the legacy shorthand for cache.ref and references a PVC used
+                      to cache source images. Prefer cache.ref for new manifests.
+                    type: string
+                  guestAccess:
+                    description: |-
+                      GuestAccess configures how the build engine reaches the temporary build VM
+                      for post-install readiness checks and provisioner execution.
+                      When omitted, the backend does not expose or wait for a guest management port.
+                    properties:
+                      credentials:
+                        description: |-
+                          Credentials references a Kubernetes Secret mounted read-only into the
+                          build container. Explicit sshKeyPath/passwordPath values take precedence.
+                        properties:
+                          generate:
+                            description: |-
+                              Generate requests short-lived credentials for this build. Generated
+                              credentials are written only to the build workspace and are intended to be
+                              injected into the temporary guest through cloud-init or autounattend.
+                              Mutually exclusive with secretRef.
+                            properties:
+                              password:
+                                description: |-
+                                  Password generates an ephemeral guest password for WinRM or SSH password
+                                  bootstrap flows. The password is written to the build pod's
+                                  generated-credentials emptyDir.
+                                type: boolean
+                              passwordLength:
+                                description: PasswordLength controls the generated
+                                  password length. Defaults to 32.
+                                format: int32
+                                maximum: 128
+                                minimum: 20
+                                type: integer
+                              sshKey:
+                                description: |-
+                                  SSHKey generates an ephemeral Ed25519 SSH key pair for this build.
+                                  The private key is written to the build pod's generated-credentials
+                                  emptyDir. The public key is injected into the guest when injection is
+                                  enabled.
+                                type: boolean
+                            type: object
+                          injection:
+                            description: |-
+                              Injection controls how generated credentials are injected into the guest.
+                              When omitted the builder chooses cloud-init for Linux and autounattend for
+                              Windows.
+                            properties:
+                              method:
+                                description: |-
+                                  Method selects the guest bootstrap mechanism for generated credentials.
+                                  none writes credentials for externally handled injection; cloud-init writes
+                                  a NoCloud seed; autounattend writes Windows unattended-install material.
+                                enum:
+                                - none
+                                - cloud-init
+                                - autounattend
+                                type: string
+                            type: object
+                          secretRef:
+                            description: |-
+                              SecretRef references a Secret containing guest access credentials.
+                              Use this when the installer image already knows the account/password/key
+                              through a separately managed unattended install or cloud-init flow.
+                            properties:
+                              name:
+                                description: Name is the Secret name in the VMImage
+                                  namespace.
+                                type: string
+                              passwordKey:
+                                description: |-
+                                  PasswordKey is the Secret key containing the WinRM password.
+                                  Defaults to password when omitted.
+                                type: string
+                              sshPrivateKeyKey:
+                                description: |-
+                                  SSHPrivateKeyKey is the Secret key containing the SSH private key.
+                                  Defaults to id_ed25519 when omitted.
+                                type: string
+                            required:
+                            - name
+                            type: object
+                        type: object
+                      guestPort:
+                        description: GuestPort is the port inside the VM. Defaults
+                          are 22 for SSH and 5986 for WinRM.
+                        format: int32
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                      host:
+                        default: 127.0.0.1
+                        description: |-
+                          Host is the address the builder should connect to. For QEMU user networking
+                          this should remain 127.0.0.1 so the forwarded port is not exposed outside
+                          the build pod.
+                        type: string
+                      hostPort:
+                        description: HostPort is the local port exposed inside the
+                          build container.
+                        format: int32
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                      passwordPath:
+                        description: |-
+                          PasswordPath is a file path inside the build container containing the
+                          WinRM password. Prefer mounting a Kubernetes Secret read-only and
+                          referencing that path here.
+                        type: string
+                      protocol:
+                        description: Protocol selects the guest management protocol.
+                        enum:
+                        - ssh
+                        - winrm
+                        type: string
+                      sshKeyPath:
+                        description: |-
+                          SSHKeyPath is the private key path inside the build container.
+                          Prefer mounting a Kubernetes Secret read-only into the build pod and
+                          referencing that path here.
+                        type: string
+                      timeout:
+                        description: |-
+                          Timeout bounds how long the build engine waits until the guest is reachable.
+                          Defaults to 10 minutes.
+                        type: string
+                      user:
+                        description: User is the guest account used by SSH/WinRM provisioners.
+                        type: string
+                      winrm:
+                        description: WinRM contains WinRM-specific readiness settings.
+                        properties:
+                          https:
+                            default: true
+                            description: HTTPS controls whether WinRM readiness uses
+                              HTTPS. Defaults to true.
+                            type: boolean
+                          insecureSkipVerify:
+                            default: false
+                            description: |-
+                              InsecureSkipVerify disables TLS certificate verification for HTTPS WinRM.
+                              Keep this false for production certificates; set true only for short-lived
+                              self-signed installer certificates in isolated build environments.
+                            type: boolean
+                        type: object
+                    required:
+                    - hostPort
+                    - protocol
+                    type: object
+                  mode:
+                    default: local
+                    description: |-
+                      Mode selects where the build is executed. local uses the Kubernetes build
+                      Job and local backend. remote delegates the build lifecycle to a provider
+                      that advertises remote build support. Defaults to local.
+                    enum:
+                    - local
+                    - remote
+                    type: string
+                  nodeSelector:
+                    additionalProperties:
+                      type: string
+                    description: NodeSelector for the build job pods
+                    type: object
+                  resources:
+                    description: Resources for the build job container
+                    properties:
+                      cpu:
+                        type: string
+                      memory:
+                        type: string
+                      storage:
+                        type: string
+                    type: object
+                  security:
+                    description: |-
+                      Security configures build-container security exceptions. Defaults are
+                      hardened and do not expose host devices.
+                    properties:
+                      enableKVM:
+                        description: |-
+                          EnableKVM mounts /dev/kvm into the build container for hardware-assisted
+                          QEMU acceleration. It is disabled by default and must only be enabled on
+                          trusted, dedicated build nodes.
+                        type: boolean
+                      provisionerImages:
+                        description: |-
+                          ProvisionerImages controls supply-chain policy for user-supplied OCI
+                          images referenced by spec.provisioners[].image.
+                        properties:
+                          allowedRegistries:
+                            description: |-
+                              AllowedRegistries restricts image references to these registry prefixes,
+                              for example ghcr.io/yourorg or registry.example.com/provisioners.
+                            items:
+                              type: string
+                            type: array
+                          requireDigest:
+                            description: RequireDigest rejects mutable tag-only image
+                              references.
+                            type: boolean
+                          verifySignature:
+                            description: |-
+                              VerifySignature requires an immutable digest reference and is intended to
+                              be enforced by cluster admission policy such as Sigstore Policy Controller,
+                              Kyverno, or Gatekeeper.
+                            type: boolean
+                        type: object
+                    type: object
+                  timeout:
+                    description: 'Timeout for the entire build including upload. Default:
+                      2h'
+                    type: string
+                  upload:
+                    description: Upload controls the upload/register Job.
+                    properties:
+                      image:
+                        description: Image is the uploader container image. Defaults
+                          to the operator's built-in image.
+                        type: string
+                    type: object
+                type: object
+              os:
+                description: OS describes the operating system to build
+                properties:
+                  arch:
+                    default: amd64
+                    description: Arch defaults to amd64
+                    enum:
+                    - amd64
+                    - arm64
+                    type: string
+                  distribution:
+                    description: Distribution e.g. ubuntu, debian, rhel, windows-server
+                    type: string
+                  family:
+                    description: Family is either "linux" or "windows"
+                    enum:
+                    - linux
+                    - windows
+                    type: string
+                  version:
+                    description: Version e.g. "24.04", "2022"
+                    type: string
+                required:
+                - distribution
+                - family
+                - version
+                type: object
+              provisioners:
+                description: |-
+                  Provisioners run sequentially after the OS boots
+                  In-process types: cloud-init, shell, file, powershell, sysprep, ansible, chef, puppet, saltstack, custom
+                items:
+                  properties:
+                    args:
+                      description: Args passed to the init-container
+                      items:
+                        type: string
+                      type: array
+                    env:
+                      description: Env variables for init-container provisioners
+                      items:
+                        properties:
+                          name:
+                            type: string
+                          value:
+                            type: string
+                          valueFrom:
+                            properties:
+                              secretKeyRef:
+                                properties:
+                                  key:
+                                    type: string
+                                  name:
+                                    type: string
+                                required:
+                                - key
+                                - name
+                                type: object
+                            type: object
+                        required:
+                        - name
+                        type: object
+                      type: array
+                    extraVars:
+                      additionalProperties:
+                        type: string
+                      description: ExtraVars for ansible provisioner
+                      type: object
+                    image:
+                      description: |-
+                        Image is the OCI image for init-container provisioners
+                        If omitted, the operator uses its default image for known types
+                      type: string
+                    inline:
+                      description: Inline script or cloud-init config
+                      type: string
+                    playbook:
+                      description: Playbook path for ansible (s3://, http://, or local
+                        path in workspace)
+                      type: string
+                    type:
+                      description: |-
+                        Type determines how the provisioner runs.
+                        In-process: cloud-init, shell, file, powershell, sysprep, ansible, chef, puppet, saltstack, custom
+                        Unknown values are rejected by the admission webhook (AS-026, AS-027, REQ-008).
+                      enum:
+                      - cloud-init
+                      - shell
+                      - file
+                      - powershell
+                      - sysprep
+                      - ansible
+                      - chef
+                      - puppet
+                      - saltstack
+                      - custom
+                      type: string
+                    windowsConfig:
+                      description: WindowsConfig holds Windows-specific provisioner
+                        settings
+                      properties:
+                        autounattend:
+                          description: Autounattend XML content or reference
+                          type: string
+                        cloudbaseInit:
+                          description: CloudbaseInit installs cloudbase-init (Windows
+                            cloud-init equivalent)
+                          type: boolean
+                        sysprep:
+                          description: Sysprep generalizes the image after provisioning
+                          properties:
+                            generalize:
+                              type: boolean
+                            shutdown:
+                              type: boolean
+                          required:
+                          - generalize
+                          - shutdown
+                          type: object
+                        virtioDrivers:
+                          description: VirtioDrivers installs VirtIO drivers (needed
+                            for KVM/vSphere)
+                          type: boolean
+                      type: object
+                  required:
+                  - type
+                  type: object
+                type: array
+              source:
+                description: Source describes where to get the base image from
+                properties:
+                  bootCommand:
+                    description: |-
+                      BootCommand is a sequence of key strokes sent to the VM over VNC/SPICE
+                      immediately after power-on to navigate the boot menu or installer dialog.
+                      Only valid when type=iso. The build engine (QEMU) emulates each entry as
+                      a key-press event.
+
+                      Special tokens (Packer-compatible):
+                        <enter>   — Enter/Return key
+                        <tab>     — Tab key
+                        <esc>     — Escape key
+                        <up> <down> <left> <right> — cursor keys
+                        <wait>    — wait 1 second before next key
+                        <wait5>   — wait 5 seconds
+                        <wait10>  — wait 10 seconds
+                        <ctrl-x>  — Ctrl+X chord
+                        <f1>…<f12> — function keys
+
+                      Example — Rocky Linux 9 ISO minimal install via kernel args:
+                        - "<tab>"
+                        - " inst.ks=http://{{ .HTTPIP }}:{{ .HTTPPort }}/ks.cfg"
+                        - "<enter><wait10>"
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  checksum:
+                    description: |-
+                      Checksum in format "algorithm:hex" e.g. "sha256:abc123...".
+                      Accepted algorithms: sha256 (64 hex chars), sha512 (128 hex chars). AS-010.
+                    pattern: ^(sha256|sha512):[0-9a-f]{64,128}$
+                    type: string
+                  installer:
+                    description: |-
+                      Installer configures unattended installation media for ISO builds.
+                      The builder materializes these files in the workspace and attaches them
+                      as read-only seed/answer ISOs next to the source installer ISO.
+                      Only valid when type=iso.
+                    properties:
+                      autounattend:
+                        description: |-
+                          Autounattend is Windows Autounattend.xml content. If omitted, the builder
+                          can generate one when guest credentials are generated for WinRM.
+                        type: string
+                      kickstart:
+                        description: Kickstart is the ks.cfg content for RHEL-compatible
+                          installers.
+                        type: string
+                      metaData:
+                        description: |-
+                          MetaData is cloud-init meta-data. If omitted, the builder writes a stable
+                          imagebuilder instance-id and hostname.
+                        type: string
+                      networkConfig:
+                        description: NetworkConfig is optional cloud-init network-config.
+                        type: string
+                      preseed:
+                        description: Preseed is the preseed.cfg content for Debian-compatible
+                          installers.
+                        type: string
+                      type:
+                        description: |-
+                          Type selects the unattended installer media format.
+                          Linux: nocloud, autoinstall, kickstart, preseed.
+                          Windows: autounattend.
+                        enum:
+                        - nocloud
+                        - autoinstall
+                        - kickstart
+                        - preseed
+                        - autounattend
+                        type: string
+                      userData:
+                        description: UserData is cloud-init user-data for nocloud/autoinstall
+                          media.
+                        type: string
+                      windows:
+                        description: Windows contains optional Windows installer media
+                          hooks.
+                        properties:
+                          cloudbaseInit:
+                            description: |-
+                              CloudbaseInit configures the Cloudbase-Init service after installation.
+                              When omitted and cloudbaseInitMsi is set, secure defaults are written.
+                            properties:
+                              addUserToLocalGroups:
+                                description: |-
+                                  AddUserToLocalGroups controls local group membership for Cloudbase-created users.
+                                  Defaults to Administrators.
+                                items:
+                                  type: string
+                                type: array
+                              localScriptsPath:
+                                description: |-
+                                  LocalScriptsPath is the Windows path where Cloudbase-Init local scripts run from.
+                                  Defaults to C:\Program Files\Cloudbase Solutions\Cloudbase-Init\LocalScripts.
+                                type: string
+                              metadataServices:
+                                description: |-
+                                  MetadataServices is the ordered Cloudbase-Init metadata service list.
+                                  Defaults to config-drive and NoCloud config-drive services.
+                                items:
+                                  type: string
+                                type: array
+                              plugins:
+                                description: |-
+                                  Plugins is the ordered Cloudbase-Init plugin list.
+                                  Defaults to hostname, networking, user/password, SSH public keys and local scripts.
+                                items:
+                                  type: string
+                                type: array
+                            type: object
+                          cloudbaseInitMsi:
+                            description: |-
+                              CloudbaseInitMSI is a path visible inside Windows, for example
+                              E:\CloudbaseInitSetup.msi, installed during first logon.
+                              The actual MSI media must be attached by the runtime environment.
+                            type: string
+                          virtioDriverPath:
+                            description: |-
+                              VirtioDriverPath is a path visible to Windows Setup, for example
+                              E:\viostor\2k22\amd64, used in the windowsPE driver search path.
+                              The actual driver media must be attached by the runtime environment.
+                            type: string
+                        type: object
+                    required:
+                    - type
+                    type: object
+                  marketplaceRef:
+                    description: MarketplaceRef references a marketplace image (cloud-specific)
+                    properties:
+                      offer:
+                        type: string
+                      publisher:
+                        type: string
+                      sku:
+                        type: string
+                      version:
+                        type: string
+                    required:
+                    - offer
+                    - publisher
+                    - sku
+                    - version
+                    type: object
+                  providerRef:
+                    description: |-
+                      ProviderRef is an opaque provider-native source reference for remote
+                      builds, for example an AWS AMI ID, vSphere template/VM MoID, Azure image
+                      resource ID, GCP image selfLink, or OpenStack Glance image UUID. It is
+                      passed through to the selected provider and must not contain credentials
+                      or presigned URLs.
+                    type: string
+                  type:
+                    description: 'Type is one of: iso, cloud-image, marketplace'
+                    enum:
+                    - iso
+                    - cloud-image
+                    - marketplace
+                    type: string
+                  url:
+                    description: |-
+                      URL to download the source image from.
+                      Download URLs must use HTTPS — plain HTTP is rejected (AS-015, AS-047, REQ-008).
+                      Provider-native remote source identifiers belong in providerRef instead
+                      of this URL field.
+                    pattern: ^https://
+                    type: string
+                required:
+                - type
+                type: object
+              targets:
+                description: Targets defines which platforms the image should be uploaded
+                  to
+                items:
+                  properties:
+                    format:
+                      description: 'Format is the image format: ami, ova, ovf, vmdk,
+                        qcow2, vhd, raw'
+                      enum:
+                      - ami
+                      - ova
+                      - ovf
+                      - vmdk
+                      - qcow2
+                      - vhd
+                      - raw
+                      - gcetarball
+                      type: string
+                    providerConfigRef:
+                      description: ProviderConfigRef references a ProviderConfig that
+                        holds credentials
+                      properties:
+                        name:
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    tags:
+                      additionalProperties:
+                        type: string
+                      description: Tags to apply to the registered image in the target
+                        platform
+                      type: object
+                  required:
+                  - format
+                  - providerConfigRef
+                  type: object
+                type: array
+            required:
+            - os
+            - source
+            - targets
+            type: object
+          status:
+            description: VMImageStatus defines the observed state of VMImage
+            properties:
+              buildArtifact:
+                description: BuildArtifact describes the artifact produced by the
+                  build Job.
+                properties:
+                  checksum:
+                    description: Checksum in algorithm:hex format.
+                    type: string
+                  format:
+                    description: Format of the produced artifact.
+                    type: string
+                  metadata:
+                    additionalProperties:
+                      type: string
+                    description: Metadata carries build-backend specific metadata.
+                    type: object
+                  os:
+                    description: OS is the operating system family of the artifact.
+                    type: string
+                  path:
+                    description: Path is the artifact path as reported by the build
+                      container.
+                    type: string
+                  sizeBytes:
+                    description: SizeBytes is the artifact size.
+                    format: int64
+                    type: integer
+                required:
+                - checksum
+                - format
+                - os
+                - path
+                - sizeBytes
+                type: object
+              buildJobRef:
+                description: BuildJobRef references the Kubernetes Job running the
+                  build
+                type: string
+              buildLeaseRefs:
+                description: |-
+                  BuildLeaseRefs references scheduler leases held while the build job is active.
+                  Values are namespace/name strings.
+                items:
+                  type: string
+                type: array
+              completionTime:
+                description: CompletionTime of the build
+                format: date-time
+                type: string
+              conditions:
+                description: Conditions follow the standard Kubernetes condition pattern
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              hygieneResult:
+                description: |-
+                  HygieneResult describes provider-neutral final image hygiene checks.
+                  Remote build providers use this to attest sanitization without exposing
+                  secrets or detailed logs in Kubernetes status.
+                properties:
+                  checks:
+                    description: Checks contains non-secret check identifiers.
+                    items:
+                      type: string
+                    type: array
+                  message:
+                    description: Message is a short non-sensitive summary.
+                    type: string
+                  resultRef:
+                    description: ResultRef optionally references a non-secret detailed
+                      report.
+                    type: string
+                  status:
+                    description: 'Status is provider-neutral: passed, failed, or unknown.'
+                    enum:
+                    - passed
+                    - failed
+                    - unknown
+                    type: string
+                required:
+                - status
+                type: object
+              images:
+                description: Images contains references to the registered images per
+                  platform
+                items:
+                  properties:
+                    checksum:
+                      description: Checksum of the artifact that was uploaded
+                      type: string
+                    format:
+                      description: Format of the registered image
+                      type: string
+                    imageRef:
+                      description: ImageRef is the platform-specific image identifier
+                        (AMI-ID, UUID, MOID...)
+                      type: string
+                    location:
+                      description: Location is the region, datacenter, or project
+                      type: string
+                    provider:
+                      description: Provider name e.g. "aws", "vsphere"
+                      type: string
+                    providerConfig:
+                      description: ProviderConfig name used for this target
+                      type: string
+                  required:
+                  - format
+                  - imageRef
+                  - provider
+                  - providerConfig
+                  type: object
+                type: array
+              phase:
+                description: Phase is the current lifecycle phase
+                enum:
+                - Pending
+                - Building
+                - Provisioning
+                - Uploading
+                - Ready
+                - Failed
+                type: string
+              provisionerResultRef:
+                description: |-
+                  ProvisionerResultRef references the non-secret provisioner result file
+                  written by the builder in the workspace.
+                type: string
+              remoteBuildRef:
+                description: |-
+                  RemoteBuildRef is the provider-specific operation reference for a remote build.
+                  It is intentionally opaque and must not contain secrets.
+                type: string
+              scheduledNodeName:
+                description: |-
+                  ScheduledNodeName is the concrete Kubernetes node selected by the
+                  imagebuilder scheduler for the build Job.
+                type: string
+              startTime:
+                description: StartTime of the build
+                format: date-time
+                type: string
+              steps:
+                description: |-
+                  Steps describes high-level pipeline progress. Messages are intentionally
+                  non-sensitive and must not contain credentials, scripts, or environment values.
+                items:
+                  properties:
+                    lastTransitionTime:
+                      description: LastTransitionTime follows the Kubernetes condition
+                        timestamp pattern.
+                      format: date-time
+                      type: string
+                    message:
+                      description: Message is a human-readable, non-sensitive summary.
+                      type: string
+                    name:
+                      description: Name is a stable pipeline step name.
+                      enum:
+                      - Build
+                      - Boot
+                      - Readiness
+                      - Provisioning
+                      - Sanitization
+                      - Upload
+                      - Cleanup
+                      type: string
+                    reason:
+                      description: Reason is a machine-readable short reason.
+                      type: string
+                    resultRef:
+                      description: ResultRef references a non-secret file produced
+                        by this step.
+                      type: string
+                    status:
+                      description: Status is the current step status.
+                      enum:
+                      - Pending
+                      - Running
+                      - Succeeded
+                      - Failed
+                      - Skipped
+                      type: string
+                  required:
+                  - name
+                  - status
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              uploadJobRef:
+                description: UploadJobRef references the Kubernetes Job running provider
+                  upload/register.
+                type: string
+              uploadOperations:
+                description: |-
+                  UploadOperations tracks provider-neutral upload/register progress per target.
+                  OperationRef and ImageRef are opaque provider identifiers and must not
+                  contain credentials, presigned URLs, or other secret material.
+                items:
+                  properties:
+                    format:
+                      description: Format requested for this target.
+                      type: string
+                    imageRef:
+                      description: ImageRef is the final registered image reference
+                        when known.
+                      type: string
+                    lastTransitionTime:
+                      description: LastTransitionTime follows the Kubernetes condition
+                        timestamp pattern.
+                      format: date-time
+                      type: string
+                    message:
+                      description: Message is a short non-sensitive progress or error
+                        summary.
+                      type: string
+                    operationRef:
+                      description: OperationRef is an opaque, non-secret provider
+                        operation reference.
+                      type: string
+                    phase:
+                      description: Phase is the provider-neutral upload/register operation
+                        phase.
+                      enum:
+                      - Pending
+                      - Uploading
+                      - Registering
+                      - Succeeded
+                      - Failed
+                      type: string
+                    provider:
+                      description: Provider name e.g. "aws", "vsphere".
+                      type: string
+                    providerConfig:
+                      description: ProviderConfig name used for this target.
+                      type: string
+                    registerMilliseconds:
+                      description: RegisterMilliseconds records provider registration
+                        duration when reported by the upload job.
+                      format: int64
+                      type: integer
+                    uploadMilliseconds:
+                      description: UploadMilliseconds records provider upload duration
+                        when reported by the upload job.
+                      format: int64
+                      type: integer
+                  required:
+                  - format
+                  - phase
+                  - provider
+                  - providerConfig
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - providerConfig
+                - format
+                x-kubernetes-list-type: map
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

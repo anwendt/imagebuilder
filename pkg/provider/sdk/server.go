@@ -1,0 +1,341 @@
+package sdk
+
+import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"fmt"
+	"io"
+	"net"
+	"os"
+
+	providerv1 "github.com/anwendt/imagebuilder/api/provider/v1"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/status"
+)
+
+type Server struct {
+	providerv1.UnimplementedPlatformProviderServer
+	provider Provider
+}
+
+func NewServer(provider Provider) (*Server, error) {
+	if provider == nil {
+		return nil, fmt.Errorf("provider is required")
+	}
+	return &Server{provider: provider}, nil
+}
+
+func (s *Server) Register(registrar grpc.ServiceRegistrar) {
+	providerv1.RegisterPlatformProviderServer(registrar, s)
+}
+
+func Serve(ctx context.Context, listener net.Listener, provider Provider, opts ...grpc.ServerOption) error {
+	server, err := NewServer(provider)
+	if err != nil {
+		return err
+	}
+	grpcServer := grpc.NewServer(opts...)
+	server.Register(grpcServer)
+	go func() {
+		<-ctx.Done()
+		grpcServer.GracefulStop()
+	}()
+	if err := grpcServer.Serve(listener); err != nil && ctx.Err() == nil {
+		return fmt.Errorf("serve provider grpc: %w", err)
+	}
+	return nil
+}
+
+func ServerOptionsFromEnv() ([]grpc.ServerOption, error) {
+	mode := os.Getenv("PROVIDER_GRPC_TLS_MODE")
+	if mode == "" || mode == "Disabled" {
+		return nil, nil
+	}
+	if mode != "Mutual" {
+		return nil, fmt.Errorf("unsupported PROVIDER_GRPC_TLS_MODE %q", mode)
+	}
+	certFile := os.Getenv("PROVIDER_GRPC_TLS_CERT_FILE")
+	keyFile := os.Getenv("PROVIDER_GRPC_TLS_KEY_FILE")
+	clientCAFile := os.Getenv("PROVIDER_GRPC_TLS_CLIENT_CA_FILE")
+	if certFile == "" || keyFile == "" || clientCAFile == "" {
+		return nil, fmt.Errorf("PROVIDER_GRPC_TLS_CERT_FILE, PROVIDER_GRPC_TLS_KEY_FILE, and PROVIDER_GRPC_TLS_CLIENT_CA_FILE are required for mTLS")
+	}
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load provider server certificate: %w", err)
+	}
+	caPEM, err := os.ReadFile(clientCAFile)
+	if err != nil {
+		return nil, fmt.Errorf("read provider client CA: %w", err)
+	}
+	clientCAs := x509.NewCertPool()
+	if !clientCAs.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("provider client CA contains no certificates")
+	}
+	return []grpc.ServerOption{grpc.Creds(credentials.NewTLS(&tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    clientCAs,
+		Certificates: []tls.Certificate{cert},
+	}))}, nil
+}
+
+func (s *Server) GetCapabilities(ctx context.Context, _ *providerv1.Empty) (*providerv1.CapabilitiesResponse, error) {
+	caps, err := s.provider.Capabilities(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if caps.ProviderName == "" {
+		return nil, fmt.Errorf("provider capabilities must include provider name")
+	}
+	if caps.ProviderVersion == "" {
+		return nil, fmt.Errorf("provider capabilities must include provider version")
+	}
+	return &providerv1.CapabilitiesResponse{
+		ProviderName:    caps.ProviderName,
+		ProviderVersion: caps.ProviderVersion,
+		Formats:         caps.Formats,
+		OsFamilies:      caps.OSFamilies,
+		BuildModes:      caps.BuildModes,
+		ProtocolVersion: ProtocolVersion,
+	}, nil
+}
+
+func (s *Server) ValidateConfig(ctx context.Context, req *providerv1.ValidateConfigRequest) (*providerv1.ValidateConfigResponse, error) {
+	if err := s.provider.ValidateConfig(ctx, Config{
+		ProviderConfigName: req.GetProviderConfigName(),
+		Credentials:        cloneBytesMap(req.GetCredentials()),
+		Region:             req.GetRegion(),
+		Endpoint:           req.GetEndpoint(),
+		Insecure:           req.GetInsecure(),
+		Extra:              cloneStringMap(req.GetExtra()),
+	}); err != nil {
+		return &providerv1.ValidateConfigResponse{Valid: false, Message: err.Error()}, nil
+	}
+	return &providerv1.ValidateConfigResponse{Valid: true}, nil
+}
+
+func (s *Server) UploadArtifact(stream providerv1.PlatformProvider_UploadArtifactServer) error {
+	first, err := stream.Recv()
+	if err != nil {
+		return fmt.Errorf("receive first upload chunk: %w", err)
+	}
+	reader, writer := io.Pipe()
+	copyErr := make(chan error, 1)
+	go func() {
+		copyErr <- copyUploadChunks(stream, writer, first)
+	}()
+
+	result, uploadErr := s.provider.UploadArtifact(stream.Context(), ArtifactInfo{
+		Format:             first.GetFormat(),
+		Checksum:           first.GetChecksum(),
+		TotalSizeBytes:     first.GetTotalSizeBytes(),
+		OSFamily:           first.GetOsFamily(),
+		Metadata:           cloneStringMap(first.GetMetadata()),
+		ProviderConfigName: first.GetProviderConfigName(),
+	}, reader, uploadProgressReporter{stream: stream})
+	if uploadErr != nil {
+		_ = reader.Close()
+		return uploadErr
+	}
+	if err := <-copyErr; err != nil {
+		return err
+	}
+	if result.ProviderRef == "" {
+		return fmt.Errorf("upload result provider ref is required")
+	}
+	return stream.Send(&providerv1.UploadProgress{
+		BytesWritten: first.GetTotalSizeBytes(),
+		TotalBytes:   first.GetTotalSizeBytes(),
+		Phase:        "done",
+		Message:      "upload completed",
+		ProviderRef:  result.ProviderRef,
+	})
+}
+
+func (s *Server) RegisterImage(ctx context.Context, req *providerv1.RegisterRequest) (*providerv1.ImageRef, error) {
+	ref, err := s.provider.RegisterImage(ctx, RegisterInput{
+		ProviderRef:        req.GetProviderRef(),
+		ImageName:          req.GetImageName(),
+		Tags:               cloneStringMap(req.GetTags()),
+		ProviderConfigName: req.GetProviderConfigName(),
+		Format:             req.GetFormat(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &providerv1.ImageRef{
+		Id:       ref.ID,
+		Name:     ref.Name,
+		Location: ref.Location,
+		Tags:     cloneStringMap(ref.Tags),
+	}, nil
+}
+
+func (s *Server) DeleteArtifact(ctx context.Context, req *providerv1.DeleteRequest) (*providerv1.DeleteResponse, error) {
+	deleted, message, err := s.provider.DeleteArtifact(ctx, DeleteInput{
+		ProviderRef:        req.GetProviderRef(),
+		ProviderConfigName: req.GetProviderConfigName(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &providerv1.DeleteResponse{Deleted: deleted, Message: message}, nil
+}
+
+func (s *Server) HealthCheck(ctx context.Context, _ *providerv1.Empty) (*providerv1.HealthResponse, error) {
+	message, err := s.provider.HealthCheck(ctx)
+	if err != nil {
+		return &providerv1.HealthResponse{Healthy: false, Message: err.Error()}, nil
+	}
+	return &providerv1.HealthResponse{Healthy: true, Message: message}, nil
+}
+
+func (s *Server) ReconcileRemoteBuild(ctx context.Context, req *providerv1.RemoteBuildRequest) (*providerv1.RemoteBuildResponse, error) {
+	remoteProvider, ok := s.provider.(RemoteBuildProvider)
+	if !ok {
+		return nil, status.Error(codes.Unimplemented, "remote build is not implemented by this provider")
+	}
+	result, err := remoteProvider.ReconcileRemoteBuild(ctx, remoteBuildInputFromProto(req))
+	if err != nil {
+		return nil, err
+	}
+	resp := &providerv1.RemoteBuildResponse{
+		OperationRef: result.OperationRef,
+		Phase:        result.Phase,
+		Message:      result.Message,
+		Done:         result.Done,
+	}
+	if result.Artifact != nil {
+		resp.Artifact = &providerv1.RemoteArtifact{
+			Path:      result.Artifact.Path,
+			Format:    result.Artifact.Format,
+			Checksum:  result.Artifact.Checksum,
+			SizeBytes: result.Artifact.SizeBytes,
+			OsFamily:  result.Artifact.OSFamily,
+			Metadata:  cloneStringMap(result.Artifact.Metadata),
+		}
+	}
+	if result.Hygiene != nil {
+		resp.Hygiene = &providerv1.RemoteHygieneResult{
+			Status:    result.Hygiene.Status,
+			Message:   result.Hygiene.Message,
+			Checks:    append([]string(nil), result.Hygiene.Checks...),
+			ResultRef: result.Hygiene.ResultRef,
+		}
+	}
+	for _, image := range result.Images {
+		resp.Images = append(resp.Images, &providerv1.RemoteImageRef{
+			Provider:           image.Provider,
+			ProviderConfigName: image.ProviderConfigName,
+			ImageRef:           image.ImageRef,
+			ImageName:          image.ImageName,
+			Location:           image.Location,
+			Format:             image.Format,
+			Checksum:           image.Checksum,
+			Tags:               cloneStringMap(image.Tags),
+		})
+	}
+	return resp, nil
+}
+
+func (s *Server) CleanupRemoteBuild(ctx context.Context, req *providerv1.RemoteBuildRequest) (*providerv1.RemoteBuildCleanupResponse, error) {
+	cleanupProvider, ok := s.provider.(RemoteBuildCleanupProvider)
+	if !ok {
+		return nil, status.Error(codes.Unimplemented, "remote build cleanup is not implemented by this provider")
+	}
+	result, err := cleanupProvider.CleanupRemoteBuild(ctx, remoteBuildInputFromProto(req))
+	if err != nil {
+		return nil, err
+	}
+	return &providerv1.RemoteBuildCleanupResponse{Cleaned: result.Cleaned, Message: result.Message}, nil
+}
+
+func remoteBuildInputFromProto(req *providerv1.RemoteBuildRequest) RemoteBuildInput {
+	return RemoteBuildInput{
+		BuildID:            req.GetBuildId(),
+		OperationRef:       req.GetOperationRef(),
+		ImageName:          req.GetImageName(),
+		Namespace:          req.GetNamespace(),
+		OSFamily:           req.GetOsFamily(),
+		OSDistribution:     req.GetOsDistribution(),
+		OSVersion:          req.GetOsVersion(),
+		OSArch:             req.GetOsArch(),
+		SourceType:         req.GetSourceType(),
+		SourceURL:          req.GetSourceUrl(),
+		SourceProviderRef:  req.GetSourceProviderRef(),
+		SourceChecksum:     req.GetSourceChecksum(),
+		ProviderConfigName: req.GetProviderConfigName(),
+		Format:             req.GetFormat(),
+		Tags:               cloneStringMap(req.GetTags()),
+		TimeoutSeconds:     req.GetTimeoutSeconds(),
+	}
+}
+
+type uploadProgressReporter struct {
+	stream providerv1.PlatformProvider_UploadArtifactServer
+}
+
+func (r uploadProgressReporter) Report(_ context.Context, progress Progress) error {
+	return r.stream.Send(&providerv1.UploadProgress{
+		BytesWritten: progress.BytesWritten,
+		TotalBytes:   progress.TotalBytes,
+		Phase:        progress.Phase,
+		Message:      progress.Message,
+	})
+}
+
+func copyUploadChunks(stream providerv1.PlatformProvider_UploadArtifactServer, writer *io.PipeWriter, first *providerv1.UploadChunk) error {
+	defer writer.Close()
+	if len(first.GetData()) > 0 {
+		if _, err := writer.Write(first.GetData()); err != nil {
+			return err
+		}
+	}
+	if first.GetLast() {
+		return nil
+	}
+	for {
+		chunk, err := stream.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			_ = writer.CloseWithError(err)
+			return fmt.Errorf("receive upload chunk: %w", err)
+		}
+		if len(chunk.GetData()) > 0 {
+			if _, err := writer.Write(chunk.GetData()); err != nil {
+				return err
+			}
+		}
+		if chunk.GetLast() {
+			return nil
+		}
+	}
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func cloneBytesMap(in map[string][]byte) map[string][]byte {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string][]byte, len(in))
+	for k, v := range in {
+		out[k] = append([]byte(nil), v...)
+	}
+	return out
+}

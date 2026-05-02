@@ -1,0 +1,125 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: imagebuilder-default-deny
+  namespace: imagebuilder-system
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: imagebuilder-operator
+  namespace: imagebuilder-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: imagebuilder-operator
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - port: 8080
+          protocol: TCP
+        - port: 9443
+          protocol: TCP
+  egress:
+    - ports:
+        - port: 443
+          protocol: TCP
+        - port: 6443
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/managed-by: imagebuilder
+            matchExpressions:
+              - key: imagebuilder.io/provider-name
+                operator: Exists
+          namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: imagebuilder-system
+      ports:
+        - port: 50051
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: imagebuilder-provider
+  namespace: imagebuilder-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: imagebuilder
+    matchExpressions:
+      - key: imagebuilder.io/provider-name
+        operator: Exists
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: imagebuilder-operator
+      ports:
+        - port: 50051
+          protocol: TCP
+  egress:
+    - ports:
+        - port: 443
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: imagebuilder-build-upload-jobs
+  namespace: imagebuilder-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: imagebuilder
+    matchExpressions:
+      - key: imagebuilder.io/job-kind
+        operator: In
+        values:
+          - build
+          - upload
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 443
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP

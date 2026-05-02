@@ -1,0 +1,48 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: imagebuilder-require-signed-digests
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-provider-and-job-image-digests
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              selector:
+                matchLabels:
+                  app.kubernetes.io/managed-by: imagebuilder
+      validate:
+        message: imagebuilder pods must use digest-pinned images.
+        foreach:
+          - list: request.object.spec.containers
+            pattern:
+              image: "*@sha256:*"
+          - list: request.object.spec.initContainers || `[]`
+            pattern:
+              image: "*@sha256:*"
+    - name: verify-imagebuilder-images
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              selector:
+                matchLabels:
+                  app.kubernetes.io/managed-by: imagebuilder
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/anwendt/*"
+            - "ghcr.io/yourorg/*"
+            - "ghcr.io/mycompany/*"
+          mutateDigest: true
+          required: true
+          verifyDigest: true
+          attestors:
+            - entries:
+                - keyless:
+                    issuer: https://token.actions.githubusercontent.com
+                    subject: "https://github.com/*"

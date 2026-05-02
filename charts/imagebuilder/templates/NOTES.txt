@@ -1,0 +1,8 @@
+ImageBuilder has been installed into namespace {{ include "imagebuilder.namespace" . }}.
+
+Admission webhooks are {{ ternary "enabled" "disabled" .Values.webhook.enabled }}.
+{{- if .Values.webhook.enabled }}
+The chart default is fail-closed:
+- failurePolicy: {{ .Values.webhook.failurePolicy }}
+- webhook service: {{ .Values.webhook.serviceName }}.{{ include "imagebuilder.namespace" . }}.svc
+{{- end }}

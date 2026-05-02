@@ -5,24 +5,25 @@
 // Covered behaviours:
 //   - Name() and Version() return correct values
 //   - Init() rejects missing region
-//   - Init() rejects missing accessKeyId / secretAccessKey
+//   - Init() rejects partial static credentials
 //   - Init() succeeds with valid credentials
 //   - Validate() rejects unsupported image formats
-//   - Validate() accepts supported formats (vmdk, raw, vhd)
+//   - Validate() accepts supported formats (ami, vmdk, raw, vhd)
 //   - Upload() returns error when buildID metadata is missing
 //   - Upload() returns S3 key with correct format when buildID present
 //   - HealthCheck() always returns nil (placeholder)
-//   - SupportedFormats() includes vmdk, raw, vhd
+//   - SupportedFormats() includes ami, vmdk, raw, vhd
 //   - SupportedOS() includes linux, windows
 
-package aws_test
+package aws
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
-	awsplugin "github.com/anwendt/imagebuilder/plugins/aws"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
 )
 
@@ -44,13 +45,44 @@ func validConfig() platform.PluginConfig {
 	}
 }
 
-func newInitializedPlugin(t *testing.T) *awsplugin.AWSPlugin {
+func newInitializedPlugin(t *testing.T) *AWSPlugin {
 	t.Helper()
-	p := &awsplugin.AWSPlugin{}
+	p := &AWSPlugin{}
 	if err := p.Init(context.Background(), validConfig()); err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
+	p.localClient = &fakeAWSLocalImageClient{}
 	return p
+}
+
+type fakeAWSLocalImageClient struct {
+	uploadedBucket  string
+	uploadedKey     string
+	uploadedPath    string
+	registerInput   awsLocalRegisterInput
+	cleanupMetadata map[string]string
+	healthErr       error
+}
+
+func (f *fakeAWSLocalImageClient) UploadObject(_ context.Context, bucket, key, filePath string) error {
+	f.uploadedBucket = bucket
+	f.uploadedKey = key
+	f.uploadedPath = filePath
+	return nil
+}
+
+func (f *fakeAWSLocalImageClient) RegisterAMI(_ context.Context, input awsLocalRegisterInput) (*platform.ImageRef, error) {
+	f.registerInput = input
+	return &platform.ImageRef{ID: "ami-0123456789abcdef0", Name: input.ImageName, Location: "eu-central-1", Tags: input.Tags}, nil
+}
+
+func (f *fakeAWSLocalImageClient) CleanupLocalImage(_ context.Context, metadata map[string]string) error {
+	f.cleanupMetadata = metadata
+	return nil
+}
+
+func (f *fakeAWSLocalImageClient) HealthCheck(_ context.Context) error {
+	return f.healthErr
 }
 
 // ---------------------------------------------------------------------------
@@ -58,14 +90,14 @@ func newInitializedPlugin(t *testing.T) *awsplugin.AWSPlugin {
 // ---------------------------------------------------------------------------
 
 func TestAWSPlugin_Name(t *testing.T) {
-	p := &awsplugin.AWSPlugin{}
+	p := &AWSPlugin{}
 	if p.Name() != "aws" {
 		t.Errorf("Name() = %q, want aws", p.Name())
 	}
 }
 
 func TestAWSPlugin_Version(t *testing.T) {
-	p := &awsplugin.AWSPlugin{}
+	p := &AWSPlugin{}
 	if p.Version() == "" {
 		t.Error("Version() should not be empty")
 	}
@@ -76,7 +108,7 @@ func TestAWSPlugin_Version(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAWSPlugin_SupportedFormats_IncludesVMDK(t *testing.T) {
-	p := &awsplugin.AWSPlugin{}
+	p := &AWSPlugin{}
 	formats := p.SupportedFormats()
 	found := false
 	for _, f := range formats {
@@ -90,13 +122,13 @@ func TestAWSPlugin_SupportedFormats_IncludesVMDK(t *testing.T) {
 }
 
 func TestAWSPlugin_SupportedFormats_IncludesRawAndVHD(t *testing.T) {
-	p := &awsplugin.AWSPlugin{}
+	p := &AWSPlugin{}
 	formats := p.SupportedFormats()
 	have := make(map[platform.ImageFormat]bool)
 	for _, f := range formats {
 		have[f] = true
 	}
-	for _, want := range []platform.ImageFormat{platform.FormatRaw, platform.FormatVHD} {
+	for _, want := range []platform.ImageFormat{platform.FormatAMI, platform.FormatRaw, platform.FormatVHD} {
 		if !have[want] {
 			t.Errorf("SupportedFormats() missing %q", want)
 		}
@@ -104,7 +136,7 @@ func TestAWSPlugin_SupportedFormats_IncludesRawAndVHD(t *testing.T) {
 }
 
 func TestAWSPlugin_SupportedOS_IncludesLinuxAndWindows(t *testing.T) {
-	p := &awsplugin.AWSPlugin{}
+	p := &AWSPlugin{}
 	families := p.SupportedOS()
 	have := make(map[platform.OSFamily]bool)
 	for _, f := range families {
@@ -117,12 +149,26 @@ func TestAWSPlugin_SupportedOS_IncludesLinuxAndWindows(t *testing.T) {
 	}
 }
 
+func TestAWSPlugin_SupportedBuildModes_IncludesRemote(t *testing.T) {
+	p := &AWSPlugin{}
+	modes := p.SupportedBuildModes()
+	have := make(map[string]bool)
+	for _, mode := range modes {
+		have[mode] = true
+	}
+	for _, want := range []string{v1alpha1.BuildModeLocal, v1alpha1.BuildModeRemote} {
+		if !have[want] {
+			t.Errorf("SupportedBuildModes() missing %q", want)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
 
 func TestAWSPlugin_Init_MissingRegion_ReturnsError(t *testing.T) {
-	p := &awsplugin.AWSPlugin{}
+	p := &AWSPlugin{}
 	cfg := validConfig()
 	cfg.Region = ""
 	if err := p.Init(context.Background(), cfg); err == nil {
@@ -130,26 +176,36 @@ func TestAWSPlugin_Init_MissingRegion_ReturnsError(t *testing.T) {
 	}
 }
 
-func TestAWSPlugin_Init_MissingAccessKeyId_ReturnsError(t *testing.T) {
-	p := &awsplugin.AWSPlugin{}
+func TestAWSPlugin_Init_MissingStaticCredentials_UsesDefaultChain(t *testing.T) {
+	p := &AWSPlugin{}
 	cfg := validConfig()
 	delete(cfg.SecretData, "accessKeyId")
-	if err := p.Init(context.Background(), cfg); err == nil {
-		t.Error("Init with missing accessKeyId should return error")
+	delete(cfg.SecretData, "secretAccessKey")
+	if err := p.Init(context.Background(), cfg); err != nil {
+		t.Errorf("Init without static credentials returned error: %v", err)
 	}
 }
 
-func TestAWSPlugin_Init_MissingSecretAccessKey_ReturnsError(t *testing.T) {
-	p := &awsplugin.AWSPlugin{}
+func TestAWSPlugin_Init_PartialStaticCredentials_ReturnsError(t *testing.T) {
+	p := &AWSPlugin{}
+	cfg := validConfig()
+	delete(cfg.SecretData, "accessKeyId")
+	if err := p.Init(context.Background(), cfg); err == nil {
+		t.Error("Init with partial static credentials should return error")
+	}
+}
+
+func TestAWSPlugin_Init_PartialStaticCredentialsWithoutSecret_ReturnsError(t *testing.T) {
+	p := &AWSPlugin{}
 	cfg := validConfig()
 	delete(cfg.SecretData, "secretAccessKey")
 	if err := p.Init(context.Background(), cfg); err == nil {
-		t.Error("Init with missing secretAccessKey should return error")
+		t.Error("Init with partial static credentials should return error")
 	}
 }
 
 func TestAWSPlugin_Init_ValidConfig_ReturnsNil(t *testing.T) {
-	p := &awsplugin.AWSPlugin{}
+	p := &AWSPlugin{}
 	if err := p.Init(context.Background(), validConfig()); err != nil {
 		t.Errorf("Init with valid config returned error: %v", err)
 	}
@@ -183,9 +239,17 @@ func TestAWSPlugin_Validate_AcceptsVHD(t *testing.T) {
 	}
 }
 
+func TestAWSPlugin_Validate_AcceptsAMI(t *testing.T) {
+	p := newInitializedPlugin(t)
+	spec := v1alpha1.TargetSpec{Format: "ami"}
+	if err := p.Validate(context.Background(), spec); err != nil {
+		t.Errorf("Validate ami returned error: %v", err)
+	}
+}
+
 func TestAWSPlugin_Validate_RejectsUnsupportedFormat(t *testing.T) {
 	p := newInitializedPlugin(t)
-	unsupported := []string{"ova", "ovf", "qcow2", "gcetarball", "ami"}
+	unsupported := []string{"ova", "ovf", "qcow2", "gcetarball"}
 	for _, f := range unsupported {
 		spec := v1alpha1.TargetSpec{Format: f}
 		if err := p.Validate(context.Background(), spec); err == nil {
@@ -212,8 +276,12 @@ func TestAWSPlugin_Upload_MissingBuildID_ReturnsError(t *testing.T) {
 
 func TestAWSPlugin_Upload_ReturnS3Key(t *testing.T) {
 	p := newInitializedPlugin(t)
+	artifactPath := filepath.Join(t.TempDir(), "disk.vmdk")
+	if err := os.WriteFile(artifactPath, []byte("disk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	artifact := &platform.BuildArtifact{
-		Path:   "/workspace/disk.vmdk",
+		Path:   artifactPath,
 		Format: platform.FormatVMDK,
 		Metadata: map[string]string{
 			"buildID": "build-abc123",
@@ -234,7 +302,12 @@ func TestAWSPlugin_Upload_ReturnS3Key(t *testing.T) {
 
 func TestAWSPlugin_Upload_S3BucketInMetadata(t *testing.T) {
 	p := newInitializedPlugin(t)
+	artifactPath := filepath.Join(t.TempDir(), "disk.vmdk")
+	if err := os.WriteFile(artifactPath, []byte("disk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	artifact := &platform.BuildArtifact{
+		Path:   artifactPath,
 		Format: platform.FormatVMDK,
 		Metadata: map[string]string{
 			"buildID": "build-xyz",
@@ -268,9 +341,61 @@ func TestAWSPlugin_Cleanup_ReturnsNil(t *testing.T) {
 	p := newInitializedPlugin(t)
 	artifact := &platform.BuildArtifact{
 		Format:   platform.FormatVMDK,
-		Metadata: map[string]string{},
+		Metadata: map[string]string{"aws.s3Bucket": "bucket", "aws.s3Key": "key"},
 	}
 	if err := p.Cleanup(context.Background(), artifact); err != nil {
 		t.Errorf("Cleanup returned error: %v", err)
+	}
+}
+
+func TestAWSPlugin_Cleanup_DerivesStagingObjectFromBuildMetadata(t *testing.T) {
+	p := newInitializedPlugin(t)
+	fake := &fakeAWSLocalImageClient{}
+	p.localClient = fake
+	artifact := &platform.BuildArtifact{
+		Format: platform.FormatVMDK,
+		Metadata: map[string]string{
+			"buildID":  "build-123",
+			"s3Bucket": "my-image-bucket",
+		},
+	}
+
+	if err := p.Cleanup(context.Background(), artifact); err != nil {
+		t.Fatalf("Cleanup returned error: %v", err)
+	}
+	if fake.cleanupMetadata["bucket"] != "my-image-bucket" {
+		t.Fatalf("cleanup bucket = %q, want my-image-bucket", fake.cleanupMetadata["bucket"])
+	}
+	if fake.cleanupMetadata["key"] != "imagebuilder/build-123/disk.vmdk" {
+		t.Fatalf("cleanup key = %q, want imagebuilder/build-123/disk.vmdk", fake.cleanupMetadata["key"])
+	}
+}
+
+func TestAWSPlugin_Register_UsesImportedSnapshotFlow(t *testing.T) {
+	p := newInitializedPlugin(t)
+	fake := &fakeAWSLocalImageClient{}
+	p.localClient = fake
+	ref, err := p.Register(context.Background(), &platform.UploadResult{
+		ProviderRef: "imagebuilder/build/disk.vmdk",
+		Metadata: map[string]string{
+			"bucket":         "my-image-bucket",
+			"key":            "imagebuilder/build/disk.vmdk",
+			"buildID":        "build-123",
+			"format":         "vmdk",
+			"imageName":      "ubuntu-prod",
+			"target.tag.env": "prod",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	if ref.ID != "ami-0123456789abcdef0" {
+		t.Fatalf("Image ID = %q", ref.ID)
+	}
+	if fake.registerInput.Bucket != "my-image-bucket" || fake.registerInput.Key != "imagebuilder/build/disk.vmdk" {
+		t.Fatalf("register input bucket/key = %q/%q", fake.registerInput.Bucket, fake.registerInput.Key)
+	}
+	if fake.registerInput.Tags["env"] != "prod" {
+		t.Fatalf("register input env tag = %q, want prod", fake.registerInput.Tags["env"])
 	}
 }

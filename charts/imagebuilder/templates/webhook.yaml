@@ -1,0 +1,53 @@
+{{- if .Values.webhook.enabled }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ include "imagebuilder.fullname" . }}-validating
+  labels:
+    {{- include "imagebuilder.labels" . | nindent 4 }}
+  {{- if .Values.webhook.certManager.enabled }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ include "imagebuilder.namespace" . }}/{{ .Values.webhook.certManager.certificateName }}
+  {{- end }}
+webhooks:
+  - name: vproviderconfig.imagebuilder.io
+    admissionReviewVersions:
+      - v1
+    clientConfig:
+      service:
+        name: {{ .Values.webhook.serviceName }}
+        namespace: {{ include "imagebuilder.namespace" . }}
+        path: /validate-imagebuilder-io-v1alpha1-providerconfig
+      {{- if and (not .Values.webhook.certManager.enabled) .Values.webhook.caBundle }}
+      caBundle: {{ .Values.webhook.caBundle | quote }}
+      {{- end }}
+    failurePolicy: {{ .Values.webhook.failurePolicy }}
+    matchPolicy: {{ .Values.webhook.matchPolicy }}
+    sideEffects: None
+    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
+    rules:
+      - apiGroups: ["imagebuilder.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["providerconfigs"]
+  - name: vvmimage.imagebuilder.io
+    admissionReviewVersions:
+      - v1
+    clientConfig:
+      service:
+        name: {{ .Values.webhook.serviceName }}
+        namespace: {{ include "imagebuilder.namespace" . }}
+        path: /validate-imagebuilder-io-v1alpha1-vmimage
+      {{- if and (not .Values.webhook.certManager.enabled) .Values.webhook.caBundle }}
+      caBundle: {{ .Values.webhook.caBundle | quote }}
+      {{- end }}
+    failurePolicy: {{ .Values.webhook.failurePolicy }}
+    matchPolicy: {{ .Values.webhook.matchPolicy }}
+    sideEffects: None
+    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
+    rules:
+      - apiGroups: ["imagebuilder.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["vmimages"]
+{{- end }}

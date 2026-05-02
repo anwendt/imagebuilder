@@ -1,0 +1,167 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: imagebuilder-system
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: imagebuilder-operator
+  namespace: imagebuilder-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: imagebuilder-operator
+rules:
+  - apiGroups: ["imagebuilder.io"]
+    resources: ["vmimages", "platformproviders", "providerconfigs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["imagebuilder.io"]
+    resources: ["vmimages/status", "platformproviders/status", "providerconfigs/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["imagebuilder.io"]
+    resources: ["vmimages/finalizers", "platformproviders/finalizers"]
+    verbs: ["update"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "persistentvolumeclaims", "secrets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["create", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: imagebuilder-operator-metrics
+  namespace: imagebuilder-system
+  labels:
+    app.kubernetes.io/name: imagebuilder-operator
+spec:
+  selector:
+    app.kubernetes.io/name: imagebuilder-operator
+  ports:
+    - name: metrics
+      port: 8080
+      targetPort: metrics
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: imagebuilder-webhook-service
+  namespace: imagebuilder-system
+  labels:
+    app.kubernetes.io/name: imagebuilder-operator
+spec:
+  selector:
+    app.kubernetes.io/name: imagebuilder-operator
+  ports:
+    - name: webhook
+      port: 443
+      targetPort: webhook
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: imagebuilder-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: imagebuilder-operator
+subjects:
+  - kind: ServiceAccount
+    name: imagebuilder-operator
+    namespace: imagebuilder-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: imagebuilder-operator
+  namespace: imagebuilder-system
+  labels:
+    app.kubernetes.io/name: imagebuilder-operator
+    app.kubernetes.io/managed-by: imagebuilder
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: imagebuilder-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: imagebuilder-operator
+    spec:
+      serviceAccountName: imagebuilder-operator
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: operator
+          image: ghcr.io/anwendt/imagebuilder-operator:dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - --leader-elect=true
+            - --max-concurrent-builds=3
+            - --max-concurrent-builds-per-node=1
+            - --scheduler-namespace=imagebuilder-system
+            - --metrics-bind-address=:8080
+            - --health-probe-bind-address=:8081
+            - --log-level=info
+          ports:
+            - name: metrics
+              containerPort: 8080
+            - name: health
+              containerPort: 8081
+            - name: webhook
+              containerPort: 9443
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: webhook-certs
+              mountPath: /tmp/k8s-webhook-server/serving-certs
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: webhook-certs
+          secret:
+            secretName: imagebuilder-webhook-server-cert

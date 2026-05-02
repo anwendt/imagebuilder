@@ -1,0 +1,28 @@
+apiVersion: imagebuilder.io/v1alpha1
+kind: PlatformProvider
+metadata:
+  name: example
+  namespace: imagebuilder-system
+spec:
+  package: ghcr.io/yourorg/imagebuilder-provider-example@sha256:replace-with-image-digest
+  packagePullPolicy: IfNotPresent
+  security:
+    allowedRegistries:
+      - ghcr.io/yourorg
+    requireDigest: true
+    verifySignature: true
+  # Enable this for production deployments whose provider gRPC endpoint crosses
+  # the namespace-local NetworkPolicy trust boundary.
+  # transport:
+  #   tls:
+  #     mode: Mutual
+  #     serverName: provider-example.imagebuilder-system.svc
+  #     caSecretRef:
+  #       name: provider-grpc-ca
+  #       namespace: imagebuilder-system
+  #     clientCertificateSecretRef:
+  #       name: operator-provider-client-tls
+  #       namespace: imagebuilder-system
+  #     serverCertificateSecretRef:
+  #       name: provider-example-server-tls
+  #       namespace: imagebuilder-system

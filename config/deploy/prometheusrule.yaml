@@ -1,0 +1,35 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: imagebuilder-operator
+  namespace: imagebuilder-system
+  labels:
+    app.kubernetes.io/name: imagebuilder-operator
+spec:
+  groups:
+    - name: imagebuilder.rules
+      rules:
+        - alert: ImageBuilderBuildFailures
+          expr: increase(imagebuilder_failures_total[15m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: VM image build or upload failures detected.
+            description: "{{ $value }} imagebuilder failure(s) occurred in the last 15 minutes."
+        - alert: ImageBuilderNoSuccessfulBuilds
+          expr: sum(rate(imagebuilder_build_duration_seconds_count{phase="Succeeded"}[6h])) == 0
+          for: 6h
+          labels:
+            severity: info
+          annotations:
+            summary: No successful VM image builds observed.
+            description: No successful imagebuilder build completion was observed for six hours.
+        - alert: ImageBuilderStuckActiveBuilds
+          expr: sum(imagebuilder_active_builds) > 0
+          for: 3h
+          labels:
+            severity: warning
+          annotations:
+            summary: VM image builds appear to be stuck.
+            description: One or more imagebuilder builds have been active for more than three hours.

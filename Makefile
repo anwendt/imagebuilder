@@ -2,6 +2,8 @@
 # All targets are Apache 2.0 toolchain only.
 
 BINARY_NAME    := imagebuilder-operator
+BUILDER_BINARY := imagebuilder-builder
+UPLOADER_BINARY := imagebuilder-uploader
 IMAGE_TAG      ?= dev
 REGISTRY       ?= ghcr.io/anwendt
 GO             := go
@@ -9,10 +11,10 @@ GOFLAGS        ?=
 CGO_ENABLED    := 0
 
 # Tool versions
-CONTROLLER_GEN_VERSION := v0.15.0
+CONTROLLER_GEN_VERSION := v0.19.0
 KUBEBUILDER_VERSION     := 3.15.0
 
-.PHONY: all build test test-race lint vet gosec govulncheck staticcheck security-check generate manifests run docker-build license-check help
+.PHONY: all build build-builder build-uploader test test-race test-core-e2e test-manifests test-e2e test-e2e-aws lint vet gosec govulncheck staticcheck security-check generate manifests run docker-build docker-build-builder docker-build-uploader license-check help deploy-production deploy-observability deploy-policies helm-lint helm-template
 
 all: generate manifests build
 
@@ -21,13 +23,26 @@ all: generate manifests build
 build: ## Build the operator binary (static, reproducible; ADR-004 CGO_ENABLED=0)
 	CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(GOFLAGS) -trimpath -o bin/$(BINARY_NAME) ./cmd/operator/
 
+build-builder: ## Build the build-engine binary
+	CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(GOFLAGS) -trimpath -o bin/$(BUILDER_BINARY) ./cmd/builder/
+
+build-uploader: ## Build the upload/register binary
+	CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(GOFLAGS) -trimpath -o bin/$(UPLOADER_BINARY) ./cmd/uploader/
+
 run: generate manifests ## Run the operator locally (uses current kubeconfig context)
 	$(GO) run ./cmd/operator/ \
 		--leader-elect=false \
-		--max-concurrent-builds=2
+		--max-concurrent-builds=2 \
+		--max-concurrent-builds-per-node=1
 
 docker-build: ## Build the operator Docker image
 	docker build -t $(REGISTRY)/$(BINARY_NAME):$(IMAGE_TAG) .
+
+docker-build-builder: ## Build the build-engine Docker image
+	docker build -f Dockerfile.builder -t $(REGISTRY)/$(BUILDER_BINARY):$(IMAGE_TAG) .
+
+docker-build-uploader: ## Build the upload/register Docker image
+	docker build -f Dockerfile.uploader -t $(REGISTRY)/$(UPLOADER_BINARY):$(IMAGE_TAG) .
 
 docker-push: ## Push the operator Docker image
 	docker push $(REGISTRY)/$(BINARY_NAME):$(IMAGE_TAG)
@@ -59,6 +74,18 @@ test: ## Run unit tests with race detector (CERT-CON-02)
 test-integration: ## Run integration tests (requires a running cluster or envtest)
 	$(GO) test ./... -v -count=1 -race -tags=integration
 
+test-core-e2e: ## Run deterministic mocked-provider core E2E flows
+	$(GO) test ./pkg/controller/vmimage -run TestCoreE2E -count=1 -v
+
+test-manifests: ## Validate deployment and Helm chart invariants
+	$(GO) test ./test/manifests -count=1 -v
+
+test-e2e: ## Run kind-based smoke test (requires kind + kubectl)
+	test/e2e/kind-smoke.sh
+
+test-e2e-aws: ## Run opt-in real AWS remote build E2E test (requires AWS_E2E=1 and AWS_E2E_* env)
+	AWS_E2E=1 $(GO) test ./plugins/aws -run TestAWSRemoteBuild_E2E -count=1 -v
+
 lint: ## Run golangci-lint
 	golangci-lint run ./...
 
@@ -82,9 +109,11 @@ security-check: vet gosec staticcheck govulncheck license-check ## Run all secur
 ## Compliance
 
 license-check: ## Check all dependencies are Apache 2.0 / MIT compatible
+	@which go-licenses > /dev/null 2>&1 || $(GO) install github.com/google/go-licenses@latest
 	go-licenses check ./...
 
 license-report: ## Generate NOTICE file
+	@which go-licenses > /dev/null 2>&1 || $(GO) install github.com/google/go-licenses@latest
 	go-licenses report ./... > NOTICE
 	@echo "NOTICE file updated"
 
@@ -97,14 +126,41 @@ uninstall: ## Remove CRDs from the cluster
 	kubectl delete -f config/crd/ --ignore-not-found
 
 deploy: manifests ## Deploy operator to the cluster
-	kubectl apply -f config/
+	kubectl apply -f config/crd/
+	kubectl apply -f config/deploy/operator.yaml
+	kubectl apply -f config/certmanager/webhook-certificate.yaml
+	kubectl apply -f config/webhook/manifests.yaml
+
+deploy-observability: ## Deploy Prometheus Operator resources (requires monitoring.coreos.com CRDs)
+	kubectl apply -f config/deploy/servicemonitor.yaml
+	kubectl apply -f config/deploy/prometheusrule.yaml
+
+deploy-policies: ## Deploy optional hardening policies (requires matching admission controllers)
+	kubectl apply -f config/policy/networkpolicies.yaml
+	kubectl apply -f config/policy/kyverno-image-signatures.yaml
+
+deploy-production: manifests ## Deploy operator with cert-manager webhook TLS and hardening examples
+	kubectl apply -f config/crd/
+	kubectl apply -f config/deploy/operator.yaml
+	kubectl apply -f config/policy/networkpolicies.yaml
+	kubectl apply -f config/certmanager/webhook-certificate.yaml
+	kubectl apply -f config/webhook/manifests.yaml
+
+helm-lint: ## Lint Helm chart (requires helm)
+	helm lint charts/imagebuilder
+
+helm-template: ## Render Helm chart including CRDs (requires helm)
+	helm template imagebuilder charts/imagebuilder --namespace imagebuilder-system --include-crds
 
 undeploy: ## Remove operator from the cluster
-	kubectl delete -f config/ --ignore-not-found
+	kubectl delete -f config/webhook/manifests.yaml --ignore-not-found
+	kubectl delete -f config/certmanager/webhook-certificate.yaml --ignore-not-found
+	kubectl delete -f config/deploy/operator.yaml --ignore-not-found
+	kubectl delete -f config/crd/ --ignore-not-found
 
 ## Tools
 
-CONTROLLER_GEN := $(shell which controller-gen 2>/dev/null)
+CONTROLLER_GEN := $(shell which controller-gen 2>/dev/null || test -x "$$(go env GOPATH)/bin/controller-gen" && echo "$$(go env GOPATH)/bin/controller-gen")
 controller-gen:
 ifeq ($(CONTROLLER_GEN),)
 	$(GO) install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)

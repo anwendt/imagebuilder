@@ -1,0 +1,20 @@
+{{- if and .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "imagebuilder.fullname" . }}
+  namespace: {{ include "imagebuilder.namespace" . }}
+  labels:
+    {{- include "imagebuilder.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "imagebuilder.selectorLabels" . | nindent 6 }}
+  namespaceSelector:
+    matchNames:
+      - {{ include "imagebuilder.namespace" . }}
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+{{- end }}

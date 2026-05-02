@@ -23,12 +23,16 @@ type fakePlugin struct {
 	version string
 }
 
-func (p *fakePlugin) Name() string                              { return p.name }
-func (p *fakePlugin) Version() string                          { return p.version }
-func (p *fakePlugin) SupportedFormats() []platform.ImageFormat { return []platform.ImageFormat{platform.FormatVMDK} }
-func (p *fakePlugin) SupportedOS() []platform.OSFamily         { return []platform.OSFamily{platform.OSFamilyLinux} }
-func (p *fakePlugin) Init(_ context.Context, _ platform.PluginConfig) error          { return nil }
-func (p *fakePlugin) Validate(_ context.Context, _ v1alpha1.TargetSpec) error        { return nil }
+func (p *fakePlugin) Name() string    { return p.name }
+func (p *fakePlugin) Version() string { return p.version }
+func (p *fakePlugin) SupportedFormats() []platform.ImageFormat {
+	return []platform.ImageFormat{platform.FormatVMDK}
+}
+func (p *fakePlugin) SupportedOS() []platform.OSFamily {
+	return []platform.OSFamily{platform.OSFamilyLinux}
+}
+func (p *fakePlugin) Init(_ context.Context, _ platform.PluginConfig) error   { return nil }
+func (p *fakePlugin) Validate(_ context.Context, _ v1alpha1.TargetSpec) error { return nil }
 func (p *fakePlugin) Upload(_ context.Context, _ *platform.BuildArtifact) (*platform.UploadResult, error) {
 	return &platform.UploadResult{}, nil
 }
@@ -36,7 +40,7 @@ func (p *fakePlugin) Register(_ context.Context, _ *platform.UploadResult) (*pla
 	return &platform.ImageRef{ID: "fake-id"}, nil
 }
 func (p *fakePlugin) Cleanup(_ context.Context, _ *platform.BuildArtifact) error { return nil }
-func (p *fakePlugin) HealthCheck(_ context.Context) error                         { return nil }
+func (p *fakePlugin) HealthCheck(_ context.Context) error                        { return nil }
 
 func newRegistry() *plugin.Registry {
 	return plugin.NewRegistry(slog.Default())
@@ -71,6 +75,16 @@ func TestRegistry_Register_Duplicate_ReturnsError(t *testing.T) {
 	}
 	if err := r.Register(p); err == nil {
 		t.Error("second Register with same name should return error, got nil")
+	}
+}
+
+func TestRegistry_Register_InvalidContract_ReturnsError(t *testing.T) {
+	r := newRegistry()
+	if err := r.Register(&fakePlugin{version: "v1.0.0"}); err == nil {
+		t.Error("Register with empty plugin name should return error")
+	}
+	if err := r.Register(&fakePlugin{name: "aws"}); err == nil {
+		t.Error("Register with empty plugin version should return error")
 	}
 }
 

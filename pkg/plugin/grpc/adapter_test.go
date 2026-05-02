@@ -11,10 +11,19 @@ package grpc_test
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"net"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 
 	providerv1 "github.com/anwendt/imagebuilder/api/provider/v1"
 	grpcadapter "github.com/anwendt/imagebuilder/pkg/plugin/grpc"
@@ -208,6 +217,110 @@ func TestAdapter_Connect_WrongProtocolVersion_ReturnsError(t *testing.T) {
 	if err := adapter.Connect(context.Background()); err == nil {
 		t.Error("Connect with wrong protocol version should return error, got nil")
 	}
+}
+
+func TestAdapter_Connect_MutualTLSRejectsInvalidCABundle(t *testing.T) {
+	adapter := grpcadapter.NewAdapterWithTLS("127.0.0.1:1", &grpcadapter.ProviderTLSConfig{
+		ServerName: "provider.default.svc",
+		CABundle:   []byte("not a pem ca"),
+		ClientCert: []byte("not a cert"),
+		ClientKey:  []byte("not a key"),
+	})
+
+	if err := adapter.Connect(context.Background()); err == nil {
+		t.Fatal("Connect should reject invalid mTLS CA bundle")
+	}
+}
+
+func TestAdapter_Connect_MutualTLSSucceeds(t *testing.T) {
+	caPEM, serverCert, clientCertPEM, clientKeyPEM := testMTLSMaterials(t, "provider.default.svc")
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	clientCAs := x509.NewCertPool()
+	if !clientCAs.AppendCertsFromPEM(caPEM) {
+		t.Fatal("append client CA")
+	}
+	grpcSrv := grpc.NewServer(grpc.Creds(credentials.NewTLS(&tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    clientCAs,
+		Certificates: []tls.Certificate{serverCert},
+	})))
+	providerv1.RegisterPlatformProviderServer(grpcSrv, &fakeProviderServer{capabilities: defaultCaps()})
+	go func() { _ = grpcSrv.Serve(lis) }()
+	defer grpcSrv.Stop()
+
+	adapter := grpcadapter.NewAdapterWithTLS(lis.Addr().String(), &grpcadapter.ProviderTLSConfig{
+		ServerName: "provider.default.svc",
+		CABundle:   caPEM,
+		ClientCert: clientCertPEM,
+		ClientKey:  clientKeyPEM,
+	})
+	if err := adapter.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect returned error: %v", err)
+	}
+	defer adapter.Close() //nolint:errcheck
+	if adapter.Name() != "test-provider" {
+		t.Fatalf("adapter name = %q, want test-provider", adapter.Name())
+	}
+}
+
+func testMTLSMaterials(t *testing.T, serverName string) ([]byte, tls.Certificate, []byte, []byte) {
+	t.Helper()
+	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate CA key: %v", err)
+	}
+	ca := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "imagebuilder-provider-test-ca"},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, ca, ca, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("create CA cert: %v", err)
+	}
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
+
+	serverCertPEM, serverKeyPEM := testSignedCertPEM(t, ca, caKey, "provider-server", []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, []string{serverName})
+	serverCert, err := tls.X509KeyPair(serverCertPEM, serverKeyPEM)
+	if err != nil {
+		t.Fatalf("load server keypair: %v", err)
+	}
+	clientCertPEM, clientKeyPEM := testSignedCertPEM(t, ca, caKey, "operator-client", []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, nil)
+	return caPEM, serverCert, clientCertPEM, clientKeyPEM
+}
+
+func testSignedCertPEM(t *testing.T, ca *x509.Certificate, caKey *rsa.PrivateKey, commonName string, usages []x509.ExtKeyUsage, dnsNames []string) ([]byte, []byte) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		Subject: pkix.Name{
+			CommonName: commonName,
+		},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           usages,
+		BasicConstraintsValid: true,
+		DNSNames:              dnsNames,
+	}
+	certDER, err := x509.CreateCertificate(rand.Reader, template, ca, &key.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("create cert: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}),
+		pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
 }
 
 // ---------------------------------------------------------------------------

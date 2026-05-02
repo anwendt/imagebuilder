@@ -24,6 +24,7 @@ references the old one.
 | [ADR-004](ADR-004-lgpl-as-external-processes.md) | LGPL Dependencies Accessed Only as External Processes | Accepted |
 | [ADR-005](ADR-005-protobuf-versioned-contract.md) | Protobuf Schema as Versioned and Immutable Provider Contract | Accepted |
 | [ADR-006](ADR-006-no-go-plugin-mechanism.md) | No Go Plugin Mechanism (.so Files) | Accepted |
+| [ADR-007](ADR-007-remote-build-provider-contract.md) | Remote Build as Provider-Owned Execution Mode | Accepted |
 
 ## ADR Status Values
 

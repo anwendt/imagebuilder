@@ -50,6 +50,17 @@ service PlatformProvider {
   // HealthCheck is called periodically by the operator.
   // Return an error to signal the provider is unhealthy.
   rpc HealthCheck(Empty) returns (HealthResponse);
+
+  // ReconcileRemoteBuild starts or continues a provider-owned remote build.
+  // This is additive in v1 and must be idempotent for the same build_id and
+  // operation_ref. Providers that do not advertise build_modes=["remote"] may
+  // return Unimplemented.
+  rpc ReconcileRemoteBuild(RemoteBuildRequest) returns (RemoteBuildResponse);
+
+  // CleanupRemoteBuild removes provider-owned resources for a remote build.
+  // Called after deletion, timeout, cancellation, or failed reconciliation.
+  // Must be idempotent and must not return or log secret material.
+  rpc CleanupRemoteBuild(RemoteBuildRequest) returns (RemoteBuildCleanupResponse);
 }
 
 // ---------------------------------------------------------------------------
@@ -76,6 +87,104 @@ message CapabilitiesResponse {
   // protocol_version of this proto schema e.g. "v1"
   // Operator rejects providers with incompatible protocol versions.
   string protocol_version  = 5;
+
+  // build_modes lists execution modes supported by the provider.
+  // Omitted means ["local"] for backward compatibility.
+  repeated string build_modes = 6;
+}
+
+// ---------------------------------------------------------------------------
+// ReconcileRemoteBuild
+// ---------------------------------------------------------------------------
+
+message RemoteBuildRequest {
+  string build_id = 1;
+  string operation_ref = 2;
+  string image_name = 3;
+  string namespace = 4;
+  string os_family = 5;
+  string os_distribution = 6;
+  string os_version = 7;
+  string os_arch = 8;
+  string source_type = 9;
+  string source_url = 10;
+  string source_checksum = 11;
+  string provider_config_name = 12;
+  string format = 13;
+  map<string, string> tags = 14;
+  repeated RemoteProvisioner provisioners = 15;
+  RemoteGuestAccess guest_access = 16;
+  int64 timeout_seconds = 17;
+  // source_provider_ref is an opaque provider-native source reference such as
+  // an AMI ID, vSphere template ID, Glance UUID, or cloud image resource name.
+  // Prefer this over overloading source_url for remote builds.
+  string source_provider_ref = 18;
+}
+
+message RemoteProvisioner {
+  string type = 1;
+  string image = 2;
+  string inline = 3;
+  string playbook = 4;
+  repeated string args = 5;
+  map<string, string> extra_vars = 6;
+}
+
+message RemoteGuestAccess {
+  string protocol = 1;
+  string user = 2;
+  int32 guest_port = 3;
+  bool generated_ssh_key = 4;
+  bool generated_password = 5;
+  string injection_method = 6;
+}
+
+message RemoteBuildResponse {
+  string operation_ref = 1;
+  string phase = 2;
+  string message = 3;
+  bool done = 4;
+  repeated RemoteImageRef images = 5;
+  RemoteArtifact artifact = 6;
+  RemoteHygieneResult hygiene = 7;
+}
+
+message RemoteHygieneResult {
+  // status is provider-neutral and should be "passed", "failed", or "unknown".
+  string status = 1;
+  // message is copied into VMImage status/events and must not contain secrets.
+  string message = 2;
+  // checks contains provider-neutral check identifiers such as
+  // "temporary-user-removed" or "bootstrap-files-removed".
+  repeated string checks = 3;
+  // result_ref is an optional non-secret provider/workspace reference to a
+  // detailed hygiene report.
+  string result_ref = 4;
+}
+
+message RemoteImageRef {
+  string provider = 1;
+  string provider_config_name = 2;
+  string image_ref = 3;
+  string image_name = 4;
+  string location = 5;
+  string format = 6;
+  string checksum = 7;
+  map<string, string> tags = 8;
+}
+
+message RemoteArtifact {
+  string path = 1;
+  string format = 2;
+  string checksum = 3;
+  int64 size_bytes = 4;
+  string os_family = 5;
+  map<string, string> metadata = 6;
+}
+
+message RemoteBuildCleanupResponse {
+  bool cleaned = 1;
+  string message = 2;
 }
 
 // ---------------------------------------------------------------------------

@@ -20,7 +20,7 @@ spec:
   source:
     type: cloud-image
     url: https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
-    checksum: sha256:placeholder-replace-with-real-checksum
+    checksum: sha256:0000000000000000000000000000000000000000000000000000000000000000
 
   provisioners:
     # Step 1: in-process — generates the cloud-init ISO (no container needed)
@@ -42,7 +42,7 @@ spec:
     # Step 2: init-container — Ansible hardening playbook
     - type: ansible
       # image is optional — operator uses its default if omitted
-      image: ghcr.io/yourorg/provisioner-ansible:v2.16
+      image: ghcr.io/yourorg/provisioner-ansible@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
       playbook: s3://my-build-bucket/playbooks/cis-ubuntu.yml
       extraVars:
         cis_level: "1"
@@ -50,7 +50,7 @@ spec:
 
     # Step 3: init-container — InSpec compliance check
     - type: custom
-      image: ghcr.io/mycompany/provisioner-inspec:v1.0
+      image: ghcr.io/mycompany/provisioner-inspec@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
       args: ["--profile", "cis-ubuntu-22", "--reporter", "json:/workspace/inspec-results.json"]
       env:
         - name: CHEF_LICENSE
@@ -76,12 +76,23 @@ spec:
 
   build:
     timeout: 2h
+    cache:
+      ref: imagebuilder-source-cache
+      ttl: 168h
+      retainPolicy: Always
     nodeSelector:
       imagebuilder.io/build-node: "true"
     resources:
       cpu: "4"
       memory: 8Gi
       storage: 50Gi
+    security:
+      provisionerImages:
+        allowedRegistries:
+          - ghcr.io/yourorg
+          - ghcr.io/mycompany
+        requireDigest: true
+        verifySignature: true
 
 ---
 # ProviderConfig for AWS eu-west-1
@@ -98,7 +109,13 @@ spec:
   region: eu-west-1
   extra:
     s3Bucket: my-imagebuilder-artifacts
-    roleName: ImageBuilderRole
+    roleArn: arn:aws:iam::123456789012:role/ImageBuilderRole
+    remote.instanceType: t3.small
+    remote.subnetId: subnet-0123456789abcdef0
+    remote.securityGroupIds: sg-0123456789abcdef0
+    remote.iamInstanceProfile: ImageBuilderInstanceProfile
+    remote.kmsKeyId: alias/imagebuilder
+    remote.rootVolumeSizeGiB: "32"
 
 ---
 # ProviderConfig for vSphere
@@ -128,8 +145,13 @@ kind: PlatformProvider
 metadata:
   name: aws
 spec:
-  package: ghcr.io/yourorg/imagebuilder-provider-aws:v1.0.0
+  package: ghcr.io/yourorg/imagebuilder-provider-aws@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   packagePullPolicy: IfNotPresent
+  security:
+    allowedRegistries:
+      - ghcr.io/yourorg
+    requireDigest: true
+    verifySignature: true
 
 ---
 # PlatformProvider: install the vSphere provider pod
@@ -138,5 +160,10 @@ kind: PlatformProvider
 metadata:
   name: vsphere
 spec:
-  package: ghcr.io/yourorg/imagebuilder-provider-vsphere:v1.0.0
+  package: ghcr.io/yourorg/imagebuilder-provider-vsphere@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
   packagePullPolicy: IfNotPresent
+  security:
+    allowedRegistries:
+      - ghcr.io/yourorg
+    requireDigest: true
+    verifySignature: true

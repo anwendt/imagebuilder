@@ -35,10 +35,20 @@ Three main extensibility models were evaluated:
 Platform providers are implemented as **separate Kubernetes containers** (Pods / Deployments)
 that are dynamically instantiated by the core operator when a `PlatformProvider` CRD is applied.
 
-The core operator communicates with provider pods exclusively via **gRPC over Unix domain
-sockets** (when running in the same Pod) or **mTLS-secured gRPC over TCP** (for remote providers).
+The core operator communicates with provider pods via the Kubernetes networking model:
+the `PlatformProvider` controller creates a provider Deployment and a namespaced
+ClusterIP Service, and the operator connects to the provider through **gRPC over TCP**
+inside the cluster.
 
-The interface contract is defined in `api/provider/v1/provider.proto` (see ADR-005).
+For production, TCP provider communication is not treated as a trusted implicit
+loopback channel. It must be constrained by namespace-scoped RBAC, NetworkPolicy,
+provider image signature policy, and, where the provider endpoint is reachable beyond
+the operator namespace or cluster-local trust boundary, **mTLS**. The provider gRPC API
+remains the stable contract defined in `api/provider/v1/provider.proto` (see ADR-005).
+
+Unix domain sockets remain an allowed optimization for future same-Pod sidecar provider
+topologies, but they are no longer the required or assumed transport for the default
+external provider model.
 
 ---
 
@@ -51,7 +61,7 @@ Core Operator detects CR (Reconciliation Loop)
         ↓
 Operator creates Kubernetes Deployment for provider image
         ↓
-Provider pod starts, exposes gRPC on Unix socket
+Provider pod starts, exposes gRPC on a ClusterIP Service
         ↓
 Operator performs gRPC Handshake → GetCapabilities()
         ↓
@@ -90,7 +100,7 @@ VMImage builds can now reference this provider via ProviderConfig
 | **Release coupling** | Every provider update requires a new core operator release and cluster rollout. |
 | **Binary size** | Including all cloud SDKs (AWS, Azure, GCP, vSphere, OpenStack) results in a large binary even when only one provider is used. |
 
-### Why Separate Containers (Chosen)
+### Why Separate Deployments + ClusterIP gRPC (Chosen)
 
 | Benefit | Detail |
 |---|---|
@@ -100,6 +110,21 @@ VMImage builds can now reference this provider via ProviderConfig
 | **Kubernetes-native** | Providers benefit from Kubernetes health management, rolling updates, resource limits, and RBAC. |
 | **Proven pattern** | This is the exact model used by Crossplane, the CNCF-graduated Kubernetes extension framework. |
 | **Fault isolation** | A provider crash does not crash the core operator. |
+| **Kubernetes-native networking** | Service discovery, readiness, NetworkPolicy, rollout behaviour, and observability fit the standard Pod/Service model. |
+
+### Transport Security Model
+
+| Scope | Transport | Required Controls |
+|---|---|---|
+| Default in-cluster provider | gRPC over TCP through namespaced ClusterIP | Default-deny NetworkPolicy, operator-only ingress to provider TCP/50051, provider image signature policy, ServiceAccount/RBAC least privilege, no public Service type |
+| Cross-namespace or remote provider endpoint | gRPC over TCP | `PlatformProvider.spec.transport.tls.mode: Mutual`, provider certificate identity verification, operator client certificate verification, plus NetworkPolicy/firewall restrictions |
+| Future same-Pod sidecar provider | gRPC over Unix domain socket | Shared `emptyDir` socket path, no Service exposure |
+
+For `mode: Mutual`, the core loads the operator client certificate and CA bundle
+from referenced Secrets, verifies the provider server certificate against
+`serverName`, and mounts the provider server certificate plus client CA into the
+provider Deployment. Providers using the Go SDK call `sdk.ServerOptionsFromEnv()`
+to require and verify the operator client certificate.
 
 ---
 
@@ -112,12 +137,15 @@ VMImage builds can now reference this provider via ProviderConfig
 
 ### Negative
 - Running a provider requires an additional Kubernetes Deployment and Pod per platform.
-- gRPC over Unix socket introduces a slight serialisation overhead compared to direct function calls.
+- gRPC over TCP introduces a slight serialisation overhead compared to direct function calls.
 - The operator must manage Deployment lifecycle for providers (create, update, delete).
+- Provider endpoints exist as Kubernetes Services and must be protected by policy.
 
 ### Mitigations
 - The gRPC overhead is negligible compared to image build and upload times (minutes to hours).
 - The Deployment lifecycle is managed by the PlatformProvider controller, which is a standard Kubernetes reconciliation pattern.
+- Default provider Services are ClusterIP-only; production deployments install the supplied NetworkPolicies by default and should also install image-signature policies.
+- mTLS is required when provider TCP endpoints cross the local cluster trust boundary.
 
 ---
 

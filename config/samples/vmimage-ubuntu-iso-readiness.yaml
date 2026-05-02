@@ -1,0 +1,58 @@
+apiVersion: imagebuilder.io/v1alpha1
+kind: VMImage
+metadata:
+  name: ubuntu-24-04-iso-readiness
+spec:
+  os:
+    family: linux
+    distribution: ubuntu
+    version: "24.04"
+    arch: amd64
+  source:
+    type: iso
+    url: https://releases.ubuntu.com/24.04/ubuntu-24.04-live-server-amd64.iso
+    checksum: sha256:placeholder-replace-with-real-checksum
+    bootCommand:
+      - "<esc><wait>"
+      - " autoinstall ds=nocloud"
+      - "<enter>"
+    installer:
+      type: autoinstall
+      userData: |
+        #cloud-config
+        autoinstall:
+          version: 1
+          identity:
+            hostname: imagebuilder
+            username: imagebuilder
+            password: "$6$replace-with-hashed-password"
+          ssh:
+            install-server: true
+            allow-pw: false
+          storage:
+            layout:
+              name: direct
+      networkConfig: |
+        version: 2
+        ethernets:
+          all:
+            match:
+              name: "en*"
+            dhcp4: true
+  targets:
+    - providerConfigRef:
+        name: vsphere-prod-dc01
+      format: vmdk
+  build:
+    timeout: 2h
+    guestAccess:
+      protocol: ssh
+      host: 127.0.0.1
+      hostPort: 2222
+      user: imagebuilder
+      credentials:
+        secretRef:
+          name: ubuntu-iso-guest-credentials
+          sshPrivateKeyKey: id_ed25519
+      guestPort: 22
+      timeout: 15m

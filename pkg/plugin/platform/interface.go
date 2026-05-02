@@ -11,6 +11,7 @@ package platform
 
 import (
 	"context"
+	"time"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
 )
@@ -19,13 +20,13 @@ import (
 type ImageFormat string
 
 const (
-	FormatAMI       ImageFormat = "ami"
-	FormatOVA       ImageFormat = "ova"
-	FormatOVF       ImageFormat = "ovf"
-	FormatVMDK      ImageFormat = "vmdk"
-	FormatQCOW2     ImageFormat = "qcow2"
-	FormatVHD       ImageFormat = "vhd"
-	FormatRaw       ImageFormat = "raw"
+	FormatAMI        ImageFormat = "ami"
+	FormatOVA        ImageFormat = "ova"
+	FormatOVF        ImageFormat = "ovf"
+	FormatVMDK       ImageFormat = "vmdk"
+	FormatQCOW2      ImageFormat = "qcow2"
+	FormatVHD        ImageFormat = "vhd"
+	FormatRaw        ImageFormat = "raw"
 	FormatGCETarball ImageFormat = "gcetarball"
 )
 
@@ -75,6 +76,32 @@ type Plugin interface {
 
 	// Health — called periodically by the operator.
 	HealthCheck(ctx context.Context) error
+}
+
+// RemoteBuildPlugin is an optional additive provider capability. Providers
+// implement this interface when they can execute the full build lifecycle on
+// the target platform without a local QEMU build Job.
+type RemoteBuildPlugin interface {
+	Plugin
+
+	// SupportedBuildModes returns supported execution modes. Providers that
+	// implement RemoteBuildPlugin should include "remote".
+	SupportedBuildModes() []string
+
+	// ReconcileRemoteBuild starts or continues a provider-owned remote build.
+	// The method must be idempotent for the same VMImage UID and OperationRef.
+	ReconcileRemoteBuild(ctx context.Context, req *RemoteBuildRequest) (*RemoteBuildResult, error)
+}
+
+// RemoteBuildCleanupPlugin is an optional additive provider capability for
+// providers that can clean up provider-owned remote build resources after
+// timeout, cancellation, deletion, or failed reconciliation.
+type RemoteBuildCleanupPlugin interface {
+	RemoteBuildPlugin
+
+	// CleanupRemoteBuild removes temporary provider resources for a remote build.
+	// It must be idempotent and tolerate already-removed resources.
+	CleanupRemoteBuild(ctx context.Context, req *RemoteBuildRequest) error
 }
 
 // PluginConfig holds resolved configuration passed to Init().
@@ -139,4 +166,60 @@ type ImageRef struct {
 
 	// Tags applied to the image in the target platform
 	Tags map[string]string
+}
+
+type RemoteBuildRequest struct {
+	BuildID           string
+	OperationRef      string
+	ImageName         string
+	Namespace         string
+	OSFamily          OSFamily
+	OSDistribution    string
+	OSVersion         string
+	OSArch            string
+	SourceType        string
+	SourceURL         string
+	SourceProviderRef string
+	SourceChecksum    string
+	Target            v1alpha1.TargetSpec
+	Provisioners      []v1alpha1.ProvisionerSpec
+	GuestAccess       *v1alpha1.GuestAccessSpec
+	Timeout           time.Duration
+}
+
+type RemoteBuildPhase string
+
+const (
+	RemoteBuildPhasePending      RemoteBuildPhase = "Pending"
+	RemoteBuildPhaseBooting      RemoteBuildPhase = "Booting"
+	RemoteBuildPhaseReadiness    RemoteBuildPhase = "Readiness"
+	RemoteBuildPhaseProvisioning RemoteBuildPhase = "Provisioning"
+	RemoteBuildPhaseSanitizing   RemoteBuildPhase = "Sanitizing"
+	RemoteBuildPhaseRegistering  RemoteBuildPhase = "Registering"
+	RemoteBuildPhaseReady        RemoteBuildPhase = "Ready"
+)
+
+type RemoteBuildResult struct {
+	OperationRef string
+	Phase        RemoteBuildPhase
+	Message      string
+	Images       []RemoteImageRef
+	Artifact     *BuildArtifact
+	Hygiene      *RemoteHygieneResult
+	Done         bool
+}
+
+type RemoteHygieneResult struct {
+	Status    string
+	Message   string
+	Checks    []string
+	ResultRef string
+}
+
+type RemoteImageRef struct {
+	Provider       string
+	ProviderConfig string
+	ImageRef       ImageRef
+	Format         ImageFormat
+	Checksum       string
 }

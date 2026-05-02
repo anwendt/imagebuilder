@@ -51,7 +51,7 @@ intended to be verifiable through code review, automated scanning, and ISAE audi
 |---|---|---|
 | AS-007 | Credentials, tokens, and API keys SHALL NEVER appear in: log output, Kubernetes events, VMImage status fields, error messages returned to the API, or environment variables visible in pod specs. | Must |
 | AS-008 | All communication with cloud provider APIs SHALL use TLS 1.2 or higher. TLS 1.0 and 1.1 are prohibited. | Must |
-| AS-009 | The gRPC channel between operator and provider pods SHALL use mTLS when operating over TCP (non-Unix-socket). | Must |
+| AS-009 | The gRPC channel between operator and provider pods SHALL be protected according to ADR-002: ClusterIP-only TCP plus NetworkPolicy within the local trust boundary, and mTLS when provider endpoints cross namespace, cluster, or network trust boundaries. | Must |
 | AS-010 | Source image checksums SHALL use SHA-256 or stronger. MD5 and SHA-1 checksums are rejected as insecure. | Must |
 | AS-011 | Container image signatures SHALL use ECDSA with P-256 or Ed25519 keys (via cosign). RSA-2048 is the minimum if ECDSA is unavailable. | Must |
 | AS-012 | Kubernetes Secrets SHALL be encrypted at rest in etcd (Kubernetes `EncryptionConfiguration` with AES-256-GCM or KMS provider). This is a cluster configuration requirement, documented as an operational dependency. | Must |
@@ -92,7 +92,7 @@ intended to be verifiable through code review, automated scanning, and ISAE audi
 | AS-026 | The operator SHALL use a **Validating Admission Webhook** (kubebuilder) to reject `VMImage` resources that fail server-side validation. Client-side validation alone is insufficient. | Must |
 | AS-027 | CRD schemas SHALL define `additionalProperties: false` where applicable to prevent arbitrary unknown fields from being accepted and forwarded. | Must |
 | AS-028 | Default Kubernetes service account tokens SHALL be disabled (`automountServiceAccountToken: false`) for build job pods and provider pods that do not require Kubernetes API access. | Must |
-| AS-029 | A `NetworkPolicy` SHALL restrict ingress and egress for the operator namespace to only the required endpoints (Kubernetes API, cloud provider endpoints, provider pod Unix sockets). | Should |
+| AS-029 | A `NetworkPolicy` SHALL restrict ingress and egress for the operator namespace to only the required endpoints (Kubernetes API, cloud provider endpoints, and provider gRPC ClusterIP Services). | Should |
 
 ### A06:2021 — Vulnerable and Outdated Components
 
@@ -109,7 +109,7 @@ intended to be verifiable through code review, automated scanning, and ISAE audi
 |---|---|---|
 | AS-034 | The operator SHALL authenticate to the Kubernetes API using the pod's **ServiceAccount token** (short-lived, automatically rotated by Kubernetes). Static long-lived kubeconfig credentials are prohibited in production. | Must |
 | AS-035 | Cloud provider authentication SHALL use **short-lived credentials** where the platform supports it (AWS IAM Roles for Service Accounts, Azure Workload Identity, GCP Workload Identity Federation). Long-lived API keys are the fallback only when workload identity is unavailable. | Should |
-| AS-036 | The gRPC provider interface SHALL include mutual authentication (mTLS) for TCP-based communication. The provider identity is established by its TLS certificate, not by a shared secret. | Must |
+| AS-036 | The gRPC provider interface SHALL support mutual authentication (mTLS) for TCP-based communication that crosses namespace, cluster, or network trust boundaries. The provider identity is established by its TLS certificate, not by a shared secret. | Must |
 | AS-037 | All Kubernetes Secrets referenced by ProviderConfig SHALL have an expiry policy enforced by the external secret management system (e.g., Vault lease TTL). Perpetual/non-expiring credentials are prohibited. | Should |
 
 ### A08:2021 — Software and Data Integrity Failures

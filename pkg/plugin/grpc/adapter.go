@@ -19,22 +19,25 @@ package grpc
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"log/slog"
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	providerv1 "github.com/anwendt/imagebuilder/api/provider/v1"
+	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
 )
 
 const (
-	connectTimeout   = 10 * time.Second
-	uploadChunkSize  = 4 * 1024 * 1024 // 4 MiB per chunk
+	connectTimeout     = 10 * time.Second
+	uploadChunkSize    = 4 * 1024 * 1024 // 4 MiB per chunk
 	healthCheckTimeout = 5 * time.Second
 )
 
@@ -42,18 +45,31 @@ const (
 // gRPC provider. One Adapter exists per healthy PlatformProvider CR.
 type Adapter struct {
 	address      string // host:port of the provider gRPC service
+	tlsConfig    *ProviderTLSConfig
 	conn         *grpc.ClientConn
 	client       providerv1.PlatformProviderClient
 	capabilities *providerv1.CapabilitiesResponse
 	log          *slog.Logger
 }
 
+type ProviderTLSConfig struct {
+	ServerName string
+	CABundle   []byte
+	ClientCert []byte
+	ClientKey  []byte
+}
+
 // NewAdapter creates an adapter for the provider at the given address.
 // Call Connect() to establish the gRPC connection.
 func NewAdapter(address string) *Adapter {
+	return NewAdapterWithTLS(address, nil)
+}
+
+func NewAdapterWithTLS(address string, tlsConfig *ProviderTLSConfig) *Adapter {
 	return &Adapter{
-		address: address,
-		log:     slog.Default().With(slog.String("component", "grpc-adapter"), slog.String("address", address)),
+		address:   address,
+		tlsConfig: tlsConfig,
+		log:       slog.Default().With(slog.String("component", "grpc-adapter"), slog.String("address", address)),
 	}
 }
 
@@ -64,8 +80,12 @@ func (a *Adapter) Connect(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, connectTimeout)
 	defer cancel()
 
+	transport, err := a.transportCredentials()
+	if err != nil {
+		return err
+	}
 	conn, err := grpc.DialContext(ctx, a.address, //nolint:staticcheck // DialContext deprecated in grpc v1.65 but NewClient requires separate connect
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(transport),
 		grpc.WithBlock(),
 	)
 	if err != nil {
@@ -93,6 +113,32 @@ func (a *Adapter) Connect(ctx context.Context) error {
 		slog.Any("os", caps.OsFamilies),
 	)
 	return nil
+}
+
+func (a *Adapter) transportCredentials() (credentials.TransportCredentials, error) {
+	if a.tlsConfig == nil {
+		return insecure.NewCredentials(), nil
+	}
+	if len(a.tlsConfig.CABundle) == 0 {
+		return nil, fmt.Errorf("provider mTLS requires CA bundle")
+	}
+	if len(a.tlsConfig.ClientCert) == 0 || len(a.tlsConfig.ClientKey) == 0 {
+		return nil, fmt.Errorf("provider mTLS requires client certificate and key")
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(a.tlsConfig.CABundle) {
+		return nil, fmt.Errorf("provider mTLS CA bundle contains no certificates")
+	}
+	cert, err := tls.X509KeyPair(a.tlsConfig.ClientCert, a.tlsConfig.ClientKey)
+	if err != nil {
+		return nil, fmt.Errorf("load provider mTLS client certificate: %w", err)
+	}
+	return credentials.NewTLS(&tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		ServerName:   a.tlsConfig.ServerName,
+		RootCAs:      roots,
+		Certificates: []tls.Certificate{cert},
+	}), nil
 }
 
 // Close terminates the gRPC connection.
@@ -145,6 +191,13 @@ func (a *Adapter) SupportedOS() []platform.OSFamily {
 		families = append(families, platform.OSFamily(f))
 	}
 	return families
+}
+
+func (a *Adapter) SupportedBuildModes() []string {
+	if a.capabilities == nil || len(a.capabilities.BuildModes) == 0 {
+		return []string{v1alpha1.BuildModeLocal}
+	}
+	return append([]string(nil), a.capabilities.BuildModes...)
 }
 
 // ---------------------------------------------------------------------------
@@ -304,6 +357,60 @@ func (a *Adapter) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
+func (a *Adapter) ReconcileRemoteBuild(ctx context.Context, req *platform.RemoteBuildRequest) (*platform.RemoteBuildResult, error) {
+	resp, err := a.client.ReconcileRemoteBuild(ctx, remoteBuildProtoRequest(req))
+	if err != nil {
+		return nil, fmt.Errorf("gRPC ReconcileRemoteBuild: %w", err)
+	}
+	result := &platform.RemoteBuildResult{
+		OperationRef: resp.GetOperationRef(),
+		Phase:        platform.RemoteBuildPhase(resp.GetPhase()),
+		Message:      resp.GetMessage(),
+		Done:         resp.GetDone(),
+	}
+	if artifact := resp.GetArtifact(); artifact != nil {
+		result.Artifact = &platform.BuildArtifact{
+			Path:      artifact.GetPath(),
+			Format:    platform.ImageFormat(artifact.GetFormat()),
+			Checksum:  artifact.GetChecksum(),
+			SizeBytes: artifact.GetSizeBytes(),
+			OS:        platform.OSFamily(artifact.GetOsFamily()),
+			Metadata:  artifact.GetMetadata(),
+		}
+	}
+	if hygiene := resp.GetHygiene(); hygiene != nil {
+		result.Hygiene = &platform.RemoteHygieneResult{
+			Status:    hygiene.GetStatus(),
+			Message:   hygiene.GetMessage(),
+			Checks:    append([]string(nil), hygiene.GetChecks()...),
+			ResultRef: hygiene.GetResultRef(),
+		}
+	}
+	for _, image := range resp.GetImages() {
+		result.Images = append(result.Images, platform.RemoteImageRef{
+			Provider:       image.GetProvider(),
+			ProviderConfig: image.GetProviderConfigName(),
+			ImageRef: platform.ImageRef{
+				ID:       image.GetImageRef(),
+				Name:     image.GetImageName(),
+				Location: image.GetLocation(),
+				Tags:     image.GetTags(),
+			},
+			Format:   platform.ImageFormat(image.GetFormat()),
+			Checksum: image.GetChecksum(),
+		})
+	}
+	return result, nil
+}
+
+func (a *Adapter) CleanupRemoteBuild(ctx context.Context, req *platform.RemoteBuildRequest) error {
+	_, err := a.client.CleanupRemoteBuild(ctx, remoteBuildProtoRequest(req))
+	if err != nil {
+		return fmt.Errorf("gRPC CleanupRemoteBuild: %w", err)
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Internal streaming helper
 // ---------------------------------------------------------------------------
@@ -352,4 +459,55 @@ func streamArtifact(stream providerv1.PlatformProvider_UploadArtifactClient, art
 	}
 
 	return stream.CloseSend()
+}
+
+func remoteBuildProtoRequest(req *platform.RemoteBuildRequest) *providerv1.RemoteBuildRequest {
+	if req == nil {
+		return &providerv1.RemoteBuildRequest{}
+	}
+	out := &providerv1.RemoteBuildRequest{
+		BuildId:            req.BuildID,
+		OperationRef:       req.OperationRef,
+		ImageName:          req.ImageName,
+		Namespace:          req.Namespace,
+		OsFamily:           string(req.OSFamily),
+		OsDistribution:     req.OSDistribution,
+		OsVersion:          req.OSVersion,
+		OsArch:             req.OSArch,
+		SourceType:         req.SourceType,
+		SourceUrl:          req.SourceURL,
+		SourceProviderRef:  req.SourceProviderRef,
+		SourceChecksum:     req.SourceChecksum,
+		ProviderConfigName: req.Target.ProviderConfigRef.Name,
+		Format:             req.Target.Format,
+		Tags:               req.Target.Tags,
+		TimeoutSeconds:     int64(req.Timeout.Seconds()),
+	}
+	for _, provisioner := range req.Provisioners {
+		out.Provisioners = append(out.Provisioners, &providerv1.RemoteProvisioner{
+			Type:      provisioner.Type,
+			Image:     provisioner.Image,
+			Inline:    provisioner.Inline,
+			Playbook:  provisioner.Playbook,
+			Args:      provisioner.Args,
+			ExtraVars: provisioner.ExtraVars,
+		})
+	}
+	if req.GuestAccess != nil {
+		out.GuestAccess = &providerv1.RemoteGuestAccess{
+			Protocol:  req.GuestAccess.Protocol,
+			User:      req.GuestAccess.User,
+			GuestPort: req.GuestAccess.GuestPort,
+		}
+		if creds := req.GuestAccess.Credentials; creds != nil {
+			if creds.Generate != nil {
+				out.GuestAccess.GeneratedSshKey = creds.Generate.SSHKey
+				out.GuestAccess.GeneratedPassword = creds.Generate.Password
+			}
+			if creds.Injection != nil {
+				out.GuestAccess.InjectionMethod = creds.Injection.Method
+			}
+		}
+	}
+	return out
 }

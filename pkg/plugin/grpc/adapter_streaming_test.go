@@ -29,9 +29,10 @@ import (
 
 type streamingFakeServer struct {
 	providerv1.UnimplementedPlatformProviderServer
-	uploadRef   string // provider_ref to return in final UploadProgress
-	registerID  string // image ID to return in RegisterImage
-	deleteOK    bool
+	uploadRef        string // provider_ref to return in final UploadProgress
+	registerID       string // image ID to return in RegisterImage
+	deleteOK         bool
+	remoteCleanupReq *providerv1.RemoteBuildRequest
 }
 
 func (s *streamingFakeServer) GetCapabilities(_ context.Context, _ *providerv1.Empty) (*providerv1.CapabilitiesResponse, error) {
@@ -41,6 +42,7 @@ func (s *streamingFakeServer) GetCapabilities(_ context.Context, _ *providerv1.E
 		Formats:         []string{"vmdk"},
 		OsFamilies:      []string{"linux"},
 		ProtocolVersion: "v1",
+		BuildModes:      []string{"local", "remote"},
 	}, nil
 }
 
@@ -92,6 +94,35 @@ func (s *streamingFakeServer) RegisterImage(_ context.Context, req *providerv1.R
 
 func (s *streamingFakeServer) DeleteArtifact(_ context.Context, _ *providerv1.DeleteRequest) (*providerv1.DeleteResponse, error) {
 	return &providerv1.DeleteResponse{Deleted: s.deleteOK}, nil
+}
+
+func (s *streamingFakeServer) CleanupRemoteBuild(_ context.Context, req *providerv1.RemoteBuildRequest) (*providerv1.RemoteBuildCleanupResponse, error) {
+	s.remoteCleanupReq = req
+	return &providerv1.RemoteBuildCleanupResponse{Cleaned: true, Message: "cleaned"}, nil
+}
+
+func (s *streamingFakeServer) ReconcileRemoteBuild(_ context.Context, _ *providerv1.RemoteBuildRequest) (*providerv1.RemoteBuildResponse, error) {
+	return &providerv1.RemoteBuildResponse{
+		OperationRef: "provider://operation/123",
+		Phase:        string(platform.RemoteBuildPhaseReady),
+		Message:      "registered",
+		Done:         true,
+		Hygiene: &providerv1.RemoteHygieneResult{
+			Status:    "passed",
+			Message:   "bootstrap residue absent",
+			Checks:    []string{"temporary-user-removed", "bootstrap-files-removed"},
+			ResultRef: "provider://hygiene/report-1",
+		},
+		Images: []*providerv1.RemoteImageRef{
+			{
+				Provider:           "stream-provider",
+				ProviderConfigName: "aws-prod",
+				Format:             "ami",
+				ImageRef:           "ami-123",
+				Location:           "eu-central-1",
+			},
+		},
+	}, nil
 }
 
 func (s *streamingFakeServer) HealthCheck(_ context.Context, _ *providerv1.Empty) (*providerv1.HealthResponse, error) {
@@ -261,3 +292,55 @@ func TestAdapter_Cleanup_NoProviderRef_Noop(t *testing.T) {
 	}
 }
 
+func TestAdapter_CleanupRemoteBuild_ForwardsOperationRef(t *testing.T) {
+	server := &streamingFakeServer{}
+	adapter := startStreamingServer(t, server)
+
+	err := adapter.CleanupRemoteBuild(context.Background(), &platform.RemoteBuildRequest{
+		BuildID:           "build-123",
+		OperationRef:      "provider://operation/123",
+		ImageName:         "ubuntu-remote",
+		Namespace:         "default",
+		SourceProviderRef: "ami-0123456789abcdef0",
+		Target: v1alpha1.TargetSpec{
+			ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "aws-prod"},
+			Format:            "ami",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CleanupRemoteBuild returned error: %v", err)
+	}
+	if server.remoteCleanupReq == nil {
+		t.Fatal("CleanupRemoteBuild was not called on server")
+	}
+	if server.remoteCleanupReq.GetBuildId() != "build-123" || server.remoteCleanupReq.GetOperationRef() != "provider://operation/123" {
+		t.Fatalf("remote cleanup request = %#v", server.remoteCleanupReq)
+	}
+	if server.remoteCleanupReq.GetSourceProviderRef() != "ami-0123456789abcdef0" {
+		t.Fatalf("source provider ref = %q", server.remoteCleanupReq.GetSourceProviderRef())
+	}
+}
+
+func TestAdapter_ReconcileRemoteBuild_MapsHygieneAttestation(t *testing.T) {
+	adapter := startStreamingServer(t, &streamingFakeServer{})
+
+	result, err := adapter.ReconcileRemoteBuild(context.Background(), &platform.RemoteBuildRequest{
+		BuildID: "build-123",
+		Target: v1alpha1.TargetSpec{
+			ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "aws-prod"},
+			Format:            "ami",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ReconcileRemoteBuild returned error: %v", err)
+	}
+	if result.Hygiene == nil || result.Hygiene.Status != "passed" {
+		t.Fatalf("Hygiene = %#v, want passed", result.Hygiene)
+	}
+	if result.Hygiene.ResultRef != "provider://hygiene/report-1" {
+		t.Fatalf("Hygiene resultRef = %q, want provider://hygiene/report-1", result.Hygiene.ResultRef)
+	}
+	if len(result.Images) != 1 || result.Images[0].ImageRef.ID != "ami-123" {
+		t.Fatalf("Images = %#v, want ami-123", result.Images)
+	}
+}

@@ -27,6 +27,93 @@ type PlatformProviderSpec struct {
 	// ControllerConfigRef references a ControllerConfig for resource overrides
 	// +optional
 	ControllerConfigRef *string `json:"controllerConfigRef,omitempty"`
+
+	// Security controls supply-chain policy for the provider package.
+	// +optional
+	Security *ProviderPackageSecuritySpec `json:"security,omitempty"`
+
+	// Transport configures operator-to-provider gRPC transport security.
+	// Defaults to plaintext TCP inside the namespace-local ClusterIP and
+	// NetworkPolicy trust boundary. Use mTLS for cross-boundary endpoints.
+	// +optional
+	Transport *ProviderTransportSpec `json:"transport,omitempty"`
+}
+
+type ProviderTransportSpec struct {
+	// TLS configures gRPC TLS. When mode is Mutual, the operator verifies the
+	// provider certificate against caSecretRef and presents client credentials
+	// from clientCertificateSecretRef.
+	// +optional
+	TLS *ProviderTransportTLSSpec `json:"tls,omitempty"`
+}
+
+type ProviderTransportTLSSpec struct {
+	// Mode selects provider gRPC TLS behavior.
+	// Disabled keeps plaintext TCP and is valid only inside the local
+	// ClusterIP + NetworkPolicy trust boundary. Mutual enables mTLS.
+	// +kubebuilder:validation:Enum=Disabled;Mutual
+	// +kubebuilder:default=Disabled
+	// +optional
+	Mode string `json:"mode,omitempty"`
+
+	// ServerName is the expected DNS name in the provider server certificate.
+	// If omitted, the provider service DNS name is used.
+	// +optional
+	ServerName string `json:"serverName,omitempty"`
+
+	// CASecretRef references the CA bundle used to verify the provider server.
+	// Required when mode=Mutual.
+	// +optional
+	CASecretRef *ProviderTLSSecretRef `json:"caSecretRef,omitempty"`
+
+	// ClientCertificateSecretRef references the operator client certificate and
+	// private key presented to the provider. Required when mode=Mutual.
+	// +optional
+	ClientCertificateSecretRef *ProviderTLSSecretRef `json:"clientCertificateSecretRef,omitempty"`
+
+	// ServerCertificateSecretRef references the provider server certificate and
+	// private key mounted into the provider pod. Required when mode=Mutual for
+	// operator-managed provider Deployments.
+	// +optional
+	ServerCertificateSecretRef *ProviderTLSSecretRef `json:"serverCertificateSecretRef,omitempty"`
+}
+
+type ProviderTLSSecretRef struct {
+	// Name is the Secret name.
+	Name string `json:"name"`
+
+	// Namespace is the Secret namespace. Required for cluster-scoped
+	// PlatformProvider resources.
+	Namespace string `json:"namespace"`
+
+	// CAKey is the key containing a PEM CA bundle. Defaults to ca.crt.
+	// +optional
+	CAKey string `json:"caKey,omitempty"`
+
+	// CertKey is the key containing a PEM certificate. Defaults to tls.crt.
+	// +optional
+	CertKey string `json:"certKey,omitempty"`
+
+	// KeyKey is the key containing a PEM private key. Defaults to tls.key.
+	// +optional
+	KeyKey string `json:"keyKey,omitempty"`
+}
+
+type ProviderPackageSecuritySpec struct {
+	// AllowedRegistries restricts package references to these registry prefixes,
+	// for example ghcr.io/yourorg or registry.example.com/platform.
+	// +optional
+	AllowedRegistries []string `json:"allowedRegistries,omitempty"`
+
+	// RequireDigest rejects mutable tag-only image references.
+	// +optional
+	RequireDigest bool `json:"requireDigest,omitempty"`
+
+	// VerifySignature marks this provider as requiring signature verification.
+	// The core enforces immutable digest references and records the policy in
+	// the Deployment; cluster admission can bind this to cosign/Sigstore.
+	// +optional
+	VerifySignature bool `json:"verifySignature,omitempty"`
 }
 
 type PlatformProviderStatus struct {
@@ -52,6 +139,10 @@ type ProviderCapabilities struct {
 	ProviderVersion string   `json:"providerVersion"`
 	Formats         []string `json:"formats"`
 	OSFamilies      []string `json:"osFamilies"`
+	// BuildModes lists supported build execution modes. Providers that omit
+	// this field are treated as supporting only local upload/register flows.
+	// +optional
+	BuildModes      []string `json:"buildModes,omitempty"`
 	ProtocolVersion string   `json:"protocolVersion"`
 }
 

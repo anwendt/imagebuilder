@@ -1,0 +1,224 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * *"
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/operator
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  test:
+    name: Unit, Core E2E, Manifest Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run full Go test suite
+        run: go test ./... -count=1
+
+      - name: Run deterministic core E2E tests
+        run: make test-core-e2e
+
+      - name: Validate deployment and Helm invariants
+        run: make test-manifests
+
+  build:
+    name: Build Binaries
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build all binaries
+        run: |
+          make build
+          make build-builder
+          make build-uploader
+
+  generated:
+    name: Generated Artifacts Are Current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install protobuf generators
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.34.2
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+
+      - name: Regenerate code and manifests
+        run: |
+          make generate
+          make manifests
+          make proto
+
+      - name: Fail on uncommitted generated changes
+        run: |
+          git diff --exit-code -- api config
+
+  security:
+    name: Required Security Gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: make vet
+
+      - name: staticcheck
+        run: make staticcheck
+
+      - name: gosec
+        run: make gosec
+
+      - name: govulncheck
+        run: make govulncheck
+
+      - name: license check
+        run: make license-check
+
+  gosec-sarif:
+    name: Upload gosec SARIF
+    runs-on: ubuntu-latest
+    needs: security
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run gosec SARIF
+        uses: securego/gosec@master
+        with:
+          args: >-
+            -fmt sarif
+            -out gosec.sarif
+            -severity high
+            ./...
+
+      - name: Upload gosec SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: gosec.sarif
+
+  secrets:
+    name: Secret Scan / gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  helm:
+    name: Helm Chart Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Lint chart
+        run: make helm-lint
+
+      - name: Render chart
+        run: make helm-template
+
+  image-scan:
+    name: Container Image Scan / Trivy
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build operator image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: ${{ env.IMAGE_NAME }}:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:ci
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+
+  required:
+    name: Required CI Gate
+    runs-on: ubuntu-latest
+    needs:
+      - test
+      - build
+      - generated
+      - security
+      - secrets
+      - helm
+      - image-scan
+    steps:
+      - name: All required gates passed
+        run: echo "All required CI gates passed."

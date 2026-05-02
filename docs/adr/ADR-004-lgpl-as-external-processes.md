@@ -94,7 +94,9 @@ Specifically:
 
 Build nodes (where QEMU VMs run) must have:
 - `libvirtd` running and accessible via `/var/run/libvirt/libvirt-sock`
-- `qemu-system-x86_64` (or equivalent) installed
+- `qemu-system-x86_64` for AMD64 local ISO builds
+- `qemu-system-aarch64` for ARM64 local ISO builds
+- AAVMF/EDK2 firmware for ARM64 local ISO builds when required by the guest
 - Optionally: `guestfish` / `virt-customize` for disk manipulation
 
 The operator pod does not require any of these tools.

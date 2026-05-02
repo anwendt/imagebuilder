@@ -1,0 +1,52 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  annotations:
+    cert-manager.io/inject-ca-from: imagebuilder-system/imagebuilder-webhook-serving-cert
+  name: imagebuilder-validating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: imagebuilder-webhook-service
+      namespace: imagebuilder-system
+      path: /validate-imagebuilder-io-v1alpha1-providerconfig
+  failurePolicy: Fail
+  matchPolicy: Equivalent
+  name: vproviderconfig.kb.io
+  rules:
+  - apiGroups:
+    - imagebuilder.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - providerconfigs
+  sideEffects: None
+  timeoutSeconds: 10
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: imagebuilder-webhook-service
+      namespace: imagebuilder-system
+      path: /validate-imagebuilder-io-v1alpha1-vmimage
+  failurePolicy: Fail
+  matchPolicy: Equivalent
+  name: vvmimage.kb.io
+  rules:
+  - apiGroups:
+    - imagebuilder.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - vmimages
+  sideEffects: None
+  timeoutSeconds: 10

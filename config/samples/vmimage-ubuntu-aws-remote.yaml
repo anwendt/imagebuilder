@@ -1,0 +1,76 @@
+# Example: AWS remote build from an existing AMI using SSM provisioners.
+# Replace AMI, subnet, security group, account, and KMS values before applying.
+
+---
+apiVersion: imagebuilder.io/v1alpha1
+kind: VMImage
+metadata:
+  name: ubuntu-24-04-aws-remote
+spec:
+  os:
+    family: linux
+    distribution: ubuntu
+    version: "24.04"
+    arch: amd64
+
+  source:
+    type: cloud-image
+    providerRef: ami-0123456789abcdef0
+
+  provisioners:
+    - type: shell
+      inline: |
+        set -eu
+        sudo apt-get update
+        sudo apt-get install -y unattended-upgrades
+        echo "imagebuilder remote build" | sudo tee /etc/imagebuilder-release
+
+    - type: file
+      inline: |
+        managed-by=imagebuilder
+        build-mode=remote
+      args:
+        - /etc/imagebuilder/build-info
+
+  targets:
+    - providerConfigRef:
+        name: aws-eu-west-1-remote
+      format: ami
+      tags:
+        team: platform
+        build-mode: remote
+
+  build:
+    mode: remote
+    timeout: 2h
+
+---
+apiVersion: imagebuilder.io/v1alpha1
+kind: ProviderConfig
+metadata:
+  name: aws-eu-west-1-remote
+spec:
+  provider: aws
+  region: eu-west-1
+  extra:
+    roleArn: arn:aws:iam::123456789012:role/ImageBuilderProviderRole
+    remote.instanceType: t3.small
+    remote.subnetId: subnet-0123456789abcdef0
+    remote.securityGroupIds: sg-0123456789abcdef0
+    remote.iamInstanceProfile: ImageBuilderInstanceProfile
+    remote.kmsKeyId: alias/imagebuilder
+    remote.rootVolumeSizeGiB: "32"
+
+---
+apiVersion: imagebuilder.io/v1alpha1
+kind: PlatformProvider
+metadata:
+  name: aws
+spec:
+  package: ghcr.io/yourorg/imagebuilder-provider-aws@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  packagePullPolicy: IfNotPresent
+  security:
+    allowedRegistries:
+      - ghcr.io/yourorg
+    requireDigest: true
+    verifySignature: true

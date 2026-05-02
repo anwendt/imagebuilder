@@ -1,0 +1,45 @@
+apiVersion: imagebuilder.io/v1alpha1
+kind: VMImage
+metadata:
+  name: windows-2022-iso-cloudbase
+spec:
+  os:
+    family: windows
+    distribution: windows-server
+    version: "2022"
+    arch: amd64
+  source:
+    type: iso
+    url: https://example.com/windows-server-2022.iso
+    checksum: sha256:placeholder-replace-with-real-checksum
+    installer:
+      type: autounattend
+      windows:
+        virtioDriverPath: E:\viostor\2k22\amd64
+        cloudbaseInitMsi: E:\CloudbaseInitSetup.msi
+        cloudbaseInit:
+          metadataServices:
+            - cloudbaseinit.metadata.services.configdrive.ConfigDriveService
+            - cloudbaseinit.metadata.services.nocloudservice.NoCloudConfigDriveService
+          addUserToLocalGroups:
+            - Administrators
+  targets:
+    - providerConfigRef:
+        name: vsphere-prod-dc01
+      format: vmdk
+  build:
+    timeout: 3h
+    guestAccess:
+      protocol: winrm
+      host: 127.0.0.1
+      hostPort: 55986
+      credentials:
+        generate:
+          password: true
+          passwordLength: 32
+        injection:
+          method: autounattend
+      timeout: 30m
+      winrm:
+        https: true
+        insecureSkipVerify: true

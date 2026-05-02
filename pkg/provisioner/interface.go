@@ -59,11 +59,26 @@ type RunRequest struct {
 	// Empty for provisioners that run before VM boot (e.g. cloud-init generator).
 	VMAddress string
 
+	// VMUser is the guest user used for SSH/WinRM based provisioners.
+	VMUser string
+
+	// Protocol is the guest access protocol, e.g. "ssh" or "winrm".
+	Protocol string
+
 	// SSHPort defaults to 22 for Linux, 5986 (WinRM) for Windows.
 	SSHPort int
 
 	// SSHKeyPath is the path to the ephemeral private key for this build session.
 	SSHKeyPath string
+
+	// VMPasswordPath is a file containing the guest password for WinRM.
+	VMPasswordPath string
+
+	// WinRMHTTPS controls whether WinRM provisioners use HTTPS.
+	WinRMHTTPS bool
+
+	// WinRMInsecureSkipVerify disables TLS certificate verification for WinRM.
+	WinRMInsecureSkipVerify bool
 
 	// OS family of the target image.
 	OS string
@@ -104,11 +119,20 @@ type ProvisionerInput struct {
 	// VMAddress is the IP/hostname of the running build VM.
 	VMAddress string `json:"vmAddress"`
 
+	// VMUser is the guest user used for SSH/WinRM based provisioners.
+	VMUser string `json:"vmUser,omitempty"`
+
+	// Protocol is the guest access protocol, e.g. "ssh" or "winrm".
+	Protocol string `json:"protocol,omitempty"`
+
 	// SSHPort is the SSH (or WinRM) port.
 	SSHPort int `json:"sshPort"`
 
 	// SSHKeyPath is the path to the ephemeral SSH private key inside the workspace.
 	SSHKeyPath string `json:"sshKeyPath"`
+
+	// VMPasswordPath is a file containing the guest password for WinRM.
+	VMPasswordPath string `json:"vmPasswordPath,omitempty"`
 
 	// OS family: "linux" or "windows".
 	OS string `json:"os"`

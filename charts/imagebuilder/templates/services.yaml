@@ -1,0 +1,33 @@
+{{- if .Values.metrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "imagebuilder.fullname" . }}-metrics
+  namespace: {{ include "imagebuilder.namespace" . }}
+  labels:
+    {{- include "imagebuilder.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "imagebuilder.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: 8080
+      targetPort: metrics
+{{- end }}
+{{- if .Values.webhook.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.webhook.serviceName }}
+  namespace: {{ include "imagebuilder.namespace" . }}
+  labels:
+    {{- include "imagebuilder.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "imagebuilder.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: webhook
+      port: {{ .Values.webhook.port }}
+      targetPort: webhook
+{{- end }}
