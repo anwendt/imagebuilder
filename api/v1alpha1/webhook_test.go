@@ -6,6 +6,7 @@
 package v1alpha1
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -521,6 +522,32 @@ func TestVMImageWebhook_ProvisionerImagePolicy_RejectsMutableTag(t *testing.T) {
 	}
 }
 
+func TestVMImageWebhook_KVMRequiresDedicatedBuildNodeSelector(t *testing.T) {
+	img := &VMImage{
+		Spec: VMImageSpec{
+			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
+			Source: SourceSpec{Type: "marketplace"},
+			Build: BuildSpec{
+				Security: &BuildSecuritySpec{EnableKVM: true},
+			},
+			Targets: []TargetSpec{{ProviderConfigRef: ProviderConfigRef{Name: "cfg"}, Format: "vmdk"}},
+		},
+	}
+	_, err := img.ValidateCreate()
+	if err == nil || !strings.Contains(err.Error(), `imagebuilder.io/kvm`) {
+		t.Fatalf("error = %v, want KVM node selector rejection", err)
+	}
+
+	img.Spec.Build.NodeSelector = map[string]string{
+		"imagebuilder.io/kvm":       "true",
+		"imagebuilder.io/dedicated": "imagebuilder",
+	}
+	_, err = img.ValidateCreate()
+	if err != nil {
+		t.Fatalf("KVM with dedicated build node selector should be valid: %v", err)
+	}
+}
+
 func TestVMImageWebhook_ProvisionerImagePolicy_AllowsPinnedAllowedImage(t *testing.T) {
 	img := &VMImage{
 		Spec: VMImageSpec{
@@ -553,6 +580,100 @@ func TestVMImageWebhook_Delete_AlwaysAllowed(t *testing.T) {
 	_, err := img.ValidateDelete()
 	if err != nil {
 		t.Errorf("ValidateDelete returned error: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PlatformProvider webhook tests
+// ---------------------------------------------------------------------------
+
+func TestPlatformProviderWebhook_GlobalProductionPolicyRejectsMutablePlaintextProvider(t *testing.T) {
+	SetPlatformProviderAdmissionPolicy(PlatformProviderAdmissionPolicy{
+		RequireMTLS:       true,
+		RequireDigest:     true,
+		RequireSignature:  true,
+		AllowedRegistries: []string{"ghcr.io/anwendt"},
+		ProviderNamespace: "imagebuilder-system",
+	})
+	t.Cleanup(func() { SetPlatformProviderAdmissionPolicy(PlatformProviderAdmissionPolicy{}) })
+
+	pp := &PlatformProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "provider-aws"},
+		Spec: PlatformProviderSpec{
+			Package: "ghcr.io/anwendt/imagebuilder-provider-aws:v1",
+		},
+	}
+	_, err := pp.ValidateCreate()
+	if err == nil {
+		t.Fatal("PlatformProvider should be rejected by global production policy")
+	}
+	for _, want := range []string{
+		"pinned by digest",
+		"provider mTLS is required",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want substring %q", err.Error(), want)
+		}
+	}
+}
+
+func TestPlatformProviderWebhook_GlobalProductionPolicyAllowsPinnedSignedMTLSProvider(t *testing.T) {
+	SetPlatformProviderAdmissionPolicy(PlatformProviderAdmissionPolicy{
+		RequireMTLS:       true,
+		RequireDigest:     true,
+		RequireSignature:  true,
+		AllowedRegistries: []string{"ghcr.io/anwendt"},
+		ProviderNamespace: "imagebuilder-system",
+	})
+	t.Cleanup(func() { SetPlatformProviderAdmissionPolicy(PlatformProviderAdmissionPolicy{}) })
+
+	pp := &PlatformProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "provider-aws"},
+		Spec: PlatformProviderSpec{
+			Package: "ghcr.io/anwendt/imagebuilder-provider-aws@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			Security: &ProviderPackageSecuritySpec{
+				VerifySignature: true,
+			},
+			Transport: &ProviderTransportSpec{
+				TLS: &ProviderTransportTLSSpec{
+					Mode: "Mutual",
+					CASecretRef: &ProviderTLSSecretRef{
+						Name:      "provider-ca",
+						Namespace: "imagebuilder-system",
+					},
+					ClientCertificateSecretRef: &ProviderTLSSecretRef{
+						Name:      "operator-client",
+						Namespace: "imagebuilder-system",
+					},
+					ServerCertificateSecretRef: &ProviderTLSSecretRef{
+						Name:      "provider-server",
+						Namespace: "imagebuilder-system",
+					},
+				},
+			},
+		},
+	}
+	_, err := pp.ValidateCreate()
+	if err != nil {
+		t.Fatalf("PlatformProvider should be accepted: %v", err)
+	}
+}
+
+func TestPlatformProviderWebhook_RejectsForbiddenRegistry(t *testing.T) {
+	SetPlatformProviderAdmissionPolicy(PlatformProviderAdmissionPolicy{
+		AllowedRegistries: []string{"ghcr.io/anwendt"},
+	})
+	t.Cleanup(func() { SetPlatformProviderAdmissionPolicy(PlatformProviderAdmissionPolicy{}) })
+
+	pp := &PlatformProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "provider-aws"},
+		Spec: PlatformProviderSpec{
+			Package: "docker.io/library/provider:v1",
+		},
+	}
+	_, err := pp.ValidateCreate()
+	if err == nil || !strings.Contains(err.Error(), "registry is not allowed") {
+		t.Fatalf("error = %v, want registry rejection", err)
 	}
 }
 

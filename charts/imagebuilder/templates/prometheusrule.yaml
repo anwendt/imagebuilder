@@ -26,4 +26,20 @@ spec:
           annotations:
             summary: VM image cleanup failures detected.
             description: "{{ "{{" }} $value {{ "}}" }} imagebuilder cleanup failure(s) occurred in the last 15 minutes."
+        - alert: ImageBuilderProviderUnhealthy
+          expr: imagebuilder_provider_healthy == 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Imagebuilder provider is unhealthy.
+            description: "Provider {{ "{{" }} $labels.provider {{ "}}" }} in namespace {{ "{{" }} $labels.namespace {{ "}}" }} has been unhealthy for more than 10 minutes."
+        - alert: ImageBuilderStuckActiveBuilds
+          expr: sum(imagebuilder_active_builds) > 0
+          for: 3h
+          labels:
+            severity: warning
+          annotations:
+            summary: VM image builds appear to be stuck.
+            description: One or more imagebuilder builds have been active for more than three hours.
 {{- end }}

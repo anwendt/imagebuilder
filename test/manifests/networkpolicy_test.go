@@ -64,6 +64,41 @@ func TestHelmChartDefaultsNetworkPolicyOnAndRendersProviderBoundary(t *testing.T
 	if networkPolicy["enabled"] != true {
 		t.Fatalf("networkPolicy.enabled = %#v, want true", networkPolicy["enabled"])
 	}
+	if _, ok := networkPolicy["workloadNamespaces"].([]any); !ok {
+		t.Fatalf("networkPolicy.workloadNamespaces missing or malformed: %#v", networkPolicy["workloadNamespaces"])
+	}
+	providerSecurity, ok := parsed["providerSecurity"].(map[string]any)
+	if !ok {
+		t.Fatalf("providerSecurity values missing or malformed: %#v", parsed["providerSecurity"])
+	}
+	if providerSecurity["requireMTLS"] != true {
+		t.Fatalf("providerSecurity.requireMTLS = %#v, want true", providerSecurity["requireMTLS"])
+	}
+	if providerSecurity["requireDigest"] != true {
+		t.Fatalf("providerSecurity.requireDigest = %#v, want true", providerSecurity["requireDigest"])
+	}
+	if providerSecurity["requireSignature"] != true {
+		t.Fatalf("providerSecurity.requireSignature = %#v, want true", providerSecurity["requireSignature"])
+	}
+	if _, ok := providerSecurity["allowedRegistries"].([]any); !ok {
+		t.Fatalf("providerSecurity.allowedRegistries missing or malformed: %#v", providerSecurity["allowedRegistries"])
+	}
+	provisionerImages, ok := parsed["provisionerImages"].(map[string]any)
+	if !ok {
+		t.Fatalf("provisionerImages values missing or malformed: %#v", parsed["provisionerImages"])
+	}
+	for _, name := range []string{"ansible", "chef", "puppet", "saltstack"} {
+		if _, ok := provisionerImages[name].(map[string]any); !ok {
+			t.Fatalf("provisionerImages.%s missing or malformed: %#v", name, provisionerImages[name])
+		}
+	}
+	imageSignaturePolicy, ok := parsed["imageSignaturePolicy"].(map[string]any)
+	if !ok {
+		t.Fatalf("imageSignaturePolicy values missing or malformed: %#v", parsed["imageSignaturePolicy"])
+	}
+	if imageSignaturePolicy["enabled"] != true {
+		t.Fatalf("imageSignaturePolicy.enabled = %#v, want true", imageSignaturePolicy["enabled"])
+	}
 
 	schemaPath := filepath.Join(repoRoot, "charts", "imagebuilder", "values.schema.json")
 	schema, err := os.ReadFile(schemaPath)
@@ -72,6 +107,26 @@ func TestHelmChartDefaultsNetworkPolicyOnAndRendersProviderBoundary(t *testing.T
 	}
 	if !strings.Contains(string(schema), `"networkPolicy"`) || !strings.Contains(string(schema), `"enum": [true]`) {
 		t.Fatalf("values.schema.json must enforce networkPolicy.enabled=true")
+	}
+	if !strings.Contains(string(schema), `"workloadNamespaces"`) || !strings.Contains(string(schema), `"uniqueItems": true`) {
+		t.Fatalf("values.schema.json must define unique networkPolicy.workloadNamespaces")
+	}
+	if !strings.Contains(string(schema), `"providerSecurity"`) ||
+		!strings.Contains(string(schema), `"requireMTLS"`) ||
+		!strings.Contains(string(schema), `"requireDigest"`) ||
+		!strings.Contains(string(schema), `"requireSignature"`) ||
+		!strings.Contains(string(schema), `"Production installs require every PlatformProvider`) {
+		t.Fatalf("values.schema.json must enforce providerSecurity.requireMTLS=true for production")
+	}
+	if !strings.Contains(string(schema), `"provisionerImages"`) ||
+		!strings.Contains(string(schema), `"ansible"`) ||
+		!strings.Contains(string(schema), `"saltstack"`) {
+		t.Fatalf("values.schema.json must define provisioner image references")
+	}
+	if !strings.Contains(string(schema), `"imageSignaturePolicy"`) ||
+		!strings.Contains(string(schema), `"keyless"`) ||
+		!strings.Contains(string(schema), `"Production installs require the image signature verification policy`) {
+		t.Fatalf("values.schema.json must enforce rendering the image signature policy")
 	}
 
 	templatePath := filepath.Join(repoRoot, "charts", "imagebuilder", "templates", "networkpolicies.yaml")
@@ -87,9 +142,87 @@ func TestHelmChartDefaultsNetworkPolicyOnAndRendersProviderBoundary(t *testing.T
 		"port: 50051",
 		"imagebuilder.fullname",
 		"build-upload-jobs",
+		".Values.networkPolicy.workloadNamespaces",
+		`if ne . $operatorNamespace`,
 	} {
 		if !strings.Contains(templateText, want) {
 			t.Fatalf("network policy template missing %q", want)
+		}
+	}
+}
+
+func TestHelmChartRendersImageSignaturePolicy(t *testing.T) {
+	templatePath := filepath.Join(repoRoot, "charts", "imagebuilder", "templates", "image-signature-policy.yaml")
+	template, err := os.ReadFile(templatePath)
+	if err != nil {
+		t.Fatalf("read Helm image signature policy template: %v", err)
+	}
+	templateText := string(template)
+	for _, want := range []string{
+		"kind: ClusterPolicy",
+		"verifyImages:",
+		"required: true",
+		"verifyDigest: true",
+		"keyless:",
+		".Values.imageSignaturePolicy.imageReferences",
+	} {
+		if !strings.Contains(templateText, want) {
+			t.Fatalf("image signature policy template missing %q", want)
+		}
+	}
+}
+
+func TestHelmChartImagesAreDigestConfigurable(t *testing.T) {
+	valuesPath := filepath.Join(repoRoot, "charts", "imagebuilder", "values.yaml")
+	values, err := os.ReadFile(valuesPath)
+	if err != nil {
+		t.Fatalf("read Helm values: %v", err)
+	}
+	valuesText := string(values)
+	for _, want := range []string{
+		"builderImage:",
+		"uploaderImage:",
+		"  digest: \"\"",
+	} {
+		if !strings.Contains(valuesText, want) {
+			t.Fatalf("values.yaml missing %q", want)
+		}
+	}
+
+	helpersPath := filepath.Join(repoRoot, "charts", "imagebuilder", "templates", "_helpers.tpl")
+	helpers, err := os.ReadFile(helpersPath)
+	if err != nil {
+		t.Fatalf("read Helm helpers: %v", err)
+	}
+	helpersText := string(helpers)
+	if !strings.Contains(helpersText, `printf "%s@%s" .repository .digest`) {
+		t.Fatal("image helper must render digest-pinned image references")
+	}
+
+	deploymentPath := filepath.Join(repoRoot, "charts", "imagebuilder", "templates", "deployment.yaml")
+	deployment, err := os.ReadFile(deploymentPath)
+	if err != nil {
+		t.Fatalf("read Helm deployment: %v", err)
+	}
+	deploymentText := string(deployment)
+	for _, want := range []string{
+		`image: "{{ include "imagebuilder.imageRef" .Values.image }}"`,
+		"name: BUILDER_IMAGE",
+		"name: UPLOADER_IMAGE",
+		"--require-provider-mtls={{ .Values.providerSecurity.requireMTLS }}",
+		"--require-provider-digest={{ .Values.providerSecurity.requireDigest }}",
+		"--require-provider-signature={{ .Values.providerSecurity.requireSignature }}",
+		"--allowed-provider-registries={{ join \",\" .Values.providerSecurity.allowedRegistries }}",
+		"name: PROVISIONER_ANSIBLE_IMAGE",
+		"name: PROVISIONER_CHEF_IMAGE",
+		"name: PROVISIONER_PUPPET_IMAGE",
+		"name: PROVISIONER_SALTSTACK_IMAGE",
+		`{{ include "imagebuilder.imageRef" .Values.builderImage | quote }}`,
+		`{{ include "imagebuilder.imageRef" .Values.uploaderImage | quote }}`,
+		`{{ include "imagebuilder.imageRef" .Values.provisionerImages.ansible | quote }}`,
+	} {
+		if !strings.Contains(deploymentText, want) {
+			t.Fatalf("deployment template missing %q", want)
 		}
 	}
 }

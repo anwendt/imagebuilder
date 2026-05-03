@@ -29,12 +29,191 @@
           "type": "boolean",
           "enum": [true],
           "description": "Production installs require NetworkPolicies to default-deny namespace traffic and restrict provider gRPC to the operator trust boundary."
+        },
+        "workloadNamespaces": {
+          "type": "array",
+          "description": "Additional namespaces where VMImage build/upload Jobs run and should receive scoped egress NetworkPolicies.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
         }
       }
+    },
+    "namespaceResourceGuardrails": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "enum": [true],
+          "description": "Production installs require ResourceQuota and LimitRange guardrails in the operator namespace."
+        },
+        "resourceQuota": {
+          "type": "object",
+          "properties": {
+            "hard": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "required": ["hard"]
+        },
+        "limitRange": {
+          "type": "object",
+          "properties": {
+            "default": {
+              "$ref": "#/definitions/resourceList"
+            },
+            "defaultRequest": {
+              "$ref": "#/definitions/resourceList"
+            },
+            "max": {
+              "$ref": "#/definitions/resourceList"
+            },
+            "min": {
+              "$ref": "#/definitions/resourceList"
+            }
+          },
+          "required": ["default", "defaultRequest"]
+        }
+      },
+      "required": ["enabled", "resourceQuota", "limitRange"]
     },
     "replicaCount": {
       "type": "integer",
       "minimum": 1
+    },
+    "providerNamespace": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Namespace where PlatformProvider Deployments and Services are created."
+    },
+    "providerSecurity": {
+      "type": "object",
+      "properties": {
+        "requireMTLS": {
+          "type": "boolean",
+          "enum": [true],
+          "description": "Production installs require every PlatformProvider to use spec.transport.tls.mode=Mutual."
+        },
+        "requireDigest": {
+          "type": "boolean",
+          "enum": [true],
+          "description": "Production installs require every PlatformProvider package to be digest-pinned."
+        },
+        "requireSignature": {
+          "type": "boolean",
+          "enum": [true],
+          "description": "Production installs require every PlatformProvider to opt into signature verification policy."
+        },
+        "allowedRegistries": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": ["requireMTLS", "requireDigest", "requireSignature"]
+    },
+    "imageSignaturePolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "enum": [true],
+          "description": "Production installs require the image signature verification policy to be rendered."
+        },
+        "imageReferences": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "keyless": {
+          "type": "object",
+          "properties": {
+            "issuer": {
+              "type": "string",
+              "minLength": 1
+            },
+            "subject": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": ["issuer", "subject"]
+        }
+      },
+      "required": ["enabled", "imageReferences", "keyless"]
+    },
+    "image": {
+      "$ref": "#/definitions/imageReference"
+    },
+    "builderImage": {
+      "$ref": "#/definitions/imageReference"
+    },
+    "uploaderImage": {
+      "$ref": "#/definitions/imageReference"
+    },
+    "provisionerImages": {
+      "type": "object",
+      "properties": {
+        "ansible": {
+          "$ref": "#/definitions/imageReference"
+        },
+        "chef": {
+          "$ref": "#/definitions/imageReference"
+        },
+        "puppet": {
+          "$ref": "#/definitions/imageReference"
+        },
+        "saltstack": {
+          "$ref": "#/definitions/imageReference"
+        }
+      },
+      "required": ["ansible", "chef", "puppet", "saltstack"]
+    }
+  },
+  "definitions": {
+    "imageReference": {
+      "type": "object",
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^(|sha256:[0-9a-fA-F]{64})$"
+        }
+      },
+      "required": ["repository"],
+      "anyOf": [
+        {"required": ["tag"]},
+        {"required": ["digest"]}
+      ]
+    },
+    "resourceList": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
     }
   }
 }

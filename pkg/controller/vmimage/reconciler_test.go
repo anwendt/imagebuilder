@@ -242,6 +242,7 @@ func uploadResultWithOperationsMessage(t *testing.T) string {
 				OperationRef:         "s3://imagebuilder/build-123/disk.vmdk",
 				ImageRef:             "ami-123",
 				UploadMilliseconds:   1250,
+				UploadBytes:          42,
 				RegisterMilliseconds: 2500,
 			},
 		},
@@ -973,6 +974,9 @@ func TestReconcile_Uploading_JobSucceeded_StoresReportedUploadOperationRefs(t *t
 	}
 	if op.UploadMilliseconds != 1250 || op.RegisterMilliseconds != 2500 {
 		t.Fatalf("durations = %d/%d, want 1250/2500", op.UploadMilliseconds, op.RegisterMilliseconds)
+	}
+	if op.UploadBytes != 42 {
+		t.Fatalf("uploadBytes = %d, want 42", op.UploadBytes)
 	}
 }
 

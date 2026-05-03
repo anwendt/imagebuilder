@@ -399,3 +399,28 @@ func TestAWSPlugin_Register_UsesImportedSnapshotFlow(t *testing.T) {
 		t.Fatalf("register input env tag = %q, want prod", fake.registerInput.Tags["env"])
 	}
 }
+
+func TestLocalRegisterInput_UsesLocalKMSKey(t *testing.T) {
+	cfg := awsConfig{
+		providerConfigName: "aws-prod",
+		extraConfig: map[string]string{
+			"local.kmsKeyId": "alias/imagebuilder-local",
+		},
+	}
+	input, err := localRegisterInput(cfg, &platform.UploadResult{
+		ProviderRef: "imagebuilder/build/disk.raw",
+		Metadata: map[string]string{
+			"bucket":    "my-image-bucket",
+			"key":       "imagebuilder/build/disk.raw",
+			"buildID":   "build-123",
+			"format":    "raw",
+			"imageName": "ubuntu-prod",
+		},
+	})
+	if err != nil {
+		t.Fatalf("localRegisterInput returned error: %v", err)
+	}
+	if input.KMSKeyID != "alias/imagebuilder-local" {
+		t.Fatalf("KMSKeyID = %q, want alias/imagebuilder-local", input.KMSKeyID)
+	}
+}

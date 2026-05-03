@@ -18,6 +18,7 @@ package buildpod
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -45,9 +46,9 @@ const (
 	kvmMount            = "/dev/kvm"
 	kvmVol              = "dev-kvm"
 
-	// defaultBuilderImage is used when no custom image is specified in BuildSpec.
-	// Override via BUILDER_IMAGE env var in the operator deployment.
-	defaultBuilderImage = "ghcr.io/anwendt/imagebuilder-builder:latest"
+	// defaultBuilderImage is used when BUILDER_IMAGE is not set in the
+	// operator deployment.
+	defaultBuilderImage = "ghcr.io/anwendt/imagebuilder-builder:0.1.0"
 )
 
 // initContainerTypes lists provisioner types that run as Kubernetes init containers.
@@ -104,6 +105,7 @@ func Assemble(img *v1alpha1.VMImage, scheme *runtime.Scheme) (*batchv1.Job, erro
 					Volumes:        volumes,
 					NodeSelector:   img.Spec.Build.NodeSelector,
 					NodeName:       img.Status.ScheduledNodeName,
+					Tolerations:    buildTolerations(img),
 					// AS-028: do not mount a service account token — the build pod
 					// has no API server access; mounting a token is a needless attack surface.
 					AutomountServiceAccountToken: boolPtr(false),
@@ -181,7 +183,7 @@ func buildInitContainers(img *v1alpha1.VMImage) ([]corev1.Container, error) {
 // ---------------------------------------------------------------------------
 
 func buildMainContainer(img *v1alpha1.VMImage) corev1.Container {
-	builderImage := defaultBuilderImage
+	builderImage := builderImage()
 
 	res := corev1.ResourceRequirements{}
 	if r := img.Spec.Build.Resources; r != nil {
@@ -282,6 +284,13 @@ func buildMainContainer(img *v1alpha1.VMImage) corev1.Container {
 		VolumeMounts:    volumeMounts,
 		SecurityContext: restrictedSecCtx(),
 	}
+}
+
+func builderImage() string {
+	if image := strings.TrimSpace(os.Getenv("BUILDER_IMAGE")); image != "" {
+		return image
+	}
+	return defaultBuilderImage
 }
 
 func buildID(img *v1alpha1.VMImage) string {
@@ -423,6 +432,20 @@ func kvmEnabled(img *v1alpha1.VMImage) bool {
 	return img.Spec.Build.Security != nil && img.Spec.Build.Security.EnableKVM
 }
 
+func buildTolerations(img *v1alpha1.VMImage) []corev1.Toleration {
+	if !kvmEnabled(img) {
+		return nil
+	}
+	return []corev1.Toleration{
+		{
+			Key:      "imagebuilder.io/dedicated",
+			Operator: corev1.TolerationOpEqual,
+			Value:    "imagebuilder",
+			Effect:   corev1.TaintEffectNoSchedule,
+		},
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -457,12 +480,19 @@ func isInProcess(provisionerType string) bool {
 
 func defaultImageForProvisioner(provisionerType string) string {
 	defaults := map[string]string{
-		"ansible":   "ghcr.io/anwendt/imagebuilder-provisioner-ansible:latest",
-		"chef":      "ghcr.io/anwendt/imagebuilder-provisioner-chef:latest",
-		"puppet":    "ghcr.io/anwendt/imagebuilder-provisioner-puppet:latest",
-		"saltstack": "ghcr.io/anwendt/imagebuilder-provisioner-saltstack:latest",
+		"ansible":   envOrDefault("PROVISIONER_ANSIBLE_IMAGE", "ghcr.io/anwendt/imagebuilder-provisioner-ansible:0.1.0"),
+		"chef":      envOrDefault("PROVISIONER_CHEF_IMAGE", "ghcr.io/anwendt/imagebuilder-provisioner-chef:0.1.0"),
+		"puppet":    envOrDefault("PROVISIONER_PUPPET_IMAGE", "ghcr.io/anwendt/imagebuilder-provisioner-puppet:0.1.0"),
+		"saltstack": envOrDefault("PROVISIONER_SALTSTACK_IMAGE", "ghcr.io/anwendt/imagebuilder-provisioner-saltstack:0.1.0"),
 	}
 	return defaults[provisionerType]
+}
+
+func envOrDefault(name, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func translateEnvVar(e v1alpha1.EnvVar) corev1.EnvVar {

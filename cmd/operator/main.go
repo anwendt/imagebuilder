@@ -14,6 +14,7 @@ import (
 	"flag"
 	"log/slog"
 	"os"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -61,6 +62,11 @@ func main() {
 		maxConcurrentBuilds        int
 		maxConcurrentBuildsPerNode int
 		schedulerNamespace         string
+		providerNamespace          string
+		requireProviderMTLS        bool
+		requireProviderDigest      bool
+		requireProviderSignature   bool
+		allowedProviderRegistries  string
 		logLevel                   string
 	)
 
@@ -70,9 +76,22 @@ func main() {
 	flag.IntVar(&maxConcurrentBuilds, "max-concurrent-builds", 3, "Maximum parallel build jobs")
 	flag.IntVar(&maxConcurrentBuildsPerNode, "max-concurrent-builds-per-node", 1, "Maximum parallel build jobs per node selector")
 	flag.StringVar(&schedulerNamespace, "scheduler-namespace", os.Getenv("POD_NAMESPACE"), "Namespace used for build slot Leases; defaults to each VMImage namespace when empty")
+	flag.StringVar(&providerNamespace, "provider-namespace", os.Getenv("POD_NAMESPACE"), "Namespace used for PlatformProvider Deployments and Services")
+	flag.BoolVar(&requireProviderMTLS, "require-provider-mtls", false, "Require all PlatformProvider resources to use spec.transport.tls.mode=Mutual")
+	flag.BoolVar(&requireProviderDigest, "require-provider-digest", false, "Require all PlatformProvider package references to be digest-pinned")
+	flag.BoolVar(&requireProviderSignature, "require-provider-signature", false, "Require all PlatformProvider resources to enable spec.security.verifySignature")
+	flag.StringVar(&allowedProviderRegistries, "allowed-provider-registries", "", "Comma-separated registry prefixes allowed for PlatformProvider packages")
 	// OR-012: log level must be configurable at runtime without redeployment.
 	flag.StringVar(&logLevel, "log-level", "info", "Log level: debug, info, warn, error")
 	flag.Parse()
+	allowedProviderRegistryList := splitCSV(allowedProviderRegistries)
+	imagebuilderv1alpha1.SetPlatformProviderAdmissionPolicy(imagebuilderv1alpha1.PlatformProviderAdmissionPolicy{
+		RequireMTLS:       requireProviderMTLS,
+		RequireDigest:     requireProviderDigest,
+		RequireSignature:  requireProviderSignature,
+		AllowedRegistries: allowedProviderRegistryList,
+		ProviderNamespace: providerNamespace,
+	})
 
 	var slogLevel slog.Level
 	if err := slogLevel.UnmarshalText([]byte(logLevel)); err != nil {
@@ -114,9 +133,14 @@ func main() {
 	}
 
 	if err = (&providercontroller.PlatformProviderReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Registry: registry,
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		Registry:          registry,
+		ProviderNamespace: providerNamespace,
+		RequireMTLS:       requireProviderMTLS,
+		RequireDigest:     requireProviderDigest,
+		RequireSignature:  requireProviderSignature,
+		AllowedRegistries: allowedProviderRegistryList,
 	}).SetupWithManager(mgr); err != nil {
 		slog.Error("unable to create PlatformProvider controller", slog.Any("error", err))
 		os.Exit(1)
@@ -128,6 +152,10 @@ func main() {
 	}
 	if err = (&imagebuilderv1alpha1.ProviderConfig{}).SetupWebhookWithManager(mgr); err != nil {
 		slog.Error("unable to create ProviderConfig webhook", slog.Any("error", err))
+		os.Exit(1)
+	}
+	if err = (&imagebuilderv1alpha1.PlatformProvider{}).SetupWebhookWithManager(mgr); err != nil {
+		slog.Error("unable to create PlatformProvider webhook", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -145,4 +173,16 @@ func main() {
 		slog.Error("problem running manager", slog.Any("error", err))
 		os.Exit(1)
 	}
+}
+
+func splitCSV(raw string) []string {
+	parts := strings.Split(raw, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		value := strings.TrimSpace(part)
+		if value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
 }

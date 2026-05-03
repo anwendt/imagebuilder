@@ -104,6 +104,11 @@ func TestAWSPlugin_ReconcileRemoteBuild_ReturnsAMIWhenDone(t *testing.T) {
 			AMIID:        "ami-0123456789abcdef0",
 			ImageName:    "ubuntu-remote-final",
 			Checksum:     "sha256:0123456789abcdef",
+			Hygiene: &platform.RemoteHygieneResult{
+				Status:  "passed",
+				Message: "AWS provider attested remote build controls and final AMI availability",
+				Checks:  []string{"aws-ami-available"},
+			},
 		},
 	}
 	p := initializedRemoteAWSPlugin(t, client)
@@ -140,8 +145,32 @@ func TestAWSPlugin_ReconcileRemoteBuild_ReturnsAMIWhenDone(t *testing.T) {
 	if image.ImageRef.Tags["env"] != "test" {
 		t.Errorf("ImageRef.Tags[env] = %q", image.ImageRef.Tags["env"])
 	}
+	if result.Hygiene == nil || result.Hygiene.Status != "passed" {
+		t.Fatalf("Hygiene = %#v, want passed attestation", result.Hygiene)
+	}
+	if len(result.Hygiene.Checks) != 1 || result.Hygiene.Checks[0] != "aws-ami-available" {
+		t.Fatalf("Hygiene checks = %#v, want aws-ami-available", result.Hygiene.Checks)
+	}
+}
+
+func TestAWSPlugin_ReconcileRemoteBuild_DoneWithoutHygieneFallsBackToUnknown(t *testing.T) {
+	client := &fakeAWSRemoteBuildClient{
+		out: &awsRemoteBuildState{
+			OperationRef: "aws:imagebuilder/build-123",
+			Phase:        platform.RemoteBuildPhaseReady,
+			Done:         true,
+			AMIID:        "ami-0123456789abcdef0",
+			ImageName:    "ubuntu-remote-final",
+		},
+	}
+	p := initializedRemoteAWSPlugin(t, client)
+
+	result, err := p.ReconcileRemoteBuild(context.Background(), remoteBuildRequest())
+	if err != nil {
+		t.Fatalf("ReconcileRemoteBuild returned error: %v", err)
+	}
 	if result.Hygiene == nil || result.Hygiene.Status != "unknown" {
-		t.Fatalf("Hygiene = %#v, want unknown attestation", result.Hygiene)
+		t.Fatalf("Hygiene = %#v, want unknown fallback", result.Hygiene)
 	}
 	if len(result.Hygiene.Checks) != 1 || result.Hygiene.Checks[0] != "provider-attestation-missing" {
 		t.Fatalf("Hygiene checks = %#v, want provider-attestation-missing", result.Hygiene.Checks)

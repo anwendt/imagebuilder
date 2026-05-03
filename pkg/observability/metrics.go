@@ -28,6 +28,17 @@ var (
 		Buckets: prometheus.DefBuckets,
 	}, []string{"provider", "format", "success"})
 
+	UploadBytesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "imagebuilder_upload_bytes_total",
+		Help: "Total bytes uploaded to providers.",
+	}, []string{"provider", "format"})
+
+	UploadThroughputBytesPerSecond = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "imagebuilder_upload_throughput_bytes_per_second",
+		Help:    "Provider upload throughput in bytes per second.",
+		Buckets: []float64{1 << 20, 5 << 20, 10 << 20, 25 << 20, 50 << 20, 100 << 20, 250 << 20, 500 << 20, 1 << 30},
+	}, []string{"provider", "format"})
+
 	RegisterDurationSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "imagebuilder_register_duration_seconds",
 		Help:    "Duration of provider image registration operations.",
@@ -44,6 +55,11 @@ var (
 		Name: "imagebuilder_active_builds",
 		Help: "Number of VMImage build jobs currently tracked as active.",
 	}, []string{"provider", "format"})
+
+	ProviderHealthy = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "imagebuilder_provider_healthy",
+		Help: "Provider health status, where 1 is healthy and 0 is unhealthy.",
+	}, []string{"provider", "namespace"})
 
 	FailuresTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "imagebuilder_failures_total",
@@ -62,9 +78,12 @@ func Register() {
 			BuildDurationSeconds,
 			ProvisionerDurationSeconds,
 			UploadDurationSeconds,
+			UploadBytesTotal,
+			UploadThroughputBytesPerSecond,
 			RegisterDurationSeconds,
 			QueueDurationSeconds,
 			ActiveBuilds,
+			ProviderHealthy,
 			FailuresTotal,
 			CleanupFailuresTotal,
 		)

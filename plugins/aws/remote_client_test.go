@@ -34,6 +34,8 @@ type fakeEC2RemoteBuildAPI struct {
 	snapshotIDs    []string
 	createImageErr error
 	securityGroups []ec2types.SecurityGroup
+	sourcePlatform ec2types.PlatformValues
+	sourceArch     ec2types.ArchitectureValues
 }
 
 type fakeSSMRemoteBuildAPI struct {
@@ -93,6 +95,20 @@ func (f *fakeEC2RemoteBuildAPI) CreateImage(ctx context.Context, params *ec2.Cre
 
 func (f *fakeEC2RemoteBuildAPI) DescribeImages(ctx context.Context, params *ec2.DescribeImagesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeImagesOutput, error) {
 	f.describeImagesInput = params
+	if len(params.ImageIds) == 1 && params.ImageIds[0] == "ami-source" {
+		arch := f.sourceArch
+		if arch == "" {
+			arch = ec2types.ArchitectureValuesX8664
+		}
+		return &ec2.DescribeImagesOutput{
+			Images: []ec2types.Image{{
+				ImageId:      awssdk.String("ami-source"),
+				State:        ec2types.ImageStateAvailable,
+				Platform:     f.sourcePlatform,
+				Architecture: arch,
+			}},
+		}, nil
+	}
 	if len(params.ImageIds) == 0 && !f.existingImage {
 		return &ec2.DescribeImagesOutput{}, nil
 	}
@@ -294,6 +310,38 @@ func TestAWSRemoteBuildClient_AvailableImageCompletes(t *testing.T) {
 	}
 	if ec2api.terminateInput == nil || ec2api.terminateInput.InstanceIds[0] != "i-build" {
 		t.Fatalf("TerminateInstances input = %#v", ec2api.terminateInput)
+	}
+	if state.Hygiene == nil || state.Hygiene.Status != "passed" {
+		t.Fatalf("Hygiene = %#v, want passed", state.Hygiene)
+	}
+	wantChecks := map[string]bool{}
+	for _, check := range state.Hygiene.Checks {
+		wantChecks[check] = true
+	}
+	for _, check := range []string{"aws-ami-available", "aws-imdsv2-required", "aws-kms-key-configured", "aws-no-ssh-key"} {
+		if !wantChecks[check] {
+			t.Fatalf("Hygiene checks = %#v, missing %q", state.Hygiene.Checks, check)
+		}
+	}
+}
+
+func TestAWSRemoteBuildClient_HygieneFailsWhenSSHKeyAllowed(t *testing.T) {
+	ec2api := &fakeEC2RemoteBuildAPI{
+		imageID:    "ami-new",
+		imageState: ec2types.ImageStateAvailable,
+	}
+	client := testAWSRemoteBuildClient(ec2api)
+	client.settings.AllowSSHKey = true
+	req := remoteBuildRequest()
+	req.SourceProviderRef = "ami-source"
+	req.OperationRef = "aws://remote-build/build-123?imageId=ami-new&instanceId=i-build"
+
+	state, err := client.ReconcileRemoteBuild(context.Background(), awsRemoteRequestFromPlatform(req))
+	if err != nil {
+		t.Fatalf("ReconcileRemoteBuild returned error: %v", err)
+	}
+	if state.Hygiene == nil || state.Hygiene.Status != "failed" {
+		t.Fatalf("Hygiene = %#v, want failed", state.Hygiene)
 	}
 }
 
@@ -528,6 +576,90 @@ func TestAWSRemoteBuildClient_RejectsPublicRemoteAdminSecurityGroup(t *testing.T
 	_, err := client.ReconcileRemoteBuild(context.Background(), awsRemoteRequestFromPlatform(req))
 	if err == nil {
 		t.Fatal("ReconcileRemoteBuild should reject public SSH ingress")
+	}
+}
+
+func TestAWSRemoteBuildClient_RejectsWindowsSpecWithLinuxSourceAMI(t *testing.T) {
+	client := testAWSRemoteBuildClient(&fakeEC2RemoteBuildAPI{})
+	req := remoteBuildRequest()
+	req.SourceProviderRef = "ami-source"
+	req.OSFamily = platform.OSFamilyWindows
+	req.Provisioners = []v1alpha1.ProvisionerSpec{{Type: "powershell", Inline: "Write-Host ok"}}
+
+	_, err := client.ReconcileRemoteBuild(context.Background(), awsRemoteRequestFromPlatform(req))
+	if err == nil {
+		t.Fatal("ReconcileRemoteBuild should reject Windows builds from non-Windows AMIs")
+	}
+	if !strings.Contains(err.Error(), "not a Windows AMI") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestAWSRemoteBuildClient_RejectsLinuxSpecWithWindowsSourceAMI(t *testing.T) {
+	client := testAWSRemoteBuildClient(&fakeEC2RemoteBuildAPI{sourcePlatform: ec2types.PlatformValuesWindows})
+	req := remoteBuildRequest()
+	req.SourceProviderRef = "ami-source"
+
+	_, err := client.ReconcileRemoteBuild(context.Background(), awsRemoteRequestFromPlatform(req))
+	if err == nil {
+		t.Fatal("ReconcileRemoteBuild should reject Linux builds from Windows AMIs")
+	}
+	if !strings.Contains(err.Error(), "spec.os.family is linux") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestAWSRemoteBuildClient_RejectsArchitectureMismatch(t *testing.T) {
+	client := testAWSRemoteBuildClient(&fakeEC2RemoteBuildAPI{sourceArch: ec2types.ArchitectureValuesArm64})
+	req := remoteBuildRequest()
+	req.SourceProviderRef = "ami-source"
+	req.OSArch = "amd64"
+
+	_, err := client.ReconcileRemoteBuild(context.Background(), awsRemoteRequestFromPlatform(req))
+	if err == nil {
+		t.Fatal("ReconcileRemoteBuild should reject source AMI architecture mismatches")
+	}
+	if !strings.Contains(err.Error(), "architecture") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestAWSRemoteBuildClient_RejectsShellProvisionerForWindowsBeforeStart(t *testing.T) {
+	ec2api := &fakeEC2RemoteBuildAPI{sourcePlatform: ec2types.PlatformValuesWindows}
+	client := testAWSRemoteBuildClient(ec2api)
+	req := remoteBuildRequest()
+	req.SourceProviderRef = "ami-source"
+	req.OSFamily = platform.OSFamilyWindows
+	req.Provisioners = []v1alpha1.ProvisionerSpec{{Type: "shell", Inline: "echo wrong"}}
+
+	_, err := client.ReconcileRemoteBuild(context.Background(), awsRemoteRequestFromPlatform(req))
+	if err == nil {
+		t.Fatal("ReconcileRemoteBuild should reject shell provisioners for Windows")
+	}
+	if ec2api.runInput != nil {
+		t.Fatal("RunInstances should not be called when provisioners are invalid")
+	}
+}
+
+func TestAWSRemoteBuildClient_StartsWindowsPowerShellBuild(t *testing.T) {
+	ec2api := &fakeEC2RemoteBuildAPI{instanceID: "i-win", sourcePlatform: ec2types.PlatformValuesWindows}
+	client := testAWSRemoteBuildClient(ec2api)
+	req := remoteBuildRequest()
+	req.SourceProviderRef = "ami-source"
+	req.OSFamily = platform.OSFamilyWindows
+	req.OSDistribution = "windows-server"
+	req.OSVersion = "2022"
+	req.Provisioners = []v1alpha1.ProvisionerSpec{{Type: "powershell", Inline: "Write-Host ok"}}
+
+	state, err := client.ReconcileRemoteBuild(context.Background(), awsRemoteRequestFromPlatform(req))
+	if err != nil {
+		t.Fatalf("ReconcileRemoteBuild returned error: %v", err)
+	}
+	if state.OperationRef != "aws://remote-build/build-123?instanceId=i-win" {
+		t.Errorf("OperationRef = %q", state.OperationRef)
+	}
+	if ec2api.runInput == nil {
+		t.Fatal("RunInstances was not called")
 	}
 }
 

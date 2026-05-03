@@ -34,7 +34,8 @@ type PlatformProviderSpec struct {
 
 	// Transport configures operator-to-provider gRPC transport security.
 	// Defaults to plaintext TCP inside the namespace-local ClusterIP and
-	// NetworkPolicy trust boundary. Use mTLS for cross-boundary endpoints.
+	// NetworkPolicy trust boundary unless the operator is started with a
+	// global require-provider-mtls policy. Use mTLS for cross-boundary endpoints.
 	// +optional
 	Transport *ProviderTransportSpec `json:"transport,omitempty"`
 }

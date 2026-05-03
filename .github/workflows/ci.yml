@@ -14,14 +14,16 @@ env:
 
 permissions:
   contents: read
-  security-events: write
 
 jobs:
   test:
     name: Unit, Core E2E, Manifest Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -42,8 +44,11 @@ jobs:
     name: Build Binaries
     runs-on: ubuntu-latest
     needs: test
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -56,12 +61,16 @@ jobs:
           make build
           make build-builder
           make build-uploader
+          make build-provider-aws
 
   generated:
     name: Generated Artifacts Are Current
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -92,8 +101,11 @@ jobs:
   security:
     name: Required Security Gates
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -120,9 +132,15 @@ jobs:
     name: Upload gosec SARIF
     runs-on: ubuntu-latest
     needs: security
-    if: always()
+    if: always() && github.event_name != 'pull_request'
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -131,13 +149,7 @@ jobs:
           cache: true
 
       - name: Run gosec SARIF
-        uses: securego/gosec@master
-        with:
-          args: >-
-            -fmt sarif
-            -out gosec.sarif
-            -severity high
-            ./...
+        run: go run github.com/securego/gosec/v2/cmd/gosec@v2.22.10 -fmt sarif -out gosec.sarif -severity high ./...
 
       - name: Upload gosec SARIF
         uses: github/codeql-action/upload-sarif@v3
@@ -148,21 +160,26 @@ jobs:
   secrets:
     name: Secret Scan / gitleaks
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Run gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v2.3.9
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
 
   helm:
     name: Helm Chart Gate
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Helm
         uses: azure/setup-helm@v4
@@ -177,14 +194,19 @@ jobs:
     name: Container Image Scan / Trivy
     runs-on: ubuntu-latest
     needs: build
+    timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Build operator image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6.19.1
         with:
           context: .
           push: false
@@ -194,13 +216,67 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:ci
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+
+      - name: Build AWS provider image
+        uses: docker/build-push-action@v6.19.1
+        with:
+          context: .
+          file: Dockerfile.provider-aws
+          push: false
+          tags: ghcr.io/${{ github.repository_owner }}/imagebuilder-provider-aws:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy vulnerability scanner for AWS provider
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/imagebuilder-provider-aws:ci
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+
+  image-scan-sarif:
+    name: Upload Container Image SARIF
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name != 'pull_request'
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build operator image
+        uses: docker/build-push-action@v6.19.1
+        with:
+          context: .
+          push: false
+          tags: ${{ env.IMAGE_NAME }}:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: ${{ env.IMAGE_NAME }}:ci
           format: sarif
           output: trivy-results.sarif
           severity: HIGH,CRITICAL
-          exit-code: "1"
+          exit-code: "0"
 
       - name: Upload Trivy SARIF
         uses: github/codeql-action/upload-sarif@v3
@@ -208,9 +284,36 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
 
+      - name: Build AWS provider image
+        uses: docker/build-push-action@v6.19.1
+        with:
+          context: .
+          file: Dockerfile.provider-aws
+          push: false
+          tags: ghcr.io/${{ github.repository_owner }}/imagebuilder-provider-aws:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy vulnerability scanner for AWS provider
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/imagebuilder-provider-aws:ci
+          format: sarif
+          output: trivy-aws-provider-results.sarif
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+
+      - name: Upload AWS provider Trivy SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-aws-provider-results.sarif
+
   required:
     name: Required CI Gate
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs:
       - test
       - build

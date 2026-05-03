@@ -145,11 +145,11 @@ kind: PlatformProvider
 metadata:
   name: aws
 spec:
-  package: ghcr.io/yourorg/imagebuilder-provider-aws@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  package: ghcr.io/anwendt/imagebuilder-provider-aws@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   packagePullPolicy: IfNotPresent
   security:
     allowedRegistries:
-      - ghcr.io/yourorg
+      - ghcr.io/anwendt
     requireDigest: true
     verifySignature: true
 

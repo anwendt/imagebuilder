@@ -3,6 +3,8 @@ package uploadpod
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -18,7 +20,7 @@ const (
 	workspaceMount = "/workspace"
 	workspaceVol   = "workspace"
 
-	defaultUploaderImage = "ghcr.io/anwendt/imagebuilder-uploader:latest"
+	defaultUploaderImage = "ghcr.io/anwendt/imagebuilder-uploader:0.1.0"
 )
 
 type TargetConfig struct {
@@ -204,6 +206,9 @@ func jobNameForMode(img *v1alpha1.VMImage, cleanupOnly bool) string {
 func uploaderImage(img *v1alpha1.VMImage) string {
 	if img.Spec.Build.Upload != nil && img.Spec.Build.Upload.Image != "" {
 		return img.Spec.Build.Upload.Image
+	}
+	if image := strings.TrimSpace(os.Getenv("UPLOADER_IMAGE")); image != "" {
+		return image
 	}
 	return defaultUploaderImage
 }

@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -21,6 +20,7 @@ import (
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
+	"github.com/anwendt/imagebuilder/pkg/security/netguard"
 )
 
 const (
@@ -208,24 +208,40 @@ func cleanDirectory(path, label string) (string, error) {
 
 // HTTPFetcher downloads HTTPS sources and verifies their checksum before use.
 type HTTPFetcher struct {
-	client *http.Client
+	client   *http.Client
+	resolver netguard.Resolver
+}
+
+// HTTPFetcherOption configures HTTPFetcher.
+type HTTPFetcherOption func(*HTTPFetcher)
+
+// WithResolver overrides DNS resolution used by SSRF checks.
+func WithResolver(resolver netguard.Resolver) HTTPFetcherOption {
+	return func(fetcher *HTTPFetcher) {
+		fetcher.resolver = resolver
+	}
 }
 
 // NewHTTPFetcher creates an HTTP-backed source fetcher.
-func NewHTTPFetcher(client *http.Client) *HTTPFetcher {
+func NewHTTPFetcher(client *http.Client, opts ...HTTPFetcherOption) *HTTPFetcher {
 	if client == nil {
 		client = http.DefaultClient
 	}
 	clone := *client
+	fetcher := &HTTPFetcher{client: &clone}
+	for _, opt := range opts {
+		opt(fetcher)
+	}
 	if clone.CheckRedirect == nil {
 		clone.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
 			if strings.ToLower(req.URL.Scheme) != "https" {
 				return fmt.Errorf("redirect to non-HTTPS URL is not allowed")
 			}
-			return validateSafeSourceURL(req.URL)
+			return fetcher.validateSafeSourceURL(req.Context(), req.URL)
 		}
 	}
-	return &HTTPFetcher{client: &clone}
+	fetcher.client = &clone
+	return fetcher
 }
 
 // Fetch downloads source.url into workspaceDir/source.img with mode 0600.
@@ -247,7 +263,7 @@ func (f *HTTPFetcher) fetch(ctx context.Context, source v1alpha1.SourceSpec, wor
 	if err != nil {
 		return nil, fmt.Errorf("parse source URL: %w", err)
 	}
-	if err := validateSafeSourceURL(parsedURL); err != nil {
+	if err := f.validateSafeSourceURL(ctx, parsedURL); err != nil {
 		return nil, err
 	}
 
@@ -559,16 +575,8 @@ func copyFile(ctx context.Context, srcPath, dstPath string) error {
 	return nil
 }
 
-func validateSafeSourceURL(parsedURL *url.URL) error {
-	if strings.ToLower(parsedURL.Scheme) != "https" {
-		return fmt.Errorf("source URL must use https")
-	}
-	host := parsedURL.Hostname()
-	if host == "" {
-		return fmt.Errorf("source URL host is required")
-	}
-	if net.ParseIP(host) != nil {
-		return fmt.Errorf("source URL host must be a DNS name, not a raw IP address")
-	}
-	return nil
+func (f *HTTPFetcher) validateSafeSourceURL(ctx context.Context, parsedURL *url.URL) error {
+	return netguard.ValidatePublicHTTPSURL(ctx, "source URL", parsedURL.String(), netguard.Options{
+		Resolver: f.resolver,
+	})
 }

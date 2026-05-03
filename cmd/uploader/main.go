@@ -16,6 +16,7 @@ import (
 	"github.com/anwendt/imagebuilder/pkg/controller/uploadpod"
 	"github.com/anwendt/imagebuilder/pkg/plugin"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
+	"github.com/anwendt/imagebuilder/pkg/security/netguard"
 
 	_ "github.com/anwendt/imagebuilder/plugins/aws"
 	_ "github.com/anwendt/imagebuilder/plugins/azure"
@@ -94,6 +95,9 @@ func run(ctx context.Context, getenv func(string) string) (runResult, error) {
 		if err != nil {
 			return runResult{}, fmt.Errorf("read credentials for %q: %w", target.ProviderConfigName, err)
 		}
+		if err := validateProviderEndpoint(ctx, target); err != nil {
+			return runResult{}, err
+		}
 		if err := providerPlugin.Init(ctx, platform.PluginConfig{
 			ProviderConfigName: target.ProviderConfigName,
 			SecretData:         secretData,
@@ -167,6 +171,7 @@ func run(ctx context.Context, getenv func(string) string) (runResult, error) {
 			ImageRef:             imageRef.ID,
 			LastTransitionTime:   metav1.Now(),
 			UploadMilliseconds:   uploadMilliseconds,
+			UploadBytes:          artifact.SizeBytes,
 			RegisterMilliseconds: registerMilliseconds,
 		})
 		images = append(images, v1alpha1.ImageStatus{
@@ -220,6 +225,9 @@ func cleanupUploadedArtifacts(ctx context.Context, workspace string, getenv func
 		if err != nil {
 			return runResult{}, fmt.Errorf("read credentials for %q: %w", target.ProviderConfigName, err)
 		}
+		if err := validateProviderEndpoint(ctx, target); err != nil {
+			return runResult{}, err
+		}
 		if err := providerPlugin.Init(ctx, platform.PluginConfig{
 			ProviderConfigName: target.ProviderConfigName,
 			SecretData:         secretData,
@@ -244,6 +252,20 @@ func cleanupUploadedArtifacts(ctx context.Context, workspace string, getenv func
 		}
 	}
 	return runResult{}, nil
+}
+
+func validateProviderEndpoint(ctx context.Context, target uploadpod.TargetConfig) error {
+	return validateProviderEndpointWithOptions(ctx, target, netguard.Options{})
+}
+
+func validateProviderEndpointWithOptions(ctx context.Context, target uploadpod.TargetConfig, opts netguard.Options) error {
+	if target.Endpoint == "" {
+		return nil
+	}
+	if err := netguard.ValidatePublicHTTPSURL(ctx, "provider endpoint", target.Endpoint, opts); err != nil {
+		return fmt.Errorf("provider endpoint for %q rejected by SSRF protection: %w", target.ProviderConfigName, err)
+	}
+	return nil
 }
 
 func fallbackUploadOperations(workspace string, targets []uploadpod.TargetConfig) ([]uploadOperationRecord, error) {

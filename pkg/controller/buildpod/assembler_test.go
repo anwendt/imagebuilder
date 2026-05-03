@@ -228,6 +228,19 @@ func TestAssemble_MainContainerPresent(t *testing.T) {
 	}
 }
 
+func TestAssemble_MainContainerImageFromEnvironment(t *testing.T) {
+	t.Setenv("BUILDER_IMAGE", "registry.example.test/imagebuilder-builder@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+
+	job, err := buildpod.Assemble(baseImage(), newScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble failed: %v", err)
+	}
+	image := job.Spec.Template.Spec.Containers[0].Image
+	if image != "registry.example.test/imagebuilder-builder@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("builder image = %q", image)
+	}
+}
+
 func TestAssemble_MainContainerEnvVars(t *testing.T) {
 	img := baseImage()
 	job, err := buildpod.Assemble(img, newScheme(t))
@@ -640,6 +653,10 @@ func TestAssemble_KVMEnabledMountsHostDeviceWithoutPrivilege(t *testing.T) {
 	img := baseImage()
 	img.Spec.Source.Type = "iso"
 	img.Spec.Build.Security = &v1alpha1.BuildSecuritySpec{EnableKVM: true}
+	img.Spec.Build.NodeSelector = map[string]string{
+		"imagebuilder.io/kvm":       "true",
+		"imagebuilder.io/dedicated": "imagebuilder",
+	}
 
 	job, err := buildpod.Assemble(img, newScheme(t))
 	if err != nil {
@@ -667,6 +684,11 @@ func TestAssemble_KVMEnabledMountsHostDeviceWithoutPrivilege(t *testing.T) {
 	}
 	if container.SecurityContext == nil || container.SecurityContext.Privileged == nil || *container.SecurityContext.Privileged {
 		t.Fatalf("kvm build container must remain unprivileged: %#v", container.SecurityContext)
+	}
+	if len(job.Spec.Template.Spec.Tolerations) != 1 ||
+		job.Spec.Template.Spec.Tolerations[0].Key != "imagebuilder.io/dedicated" ||
+		job.Spec.Template.Spec.Tolerations[0].Value != "imagebuilder" {
+		t.Fatalf("KVM tolerations = %#v, want dedicated build-node toleration", job.Spec.Template.Spec.Tolerations)
 	}
 }
 

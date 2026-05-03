@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
+	"github.com/anwendt/imagebuilder/pkg/observability"
 	"github.com/anwendt/imagebuilder/pkg/plugin"
 	plugingrpc "github.com/anwendt/imagebuilder/pkg/plugin/grpc"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
@@ -40,24 +41,30 @@ const (
 	providerFinalizerName     = "imagebuilder.io/provider-cleanup"
 	providerGRPCPort          = 50051
 	requeueAfter              = 30
+	defaultProviderNamespace  = "imagebuilder-system"
 	providerTLSMountPath      = "/var/run/imagebuilder/provider-tls"
 	providerClientCAMountPath = "/var/run/imagebuilder/provider-client-ca"
 )
 
 // PlatformProviderReconciler reconciles PlatformProvider resources.
 //
-// +kubebuilder:rbac:groups=imagebuilder.io,resources=platformproviders,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=imagebuilder.io,resources=platformproviders,verbs=get;list;watch
 // +kubebuilder:rbac:groups=imagebuilder.io,resources=platformproviders/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=imagebuilder.io,resources=platformproviders/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get
 type PlatformProviderReconciler struct {
 	client.Client
-	Scheme          *runtime.Scheme
-	Registry        *plugin.Registry
-	ConnectProvider func(ctx context.Context, address string) (platform.Plugin, error)
-	log             *slog.Logger
+	Scheme            *runtime.Scheme
+	Registry          *plugin.Registry
+	ProviderNamespace string
+	RequireMTLS       bool
+	RequireDigest     bool
+	RequireSignature  bool
+	AllowedRegistries []string
+	ConnectProvider   func(ctx context.Context, address string) (platform.Plugin, error)
+	log               *slog.Logger
 }
 
 func (r *PlatformProviderReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -98,10 +105,10 @@ func (r *PlatformProviderReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	// Reconcile Deployment and Service.
-	if err := validateProviderPackagePolicy(pp); err != nil {
+	if err := r.validateProviderPackagePolicy(pp); err != nil {
 		return r.setUnhealthy(ctx, pp, fmt.Sprintf("provider package policy rejected image: %v", err))
 	}
-	if err := validateProviderTransportPolicy(pp); err != nil {
+	if err := r.validateProviderTransportPolicy(pp); err != nil {
 		return r.setUnhealthy(ctx, pp, fmt.Sprintf("provider transport policy rejected: %v", err))
 	}
 	if err := r.reconcileDeployment(ctx, pp, log); err != nil {
@@ -215,7 +222,7 @@ func (r *PlatformProviderReconciler) buildDeployment(pp *v1alpha1.PlatformProvid
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      providerDeploymentName(pp),
-			Namespace: pp.Namespace,
+			Namespace: r.providerNamespace(pp),
 			Labels:    labels,
 		},
 		Spec: appsv1.DeploymentSpec{
@@ -272,7 +279,7 @@ func (r *PlatformProviderReconciler) buildService(pp *v1alpha1.PlatformProvider)
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      providerServiceName(pp),
-			Namespace: pp.Namespace,
+			Namespace: r.providerNamespace(pp),
 			Labels:    labels,
 		},
 		Spec: corev1.ServiceSpec{
@@ -298,7 +305,7 @@ func (r *PlatformProviderReconciler) reconcileHealth(ctx context.Context, pp *v1
 	dep := &appsv1.Deployment{}
 	if err := r.Get(ctx, types.NamespacedName{
 		Name:      providerDeploymentName(pp),
-		Namespace: pp.Namespace,
+		Namespace: r.providerNamespace(pp),
 	}, dep); err != nil {
 		return r.setUnhealthy(ctx, pp, fmt.Sprintf("cannot read deployment: %v", err))
 	}
@@ -309,6 +316,7 @@ func (r *PlatformProviderReconciler) reconcileHealth(ctx context.Context, pp *v1
 			if err := r.healthCheckRegisteredProvider(ctx, pp); err != nil {
 				return r.setUnhealthy(ctx, pp, fmt.Sprintf("provider health check failed: %v", err))
 			}
+			observability.ProviderHealthy.WithLabelValues(pp.Name, r.providerNamespace(pp)).Set(1)
 			// Already healthy — nothing to update.
 			return ctrl.Result{RequeueAfter: requeueAfter * 1e9}, nil
 		}
@@ -326,8 +334,10 @@ func (r *PlatformProviderReconciler) reconcileHealth(ctx context.Context, pp *v1
 		}
 		log.Info("provider deployment is ready — marking Healthy")
 		pp.Status.Phase = "Healthy"
+		observability.ProviderHealthy.WithLabelValues(pp.Name, r.providerNamespace(pp)).Set(1)
 		setCondition(pp, "Ready", metav1.ConditionTrue, "DeploymentReady", "Provider deployment has ready replicas")
 	} else {
+		observability.ProviderHealthy.WithLabelValues(pp.Name, r.providerNamespace(pp)).Set(0)
 		installing := pp.Status.Phase == "" || pp.Status.Phase == "Installing"
 		if installing {
 			log.Info("provider deployment not yet ready — Installing")
@@ -355,6 +365,7 @@ func (r *PlatformProviderReconciler) reconcileDelete(ctx context.Context, pp *v1
 	if r.Registry != nil && pp.Status.Capabilities != nil {
 		r.Registry.Deregister(pp.Status.Capabilities.ProviderName)
 	}
+	observability.ProviderHealthy.DeleteLabelValues(pp.Name, r.providerNamespace(pp))
 	// Owned Deployment and Service are garbage-collected via ownerReferences.
 	controllerutil.RemoveFinalizer(pp, providerFinalizerName)
 	if err := r.Update(ctx, pp); err != nil {
@@ -370,6 +381,7 @@ func (r *PlatformProviderReconciler) reconcileDelete(ctx context.Context, pp *v1
 
 func (r *PlatformProviderReconciler) setUnhealthy(ctx context.Context, pp *v1alpha1.PlatformProvider, reason string) (ctrl.Result, error) {
 	r.log.Error("platform provider unhealthy", slog.String("name", pp.Name), slog.String("reason", reason))
+	observability.ProviderHealthy.WithLabelValues(pp.Name, r.providerNamespace(pp)).Set(0)
 	pp.Status.Phase = "Unhealthy"
 	setCondition(pp, "Ready", metav1.ConditionFalse, "Error", reason)
 	if err := r.Status().Update(ctx, pp); err != nil {
@@ -386,8 +398,18 @@ func providerServiceName(pp *v1alpha1.PlatformProvider) string {
 	return fmt.Sprintf("provider-%s", pp.Name)
 }
 
+func (r *PlatformProviderReconciler) providerNamespace(pp *v1alpha1.PlatformProvider) string {
+	if r.ProviderNamespace != "" {
+		return r.ProviderNamespace
+	}
+	if pp.Namespace != "" {
+		return pp.Namespace
+	}
+	return defaultProviderNamespace
+}
+
 func (r *PlatformProviderReconciler) connectProvider(ctx context.Context, pp *v1alpha1.PlatformProvider) (platform.Plugin, error) {
-	address := fmt.Sprintf("%s.%s.svc:%d", providerServiceName(pp), pp.Namespace, providerGRPCPort)
+	address := fmt.Sprintf("%s.%s.svc:%d", providerServiceName(pp), r.providerNamespace(pp), providerGRPCPort)
 	if r.ConnectProvider != nil {
 		return r.ConnectProvider(ctx, address)
 	}
@@ -432,7 +454,7 @@ func (r *PlatformProviderReconciler) providerTLSConfig(ctx context.Context, pp *
 	}
 	serverName := tlsSpec.ServerName
 	if serverName == "" {
-		serverName = fmt.Sprintf("%s.%s.svc", providerServiceName(pp), pp.Namespace)
+		serverName = fmt.Sprintf("%s.%s.svc", providerServiceName(pp), r.providerNamespace(pp))
 	}
 	return &plugingrpc.ProviderTLSConfig{
 		ServerName: serverName,
@@ -536,9 +558,18 @@ func buildModesFromPlugin(p platform.Plugin) []string {
 	return modes
 }
 
-func validateProviderPackagePolicy(pp *v1alpha1.PlatformProvider) error {
+func (r *PlatformProviderReconciler) validateProviderPackagePolicy(pp *v1alpha1.PlatformProvider) error {
 	if pp.Spec.Package == "" {
 		return fmt.Errorf("spec.package is required")
+	}
+	if r.RequireDigest && !strings.Contains(pp.Spec.Package, "@sha256:") {
+		return fmt.Errorf("spec.package must be pinned by digest by operator policy")
+	}
+	if r.RequireSignature && (pp.Spec.Security == nil || !pp.Spec.Security.VerifySignature) {
+		return fmt.Errorf("spec.security.verifySignature is required by operator policy")
+	}
+	if len(r.AllowedRegistries) > 0 && !providerPackageAllowed(pp.Spec.Package, r.AllowedRegistries) {
+		return fmt.Errorf("spec.package registry is not allowed by operator policy")
 	}
 	security := pp.Spec.Security
 	if security == nil {
@@ -550,27 +581,32 @@ func validateProviderPackagePolicy(pp *v1alpha1.PlatformProvider) error {
 		}
 	}
 	if len(security.AllowedRegistries) > 0 {
-		allowed := false
-		for _, prefix := range security.AllowedRegistries {
-			prefix = strings.TrimSuffix(prefix, "/")
-			if pp.Spec.Package == prefix || strings.HasPrefix(pp.Spec.Package, prefix+"/") {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
+		if !providerPackageAllowed(pp.Spec.Package, security.AllowedRegistries) {
 			return fmt.Errorf("spec.package registry is not in spec.security.allowedRegistries")
 		}
 	}
 	return nil
 }
 
-func validateProviderTransportPolicy(pp *v1alpha1.PlatformProvider) error {
+func providerPackageAllowed(image string, allowedRegistries []string) bool {
+	for _, prefix := range allowedRegistries {
+		prefix = strings.TrimSuffix(prefix, "/")
+		if image == prefix || strings.HasPrefix(image, prefix+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *PlatformProviderReconciler) validateProviderTransportPolicy(pp *v1alpha1.PlatformProvider) error {
 	tlsSpec := providerMutualTLS(pp)
 	if tlsSpec == nil {
 		if pp.Spec.Transport != nil && pp.Spec.Transport.TLS != nil &&
 			pp.Spec.Transport.TLS.Mode != "" && pp.Spec.Transport.TLS.Mode != "Disabled" {
 			return fmt.Errorf("spec.transport.tls.mode must be Disabled or Mutual")
+		}
+		if r.RequireMTLS {
+			return fmt.Errorf("provider mTLS is required by operator policy; set spec.transport.tls.mode=Mutual")
 		}
 		return nil
 	}
@@ -593,6 +629,9 @@ func validateProviderTransportPolicy(pp *v1alpha1.PlatformProvider) error {
 		}
 		if ref.Namespace == "" {
 			return fmt.Errorf("spec.transport.tls.%s.namespace is required", field)
+		}
+		if ref.Namespace != r.providerNamespace(pp) {
+			return fmt.Errorf("spec.transport.tls.%s.namespace must match provider namespace %q", field, r.providerNamespace(pp))
 		}
 	}
 	return nil

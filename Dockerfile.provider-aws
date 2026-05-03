@@ -1,0 +1,32 @@
+# Dockerfile.provider-aws — standalone AWS PlatformProvider
+
+FROM golang:1.26-alpine AS builder
+
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+
+RUN apk add --no-cache ca-certificates git
+
+WORKDIR /workspace
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build \
+      -trimpath \
+      -ldflags="-s -w -extldflags=-static" \
+      -o /workspace/provider-aws \
+      ./cmd/provider-aws
+
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY --from=builder /workspace/provider-aws /provider-aws
+
+USER 65532:65532
+
+EXPOSE 9443
+
+ENTRYPOINT ["/provider-aws"]

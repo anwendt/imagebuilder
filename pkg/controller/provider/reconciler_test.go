@@ -19,10 +19,12 @@ package provider_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -230,6 +232,32 @@ func TestProviderReconcile_CreatesDeployment(t *testing.T) {
 	}
 }
 
+func TestProviderReconcile_ClusterScopedProviderUsesConfiguredProviderNamespace(t *testing.T) {
+	pp := newPP("cluster-provider", "", "ghcr.io/anwendt/provider-aws:v1")
+	pp.Finalizers = []string{"imagebuilder.io/provider-cleanup"}
+
+	s := providerScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.PlatformProvider{}).WithObjects(pp).Build()
+	r := &provider.PlatformProviderReconciler{Client: c, Scheme: s, ProviderNamespace: "imagebuilder-system"}
+
+	reconcileProvider(t, r, "cluster-provider", "")
+
+	dep := &appsv1.Deployment{}
+	if err := c.Get(context.Background(), types.NamespacedName{
+		Name:      "provider-cluster-provider",
+		Namespace: "imagebuilder-system",
+	}, dep); err != nil {
+		t.Fatalf("expected Deployment provider-cluster-provider in imagebuilder-system: %v", err)
+	}
+	svc := &corev1.Service{}
+	if err := c.Get(context.Background(), types.NamespacedName{
+		Name:      "provider-cluster-provider",
+		Namespace: "imagebuilder-system",
+	}, svc); err != nil {
+		t.Fatalf("expected Service provider-cluster-provider in imagebuilder-system: %v", err)
+	}
+}
+
 func TestProviderReconcile_DeploymentOwnerReference(t *testing.T) {
 	pp := newPP("aws-provider", "default", "ghcr.io/anwendt/provider-aws:v1")
 	pp.Finalizers = []string{"imagebuilder.io/provider-cleanup"}
@@ -314,7 +342,7 @@ func TestProviderReconcile_MutualTLSMountsProviderServerSecrets(t *testing.T) {
 
 	s := providerScheme(t)
 	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.PlatformProvider{}).WithObjects(pp).Build()
-	r := &provider.PlatformProviderReconciler{Client: c, Scheme: s}
+	r := &provider.PlatformProviderReconciler{Client: c, Scheme: s, RequireMTLS: true}
 
 	reconcileProvider(t, r, "tls-provider", "default")
 
@@ -337,6 +365,82 @@ func TestProviderReconcile_MutualTLSMountsProviderServerSecrets(t *testing.T) {
 	if !hasVolumeMount(container, "provider-tls", "/var/run/imagebuilder/provider-tls") ||
 		!hasVolumeMount(container, "provider-client-ca", "/var/run/imagebuilder/provider-client-ca") {
 		t.Fatalf("provider TLS mounts = %#v", container.VolumeMounts)
+	}
+}
+
+func TestProviderReconcile_RequireMTLSRejectsPlaintextProvider(t *testing.T) {
+	tests := []struct {
+		name      string
+		transport *v1alpha1.ProviderTransportSpec
+	}{
+		{
+			name: "missing transport",
+		},
+		{
+			name: "explicit disabled",
+			transport: &v1alpha1.ProviderTransportSpec{
+				TLS: &v1alpha1.ProviderTransportTLSSpec{Mode: "Disabled"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pp := newPP("plaintext-provider", "default", "ghcr.io/anwendt/provider-plaintext:v1")
+			pp.Finalizers = []string{"imagebuilder.io/provider-cleanup"}
+			pp.Spec.Transport = tt.transport
+
+			s := providerScheme(t)
+			c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.PlatformProvider{}).WithObjects(pp).Build()
+			r := &provider.PlatformProviderReconciler{Client: c, Scheme: s, RequireMTLS: true}
+
+			reconcileProvider(t, r, "plaintext-provider", "default")
+
+			updated := &v1alpha1.PlatformProvider{}
+			if err := c.Get(context.Background(), types.NamespacedName{Name: "plaintext-provider", Namespace: "default"}, updated); err != nil {
+				t.Fatalf("get updated PlatformProvider: %v", err)
+			}
+			if updated.Status.Phase != "Unhealthy" {
+				t.Fatalf("phase = %q, want Unhealthy", updated.Status.Phase)
+			}
+			if len(updated.Status.Conditions) == 0 || !strings.Contains(updated.Status.Conditions[0].Message, "provider mTLS is required") {
+				t.Fatalf("conditions = %#v, want require mTLS message", updated.Status.Conditions)
+			}
+
+			dep := &appsv1.Deployment{}
+			err := c.Get(context.Background(), types.NamespacedName{Name: "provider-plaintext-provider", Namespace: "default"}, dep)
+			if !apierrors.IsNotFound(err) {
+				t.Fatalf("deployment should not be created when mTLS is required, get err = %v", err)
+			}
+		})
+	}
+}
+
+func TestProviderReconcile_GlobalPackagePolicyRejectsUnsignedMutableProvider(t *testing.T) {
+	pp := newPP("mutable-provider", "default", "docker.io/library/provider:v1")
+	pp.Finalizers = []string{"imagebuilder.io/provider-cleanup"}
+
+	s := providerScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.PlatformProvider{}).WithObjects(pp).Build()
+	r := &provider.PlatformProviderReconciler{
+		Client:            c,
+		Scheme:            s,
+		RequireDigest:     true,
+		RequireSignature:  true,
+		AllowedRegistries: []string{"ghcr.io/anwendt"},
+	}
+
+	reconcileProvider(t, r, "mutable-provider", "default")
+
+	updated := &v1alpha1.PlatformProvider{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "mutable-provider", Namespace: "default"}, updated); err != nil {
+		t.Fatalf("get updated PlatformProvider: %v", err)
+	}
+	if updated.Status.Phase != "Unhealthy" {
+		t.Fatalf("phase = %q, want Unhealthy", updated.Status.Phase)
+	}
+	if len(updated.Status.Conditions) == 0 || !strings.Contains(updated.Status.Conditions[0].Message, "pinned by digest") {
+		t.Fatalf("conditions = %#v, want digest policy message", updated.Status.Conditions)
 	}
 }
 
@@ -415,6 +519,42 @@ func TestProviderReconcile_MutualTLSMissingServerSecretRefIsUnhealthy(t *testing
 
 	updated := &v1alpha1.PlatformProvider{}
 	if err := c.Get(context.Background(), types.NamespacedName{Name: "bad-tls-provider", Namespace: "default"}, updated); err != nil {
+		t.Fatalf("get updated PlatformProvider: %v", err)
+	}
+	if updated.Status.Phase != "Unhealthy" {
+		t.Fatalf("phase = %q, want Unhealthy", updated.Status.Phase)
+	}
+}
+
+func TestProviderReconcile_MutualTLSSecretNamespaceMustMatchProviderNamespace(t *testing.T) {
+	pp := newPP("bad-tls-namespace", "", "ghcr.io/anwendt/provider-tls:v1")
+	pp.Finalizers = []string{"imagebuilder.io/provider-cleanup"}
+	pp.Spec.Transport = &v1alpha1.ProviderTransportSpec{
+		TLS: &v1alpha1.ProviderTransportTLSSpec{
+			Mode: "Mutual",
+			CASecretRef: &v1alpha1.ProviderTLSSecretRef{
+				Name:      "provider-ca",
+				Namespace: "other",
+			},
+			ClientCertificateSecretRef: &v1alpha1.ProviderTLSSecretRef{
+				Name:      "operator-client",
+				Namespace: "imagebuilder-system",
+			},
+			ServerCertificateSecretRef: &v1alpha1.ProviderTLSSecretRef{
+				Name:      "provider-server",
+				Namespace: "imagebuilder-system",
+			},
+		},
+	}
+
+	s := providerScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.PlatformProvider{}).WithObjects(pp).Build()
+	r := &provider.PlatformProviderReconciler{Client: c, Scheme: s, ProviderNamespace: "imagebuilder-system"}
+
+	reconcileProvider(t, r, "bad-tls-namespace", "")
+
+	updated := &v1alpha1.PlatformProvider{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "bad-tls-namespace"}, updated); err != nil {
 		t.Fatalf("get updated PlatformProvider: %v", err)
 	}
 	if updated.Status.Phase != "Unhealthy" {

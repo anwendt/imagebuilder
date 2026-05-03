@@ -33,3 +33,11 @@ spec:
           annotations:
             summary: VM image builds appear to be stuck.
             description: One or more imagebuilder builds have been active for more than three hours.
+        - alert: ImageBuilderProviderUnhealthy
+          expr: imagebuilder_provider_healthy == 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Imagebuilder provider is unhealthy.
+            description: Provider {{ $labels.provider }} in namespace {{ $labels.namespace }} has been unhealthy for more than 10 minutes.

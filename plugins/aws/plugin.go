@@ -50,7 +50,10 @@ type AWSPlugin struct {
 	remoteClient awsRemoteBuildClient
 }
 
-var _ platform.RemoteBuildPlugin = (*AWSPlugin)(nil)
+var (
+	_ platform.RemoteBuildPlugin        = (*AWSPlugin)(nil)
+	_ platform.RemoteBuildCleanupPlugin = (*AWSPlugin)(nil)
+)
 
 type awsConfig struct {
 	providerConfigName string
@@ -348,10 +351,13 @@ func (p *AWSPlugin) ReconcileRemoteBuild(ctx context.Context, req *platform.Remo
 		if state.AMIID == "" {
 			return nil, fmt.Errorf("aws plugin: completed remote build missing AMI ID")
 		}
-		result.Hygiene = &platform.RemoteHygieneResult{
-			Status:  "unknown",
-			Message: "AWS remote build provider did not perform provider-side final image hygiene checks",
-			Checks:  []string{"provider-attestation-missing"},
+		result.Hygiene = state.Hygiene
+		if result.Hygiene == nil {
+			result.Hygiene = &platform.RemoteHygieneResult{
+				Status:  "unknown",
+				Message: "AWS remote build provider did not return provider-side final image hygiene checks",
+				Checks:  []string{"provider-attestation-missing"},
+			}
 		}
 		result.Phase = platform.RemoteBuildPhaseReady
 		result.Images = []platform.RemoteImageRef{
@@ -423,6 +429,7 @@ type awsRemoteBuildState struct {
 	AMIID        string
 	ImageName    string
 	Checksum     string
+	Hygiene      *platform.RemoteHygieneResult
 }
 
 func firstNonEmpty(values ...string) string {
@@ -442,10 +449,11 @@ type awsLocalImageClient interface {
 }
 
 type awsSDKLocalImageClient struct {
-	region string
-	ec2    ec2LocalImageAPI
-	s3     s3LocalImageAPI
-	sts    stsLocalImageAPI
+	region   string
+	kmsKeyID string
+	ec2      ec2LocalImageAPI
+	s3       s3LocalImageAPI
+	sts      stsLocalImageAPI
 }
 
 type ec2LocalImageAPI interface {
@@ -482,6 +490,7 @@ type awsLocalRegisterInput struct {
 	Tags       map[string]string
 	Timeout    time.Duration
 	VolumeSize int32
+	KMSKeyID   string
 }
 
 func newAWSLocalImageClient(ctx context.Context, cfg awsConfig) (awsLocalImageClient, error) {
@@ -490,10 +499,11 @@ func newAWSLocalImageClient(ctx context.Context, cfg awsConfig) (awsLocalImageCl
 		return nil, err
 	}
 	return &awsSDKLocalImageClient{
-		region: cfg.region,
-		ec2:    ec2.NewFromConfig(awsCfg),
-		s3:     s3.NewFromConfig(awsCfg),
-		sts:    sts.NewFromConfig(awsCfg),
+		region:   cfg.region,
+		kmsKeyID: firstNonEmpty(cfg.extraConfig["local.kmsKeyId"], cfg.extraConfig["kmsKeyId"]),
+		ec2:      ec2.NewFromConfig(awsCfg),
+		s3:       s3.NewFromConfig(awsCfg),
+		sts:      sts.NewFromConfig(awsCfg),
 	}, nil
 }
 
@@ -508,12 +518,13 @@ func (c *awsSDKLocalImageClient) UploadObject(ctx context.Context, bucket, key, 
 		return fmt.Errorf("stat artifact: %w", err)
 	}
 	if info.Size() <= 5*1024*1024*1024 {
-		_, err = c.s3.PutObject(ctx, &s3.PutObjectInput{
-			Bucket:               awssdk.String(bucket),
-			Key:                  awssdk.String(key),
-			Body:                 file,
-			ServerSideEncryption: s3types.ServerSideEncryptionAes256,
-		})
+		input := &s3.PutObjectInput{
+			Bucket: awssdk.String(bucket),
+			Key:    awssdk.String(key),
+			Body:   file,
+		}
+		applyS3Encryption(input, c.kmsKeyID)
+		_, err = c.s3.PutObject(ctx, input)
 		if err != nil {
 			return fmt.Errorf("put object: %w", err)
 		}
@@ -522,13 +533,32 @@ func (c *awsSDKLocalImageClient) UploadObject(ctx context.Context, bucket, key, 
 	return c.multipartUpload(ctx, bucket, key, file, info.Size())
 }
 
+func applyS3Encryption(input *s3.PutObjectInput, kmsKeyID string) {
+	if kmsKeyID == "" {
+		input.ServerSideEncryption = s3types.ServerSideEncryptionAes256
+		return
+	}
+	input.ServerSideEncryption = s3types.ServerSideEncryptionAwsKms
+	input.SSEKMSKeyId = awssdk.String(kmsKeyID)
+}
+
+func applyMultipartS3Encryption(input *s3.CreateMultipartUploadInput, kmsKeyID string) {
+	if kmsKeyID == "" {
+		input.ServerSideEncryption = s3types.ServerSideEncryptionAes256
+		return
+	}
+	input.ServerSideEncryption = s3types.ServerSideEncryptionAwsKms
+	input.SSEKMSKeyId = awssdk.String(kmsKeyID)
+}
+
 func (c *awsSDKLocalImageClient) multipartUpload(ctx context.Context, bucket, key string, file *os.File, size int64) error {
 	const partSize int64 = 64 * 1024 * 1024
-	created, err := c.s3.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
-		Bucket:               awssdk.String(bucket),
-		Key:                  awssdk.String(key),
-		ServerSideEncryption: s3types.ServerSideEncryptionAes256,
-	})
+	createInput := &s3.CreateMultipartUploadInput{
+		Bucket: awssdk.String(bucket),
+		Key:    awssdk.String(key),
+	}
+	applyMultipartS3Encryption(createInput, c.kmsKeyID)
+	created, err := c.s3.CreateMultipartUpload(ctx, createInput)
 	if err != nil {
 		return fmt.Errorf("create multipart upload: %w", err)
 	}
@@ -640,7 +670,7 @@ func (c *awsSDKLocalImageClient) findLocalAMI(ctx context.Context, input awsLoca
 }
 
 func (c *awsSDKLocalImageClient) importSnapshot(ctx context.Context, input awsLocalRegisterInput, timeout time.Duration) (string, error) {
-	out, err := c.ec2.ImportSnapshot(ctx, &ec2.ImportSnapshotInput{
+	importInput := &ec2.ImportSnapshotInput{
 		ClientToken: awssdk.String(idempotencyToken("import", input.BuildID)),
 		Description: awssdk.String("Image Builder local import " + input.BuildID),
 		DiskContainer: &ec2types.SnapshotDiskContainer{
@@ -653,7 +683,12 @@ func (c *awsSDKLocalImageClient) importSnapshot(ctx context.Context, input awsLo
 		TagSpecifications: []ec2types.TagSpecification{
 			{ResourceType: ec2types.ResourceTypeImportSnapshotTask, Tags: localBuildTags(input)},
 		},
-	})
+		Encrypted: awssdk.Bool(true),
+	}
+	if input.KMSKeyID != "" {
+		importInput.KmsKeyId = awssdk.String(input.KMSKeyID)
+	}
+	out, err := c.ec2.ImportSnapshot(ctx, importInput)
 	if err != nil {
 		return "", fmt.Errorf("import snapshot: %w", err)
 	}
@@ -841,6 +876,7 @@ func localRegisterInput(cfg awsConfig, result *platform.UploadResult) (awsLocalR
 		}
 		volumeSize = int32(parsed)
 	}
+	kmsKeyID := strings.TrimSpace(firstNonEmpty(cfg.extraConfig["local.kmsKeyId"], cfg.extraConfig["kmsKeyId"]))
 	return awsLocalRegisterInput{
 		Bucket:     bucket,
 		Key:        key,
@@ -852,6 +888,7 @@ func localRegisterInput(cfg awsConfig, result *platform.UploadResult) (awsLocalR
 		Tags:       localRegisterTags(cfg, result.Metadata),
 		Timeout:    timeout,
 		VolumeSize: volumeSize,
+		KMSKeyID:   kmsKeyID,
 	}, nil
 }
 

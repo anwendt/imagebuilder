@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -49,7 +50,7 @@ const (
 
 // VMImageReconciler reconciles VMImage resources.
 //
-// +kubebuilder:rbac:groups=imagebuilder.io,resources=vmimages,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=imagebuilder.io,resources=vmimages,verbs=get;list;watch
 // +kubebuilder:rbac:groups=imagebuilder.io,resources=vmimages/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=imagebuilder.io,resources=vmimages/finalizers,verbs=update
 // +kubebuilder:rbac:groups=imagebuilder.io,resources=providerconfigs,verbs=get;list;watch
@@ -59,7 +60,7 @@ const (
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;delete
-// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get
 type VMImageReconciler struct {
 	client.Client
 	Scheme                     *runtime.Scheme
@@ -153,6 +154,9 @@ func (r *VMImageReconciler) reconcilePending(ctx context.Context, img *v1alpha1.
 		providerPlugin, err := r.Registry.Get(providerName)
 		if err != nil {
 			return r.setFailed(ctx, img, fmt.Sprintf("provider %q is not installed or not healthy: %v", providerName, err))
+		}
+		if err := r.initProviderForTarget(ctx, img.Namespace, target, providerPlugin); err != nil {
+			return r.setFailed(ctx, img, fmt.Sprintf("provider %q config %q rejected: %v", providerName, target.ProviderConfigRef.Name, err))
 		}
 		if err := providerPlugin.Validate(ctx, target); err != nil {
 			return r.setFailed(ctx, img, fmt.Sprintf("provider %q rejected target %q: %v", providerName, target.ProviderConfigRef.Name, err))
@@ -362,6 +366,9 @@ func (r *VMImageReconciler) reconcileRemoteBuild(ctx context.Context, img *v1alp
 	remotePlugin, ok := providerPlugin.(platform.RemoteBuildPlugin)
 	if !ok || !supportsBuildMode(remotePlugin.SupportedBuildModes(), v1alpha1.BuildModeRemote) {
 		return r.setFailedWithReason(ctx, img, "RemoteBuildUnsupported", fmt.Sprintf("provider %q does not advertise remote build support", providerName))
+	}
+	if err := r.initProviderForTarget(ctx, img.Namespace, target, providerPlugin); err != nil {
+		return r.setFailedWithReason(ctx, img, "RemoteBuildConfigInvalid", fmt.Sprintf("provider %q config %q rejected: %v", providerName, target.ProviderConfigRef.Name, err))
 	}
 
 	if img.Status.StartTime == nil {
@@ -709,6 +716,66 @@ func (r *VMImageReconciler) providerConfigsForTargets(ctx context.Context, img *
 	return configs, nil
 }
 
+func (r *VMImageReconciler) initProviderForTarget(ctx context.Context, namespace string, target v1alpha1.TargetSpec, providerPlugin platform.Plugin) error {
+	cfg := &v1alpha1.ProviderConfig{}
+	if err := r.Get(ctx, types.NamespacedName{Name: target.ProviderConfigRef.Name, Namespace: namespace}, cfg); err != nil {
+		return fmt.Errorf("get ProviderConfig %q: %w", target.ProviderConfigRef.Name, err)
+	}
+	secretData, err := r.providerSecretData(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	return providerPlugin.Init(ctx, platform.PluginConfig{
+		ProviderConfigName: cfg.Name,
+		SecretData:         secretData,
+		Region:             cfg.Spec.Region,
+		Endpoint:           cfg.Spec.Endpoint,
+		Insecure:           cfg.Spec.Insecure,
+		Extra:              cfg.Spec.Extra,
+	})
+}
+
+func (r *VMImageReconciler) providerSecretData(ctx context.Context, cfg *v1alpha1.ProviderConfig) (map[string][]byte, error) {
+	ref := cfg.Spec.Credentials.SecretRef
+	if ref.Name == "" {
+		return nil, nil
+	}
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: cfg.Namespace}, secret); err != nil {
+		return nil, fmt.Errorf("get credentials Secret %q for ProviderConfig %q: %w", ref.Name, cfg.Name, err)
+	}
+	if ref.Key == "" {
+		out := make(map[string][]byte, len(secret.Data))
+		for key, value := range secret.Data {
+			out[key] = append([]byte(nil), value...)
+		}
+		return out, nil
+	}
+	value, ok := secret.Data[ref.Key]
+	if !ok {
+		return nil, fmt.Errorf("credentials Secret %q missing key %q", ref.Name, ref.Key)
+	}
+	if expanded, ok := expandProviderCredentialJSON(value); ok {
+		return expanded, nil
+	}
+	return map[string][]byte{ref.Key: append([]byte(nil), value...)}, nil
+}
+
+func expandProviderCredentialJSON(raw []byte) (map[string][]byte, bool) {
+	if !strings.HasPrefix(strings.TrimSpace(string(raw)), "{") {
+		return nil, false
+	}
+	var values map[string]string
+	if err := json.Unmarshal(raw, &values); err != nil || len(values) == 0 {
+		return nil, false
+	}
+	out := make(map[string][]byte, len(values))
+	for key, value := range values {
+		out[key] = []byte(value)
+	}
+	return out, true
+}
+
 func (r *VMImageReconciler) uploadFailureFromJob(ctx context.Context, namespace string, job *batchv1.Job) (string, error) {
 	message, err := r.terminatedContainerMessage(ctx, namespace, job, "upload")
 	if err != nil {
@@ -740,6 +807,12 @@ func (r *VMImageReconciler) imageStatusesFromUploadJob(ctx context.Context, name
 		for _, op := range payload.Operations {
 			if op.UploadMilliseconds > 0 {
 				observability.UploadDurationSeconds.WithLabelValues(op.Provider, op.Format, "true").Observe(float64(op.UploadMilliseconds) / 1000)
+			}
+			if op.UploadBytes > 0 {
+				observability.UploadBytesTotal.WithLabelValues(op.Provider, op.Format).Add(float64(op.UploadBytes))
+				if op.UploadMilliseconds > 0 {
+					observability.UploadThroughputBytesPerSecond.WithLabelValues(op.Provider, op.Format).Observe(float64(op.UploadBytes) / (float64(op.UploadMilliseconds) / 1000))
+				}
 			}
 			if op.RegisterMilliseconds > 0 {
 				observability.RegisterDurationSeconds.WithLabelValues(op.Provider, op.Format, "true").Observe(float64(op.RegisterMilliseconds) / 1000)
@@ -825,6 +898,9 @@ func mergeUploadOperations(existing, reported []v1alpha1.UploadOperationStatus, 
 			}
 			if op.UploadMilliseconds > 0 {
 				out[idx].UploadMilliseconds = op.UploadMilliseconds
+			}
+			if op.UploadBytes > 0 {
+				out[idx].UploadBytes = op.UploadBytes
 			}
 			if op.RegisterMilliseconds > 0 {
 				out[idx].RegisterMilliseconds = op.RegisterMilliseconds
@@ -1072,6 +1148,11 @@ func (r *VMImageReconciler) cleanupRemoteBuild(ctx context.Context, img *v1alpha
 	cleanupPlugin, ok := providerPlugin.(platform.RemoteBuildCleanupPlugin)
 	if !ok {
 		return nil
+	}
+	if err := r.initProviderForTarget(ctx, img.Namespace, target, providerPlugin); err != nil {
+		cleanupErr := fmt.Errorf("initialise provider %q for remote cleanup: %w", providerName, err)
+		r.markCleanupFailure(ctx, img, "remote-build", "RemoteBuildCleanupFailed", cleanupErr)
+		return cleanupErr
 	}
 	req := remoteBuildRequest(img, target)
 	if err := cleanupPlugin.CleanupRemoteBuild(ctx, req); err != nil {

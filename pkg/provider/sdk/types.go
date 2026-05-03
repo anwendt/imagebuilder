@@ -105,7 +105,27 @@ type RemoteBuildInput struct {
 	ProviderConfigName string
 	Format             string
 	Tags               map[string]string
+	Provisioners       []RemoteProvisioner
+	GuestAccess        *RemoteGuestAccess
 	TimeoutSeconds     int64
+}
+
+type RemoteProvisioner struct {
+	Type      string
+	Image     string
+	Inline    string
+	Playbook  string
+	Args      []string
+	ExtraVars map[string]string
+}
+
+type RemoteGuestAccess struct {
+	Protocol          string
+	User              string
+	GuestPort         int32
+	GeneratedSSHKey   bool
+	GeneratedPassword bool
+	InjectionMethod   string
 }
 
 type RemoteBuildResult struct {

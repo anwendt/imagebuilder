@@ -2,6 +2,9 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: imagebuilder-system
+  annotations:
+    imagebuilder.io/profile: development
+    imagebuilder.io/production-ready: "false"
   labels:
     pod-security.kubernetes.io/enforce: restricted
     pod-security.kubernetes.io/audit: restricted
@@ -12,15 +15,21 @@ kind: ServiceAccount
 metadata:
   name: imagebuilder-operator
   namespace: imagebuilder-system
+  annotations:
+    imagebuilder.io/profile: development
+    imagebuilder.io/production-ready: "false"
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: imagebuilder-operator
+  annotations:
+    imagebuilder.io/profile: development
+    imagebuilder.io/production-ready: "false"
 rules:
   - apiGroups: ["imagebuilder.io"]
     resources: ["vmimages", "platformproviders", "providerconfigs"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["imagebuilder.io"]
     resources: ["vmimages/status", "platformproviders/status", "providerconfigs/status"]
     verbs: ["get", "update", "patch"]
@@ -31,8 +40,11 @@ rules:
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "delete"]
   - apiGroups: [""]
-    resources: ["pods", "persistentvolumeclaims", "secrets"]
+    resources: ["pods", "persistentvolumeclaims"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["create", "delete"]
@@ -57,6 +69,9 @@ kind: Service
 metadata:
   name: imagebuilder-operator-metrics
   namespace: imagebuilder-system
+  annotations:
+    imagebuilder.io/profile: development
+    imagebuilder.io/production-ready: "false"
   labels:
     app.kubernetes.io/name: imagebuilder-operator
 spec:
@@ -72,6 +87,9 @@ kind: Service
 metadata:
   name: imagebuilder-webhook-service
   namespace: imagebuilder-system
+  annotations:
+    imagebuilder.io/profile: development
+    imagebuilder.io/production-ready: "false"
   labels:
     app.kubernetes.io/name: imagebuilder-operator
 spec:
@@ -86,6 +104,9 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: imagebuilder-operator
+  annotations:
+    imagebuilder.io/profile: development
+    imagebuilder.io/production-ready: "false"
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -100,6 +121,9 @@ kind: Deployment
 metadata:
   name: imagebuilder-operator
   namespace: imagebuilder-system
+  annotations:
+    imagebuilder.io/profile: development
+    imagebuilder.io/production-ready: "false"
   labels:
     app.kubernetes.io/name: imagebuilder-operator
     app.kubernetes.io/managed-by: imagebuilder
@@ -127,9 +151,26 @@ spec:
             - --max-concurrent-builds=3
             - --max-concurrent-builds-per-node=1
             - --scheduler-namespace=imagebuilder-system
+            - --provider-namespace=imagebuilder-system
+            - --require-provider-mtls=false
+            - --require-provider-digest=false
+            - --require-provider-signature=false
             - --metrics-bind-address=:8080
             - --health-probe-bind-address=:8081
             - --log-level=info
+          env:
+            - name: BUILDER_IMAGE
+              value: ghcr.io/anwendt/imagebuilder-builder:dev
+            - name: UPLOADER_IMAGE
+              value: ghcr.io/anwendt/imagebuilder-uploader:dev
+            - name: PROVISIONER_ANSIBLE_IMAGE
+              value: ghcr.io/anwendt/imagebuilder-provisioner-ansible:dev
+            - name: PROVISIONER_CHEF_IMAGE
+              value: ghcr.io/anwendt/imagebuilder-provisioner-chef:dev
+            - name: PROVISIONER_PUPPET_IMAGE
+              value: ghcr.io/anwendt/imagebuilder-provisioner-puppet:dev
+            - name: PROVISIONER_SALTSTACK_IMAGE
+              value: ghcr.io/anwendt/imagebuilder-provisioner-saltstack:dev
           ports:
             - name: metrics
               containerPort: 8080

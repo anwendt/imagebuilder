@@ -83,6 +83,9 @@ func (r *VMImage) validate() (admission.Warnings, error) {
 	if err := validateSourceCache(r.Spec.Build); err != nil {
 		errs = append(errs, err)
 	}
+	if err := validateBuildNodeIsolation(r.Spec.Build); err != nil {
+		errs = append(errs, err)
+	}
 
 	// boot_command is only meaningful when booting from an ISO. Reject it for
 	// cloud-image and marketplace sources where the VM never shows a boot menu.
@@ -165,6 +168,19 @@ func validateSourceCache(build BuildSpec) error {
 	default:
 		return fmt.Errorf("spec.build.cache.retainPolicy must be Always or Never")
 	}
+}
+
+func validateBuildNodeIsolation(build BuildSpec) error {
+	if build.Security == nil || !build.Security.EnableKVM {
+		return nil
+	}
+	if build.NodeSelector["imagebuilder.io/kvm"] != "true" {
+		return fmt.Errorf("spec.build.nodeSelector[\"imagebuilder.io/kvm\"] must be \"true\" when spec.build.security.enableKVM=true")
+	}
+	if build.NodeSelector["imagebuilder.io/dedicated"] != "imagebuilder" {
+		return fmt.Errorf("spec.build.nodeSelector[\"imagebuilder.io/dedicated\"] must be \"imagebuilder\" when spec.build.security.enableKVM=true")
+	}
+	return nil
 }
 
 func validateProvisionerImagePolicy(provisioners []ProvisionerSpec, security *BuildSecuritySpec) error {

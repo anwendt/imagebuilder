@@ -1000,6 +1000,12 @@ spec:
                         duration when reported by the upload job.
                       format: int64
                       type: integer
+                    uploadBytes:
+                      description: UploadBytes records the uploaded artifact size
+                        when reported by the upload job.
+                      format: int64
+                      minimum: 0
+                      type: integer
                     uploadMilliseconds:
                       description: UploadMilliseconds records provider upload duration
                         when reported by the upload job.

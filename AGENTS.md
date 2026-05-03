@@ -89,7 +89,8 @@ Platform Provider (Pod, gRPC)
 
 Platform Providers are **separate containers** that are dynamically loaded via a `PlatformProvider` CRD.
 The core operator starts them as Kubernetes Deployments and communicates
-via **gRPC over Unix sockets**.
+via **gRPC over ClusterIP Services**. Production deployments enforce a
+namespace-local NetworkPolicy boundary and can require mTLS for provider gRPC.
 
 **Core principle**: A new provider requires no fork, no core patch — only an
 OCI image that implements the Protobuf interface.
@@ -107,6 +108,21 @@ Each provider implements:
 - `HealthCheck()` — Liveness
 
 **File**: `api/provider/v1/provider.proto` — this is the stable contract, never change it in a breaking way.
+
+The Go Provider SDK lives in `pkg/provider/sdk`. It already supports provider
+gRPC mTLS via `sdk.ServerOptionsFromEnv()` and the following environment
+variables injected by the core operator:
+
+```bash
+PROVIDER_GRPC_TLS_MODE=Mutual
+PROVIDER_GRPC_TLS_CERT_FILE=/var/run/imagebuilder/provider-tls/tls.crt
+PROVIDER_GRPC_TLS_KEY_FILE=/var/run/imagebuilder/provider-tls/tls.key
+PROVIDER_GRPC_TLS_CLIENT_CA_FILE=/var/run/imagebuilder/provider-client-ca/ca.crt
+```
+
+Digest pinning, signature verification, and registry allow-lists are enforced
+by `PlatformProvider` admission/operator policy and do not require provider SDK
+interface changes.
 
 ### Layer 2: Provisioner (Three Levels)
 
@@ -168,12 +184,22 @@ spec:
     timeout: 2h
     nodeSelector:
       kubernetes.io/os: linux
+    security:
+      enableKVM: false
 status:
   phase: Building | Uploading | Ready | Failed
   images:
     - provider: aws
       imageRef: ami-0abc123
       location: eu-west-1
+  uploadOperations:
+    - provider: aws
+      providerConfig: aws-eu-west-1
+      format: ami
+      phase: Succeeded
+      operationRef: s3://bucket/key
+      imageRef: ami-0abc123
+      uploadBytes: 123456789
   conditions: [...]
 ```
 
@@ -185,8 +211,26 @@ kind: PlatformProvider
 metadata:
   name: provider-aws
 spec:
-  package: ghcr.io/yourorg/imagebuilder-provider-aws:v1.2.0
+  package: ghcr.io/yourorg/imagebuilder-provider-aws@sha256:...
   packagePullPolicy: IfNotPresent
+  security:
+    allowedRegistries:
+      - ghcr.io/yourorg
+    requireDigest: true
+    verifySignature: true
+  transport:
+    tls:
+      mode: Mutual
+      serverName: provider-aws.imagebuilder-system.svc
+      caSecretRef:
+        name: provider-grpc-ca
+        namespace: imagebuilder-system
+      clientCertificateSecretRef:
+        name: operator-provider-client-tls
+        namespace: imagebuilder-system
+      serverCertificateSecretRef:
+        name: provider-aws-server-tls
+        namespace: imagebuilder-system
 ```
 
 ### ProviderConfig (Credentials per Instance)
@@ -210,7 +254,7 @@ spec:
 ## Go Conventions in This Project
 
 - **Go Version**: 1.22+
-- **Module**: `github.com/yourorg/imagebuilder`
+- **Module**: `github.com/anwendt/imagebuilder`
 - **Error handling**: always `fmt.Errorf("context: %w", err)`, never panic in production code
 - **Logging**: `log/slog` (stdlib), structured with `slog.With()`
 - **Context**: Every function doing I/O receives `ctx context.Context` as its first parameter
@@ -255,14 +299,16 @@ imagebuilder/
 │   │   └── powershell/
 │   │
 │   ├── builder/
-│   │   ├── interface.go               ← Builder interface
-│   │   ├── qemu/                      ← QEMU/libvirt backend
-│   │   └── diskimage/                 ← diskimage-builder backend
+│   │   ├── engine.go                  ← Build engine
+│   │   └── qemu_iso_backend.go        ← QEMU/libvirt ISO backend
 │   │
 │   └── controller/
 │       ├── vmimage/                   ← VMImage reconciler
 │       ├── provider/                  ← PlatformProvider package controller
 │       └── buildpod/                  ← Pod assembler (init container logic)
+│
+├── pkg/provider/sdk/                  ← External provider SDK and gRPC server helpers
+├── pkg/security/netguard/             ← Runtime SSRF protection helpers
 │
 ├── plugins/                           ← Built-in platform providers (compile-time)
 │   ├── vsphere/
@@ -295,7 +341,9 @@ imagebuilder/
 **Reason**: Go's plugin mechanism (.so) is impractical (same Go version required, no Windows,
 no cross-compile). Separate containers enable independent versioning, arbitrary languages,
 and clean license separation (a proprietary provider does not contaminate the core project).
-**Communication**: gRPC over Unix socket (not TCP — no network overhead within the same pod).
+**Communication**: gRPC over ClusterIP Service. Production deployments use
+NetworkPolicies and mTLS when providers are outside the strict namespace-local
+trust boundary.
 
 ### ADR-003: Provisioners as Init Containers
 **Decision**: Complex provisioners (Ansible, Chef) run as Kubernetes init containers.
@@ -320,6 +368,55 @@ Field numbers in Proto are immutable.
 
 ---
 
+## Production Hardening Baseline
+
+The Helm chart is the production installation path. `config/deploy/operator.yaml`
+is explicitly a development manifest and is marked with
+`imagebuilder.io/profile=development` and
+`imagebuilder.io/production-ready=false`.
+
+Production defaults and invariants:
+
+- Operator, builder, uploader, provisioner, and provider images are configurable
+  and digest-pinnable. Provider packages should be `repository@sha256:...`.
+- `providerSecurity.requireMTLS`, `requireDigest`, and `requireSignature`
+  default to `true` in the chart and are enforced through PlatformProvider
+  admission policy.
+- Provider image signatures are verified through the rendered Kyverno
+  `ClusterPolicy` when `imageSignaturePolicy.enabled=true`.
+- Admission is fail-closed for `VMImage`, `ProviderConfig`, and
+  `PlatformProvider` webhooks.
+- DNS/URL SSRF checks are performed at admission and again at runtime before
+  builder source download and uploader/provider endpoint use. Runtime checks
+  reject unresolved hosts and blocked/private IP ranges.
+- NetworkPolicies default-deny the operator namespace, restrict provider gRPC
+  to operator pods, and render scoped build/upload egress policies for each
+  configured tenant workload namespace.
+- KVM builds require dedicated build-node selectors:
+  `imagebuilder.io/kvm=true` and `imagebuilder.io/dedicated=imagebuilder`.
+  Build pods receive the matching `NoSchedule` toleration.
+- RBAC keeps CRD spec resources read-only (`get/list/watch`) and grants only
+  `get` on Secrets.
+- The Helm chart renders operator-namespace `ResourceQuota` and `LimitRange`
+  guardrails by default. Tenant namespaces need their own quotas sized for
+  approved build concurrency and storage.
+
+Important metrics:
+
+- `imagebuilder_build_duration_seconds`
+- `imagebuilder_queue_duration_seconds`
+- `imagebuilder_active_builds`
+- `imagebuilder_provisioner_duration_seconds`
+- `imagebuilder_upload_duration_seconds`
+- `imagebuilder_upload_bytes_total`
+- `imagebuilder_upload_throughput_bytes_per_second`
+- `imagebuilder_register_duration_seconds`
+- `imagebuilder_provider_healthy`
+- `imagebuilder_failures_total`
+- `imagebuilder_cleanup_failures_total`
+
+---
+
 ## Build & Development
 
 ```bash
@@ -332,6 +429,13 @@ make run
 
 # Tests
 make test
+
+# Focused tests with local caches when needed
+GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/gomod TMPDIR=$PWD/.cache/tmp go test ./...
+
+# Helm validation
+helm lint ./charts/imagebuilder
+helm template imagebuilder ./charts/imagebuilder
 
 # License check (before every release)
 go install github.com/google/go-licenses@latest
@@ -349,10 +453,14 @@ go-licenses report ./... > NOTICE
 ## Not Yet Decided / TODO
 
 - [x] Image caching strategy (PVC-backed source cache with checksum keys, TTL invalidation, checksum-mismatch refetch, and retention policy)
-- [ ] Parallelization of builds (max concurrent builds per node)
-- [ ] Webhook validation for VMImage spec (kubebuilder Validating Webhook)
-- [ ] OCI signing of provider images (cosign / Sigstore)
-- [ ] Metrics (Prometheus) — build duration, error rate, provider latency
+- [x] Parallelization of builds (global and max concurrent builds per node via Lease scheduler)
+- [x] Webhook validation for VMImage, ProviderConfig, and PlatformProvider specs
+- [x] OCI signing policy for provider/imagebuilder images (Kyverno/Sigstore policy hooks)
+- [x] Metrics (Prometheus) — build duration, queue time, active builds, provider health, upload/register duration, upload throughput, failures, cleanup failures
+- [x] Provider production policies (mTLS, digest pinning, signature opt-in, allowed registries)
+- [x] Runtime SSRF hardening for source downloads and provider endpoints
+- [x] Tenant-aware NetworkPolicies for build/upload Jobs
+- [x] Namespace ResourceQuota and LimitRange guardrails in the production Helm chart
 - [ ] Multi-arch support (arm64)
 - [ ] Windows: finalize cloudbase-init integration
 - [ ] Set up provider SDK repository

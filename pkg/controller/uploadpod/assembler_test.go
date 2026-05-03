@@ -114,6 +114,67 @@ func TestAssemble_CredentialsSecretRefKeyMountsSingleCredentialsFile(t *testing.
 	}
 }
 
+func TestAssemble_UploaderImageFromEnvironment(t *testing.T) {
+	t.Setenv("UPLOADER_IMAGE", "registry.example.test/imagebuilder-uploader@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	img := &v1alpha1.VMImage{
+		ObjectMeta: metav1.ObjectMeta{Name: "ubuntu", Namespace: "default", UID: "uid"},
+		Spec: v1alpha1.VMImageSpec{
+			Build: v1alpha1.BuildSpec{ArtifactStorage: &v1alpha1.ArtifactStorageSpec{Type: "pvc"}},
+			Targets: []v1alpha1.TargetSpec{
+				{ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "aws-cfg"}, Format: "vmdk"},
+			},
+		},
+	}
+	cfg := v1alpha1.ProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "aws-cfg", Namespace: "default"},
+		Spec: v1alpha1.ProviderConfigSpec{
+			Provider:    "aws",
+			Credentials: v1alpha1.CredentialsSpec{SecretRef: v1alpha1.SecretRef{Name: "aws-secret"}},
+		},
+	}
+
+	job, err := uploadpod.Assemble(img, []v1alpha1.ProviderConfig{cfg}, testScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble returned error: %v", err)
+	}
+	image := job.Spec.Template.Spec.Containers[0].Image
+	if image != "registry.example.test/imagebuilder-uploader@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" {
+		t.Fatalf("uploader image = %q", image)
+	}
+}
+
+func TestAssemble_UploaderSpecImageOverridesEnvironment(t *testing.T) {
+	t.Setenv("UPLOADER_IMAGE", "registry.example.test/imagebuilder-uploader@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	img := &v1alpha1.VMImage{
+		ObjectMeta: metav1.ObjectMeta{Name: "ubuntu", Namespace: "default", UID: "uid"},
+		Spec: v1alpha1.VMImageSpec{
+			Build: v1alpha1.BuildSpec{
+				ArtifactStorage: &v1alpha1.ArtifactStorageSpec{Type: "pvc"},
+				Upload:          &v1alpha1.UploadSpec{Image: "registry.example.test/custom-uploader@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
+			},
+			Targets: []v1alpha1.TargetSpec{
+				{ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "aws-cfg"}, Format: "vmdk"},
+			},
+		},
+	}
+	cfg := v1alpha1.ProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "aws-cfg", Namespace: "default"},
+		Spec: v1alpha1.ProviderConfigSpec{
+			Provider:    "aws",
+			Credentials: v1alpha1.CredentialsSpec{SecretRef: v1alpha1.SecretRef{Name: "aws-secret"}},
+		},
+	}
+
+	job, err := uploadpod.Assemble(img, []v1alpha1.ProviderConfig{cfg}, testScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble returned error: %v", err)
+	}
+	image := job.Spec.Template.Spec.Containers[0].Image
+	if image != "registry.example.test/custom-uploader@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" {
+		t.Fatalf("uploader image = %q", image)
+	}
+}
+
 func TestAssembleCleanup_SetsCleanupMode(t *testing.T) {
 	img := &v1alpha1.VMImage{
 		ObjectMeta: metav1.ObjectMeta{Name: "ubuntu", Namespace: "default", UID: "uid"},

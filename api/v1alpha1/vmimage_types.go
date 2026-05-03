@@ -795,6 +795,11 @@ type UploadOperationStatus struct {
 	// +optional
 	UploadMilliseconds int64 `json:"uploadMilliseconds,omitempty"`
 
+	// UploadBytes records the uploaded artifact size when reported by the upload job.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	UploadBytes int64 `json:"uploadBytes,omitempty"`
+
 	// RegisterMilliseconds records provider registration duration when reported by the upload job.
 	// +optional
 	RegisterMilliseconds int64 `json:"registerMilliseconds,omitempty"`

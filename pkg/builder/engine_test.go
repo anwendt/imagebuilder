@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,9 +25,25 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
+type fakeResolver map[string][]string
+
+func (r fakeResolver) LookupHost(_ context.Context, host string) ([]string, error) {
+	addrs, ok := r[host]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	return addrs, nil
+}
+
 func checksumSHA256(data []byte) string {
 	sum := sha256.Sum256(data)
 	return fmt.Sprintf("sha256:%x", sum[:])
+}
+
+func newTestHTTPFetcher(client *http.Client) *builder.HTTPFetcher {
+	return builder.NewHTTPFetcher(client, builder.WithResolver(fakeResolver{
+		"images.example.test": {"93.184.216.34"},
+	}))
 }
 
 func testImage(source v1alpha1.SourceSpec, format string) *v1alpha1.VMImage {
@@ -51,7 +68,7 @@ func testImage(source v1alpha1.SourceSpec, format string) *v1alpha1.VMImage {
 
 func TestHTTPFetcher_Fetch_VerifiesChecksumAndUsesPrivateFileMode(t *testing.T) {
 	payload := []byte("cloud image bytes")
-	fetcher := builder.NewHTTPFetcher(&http.Client{
+	fetcher := newTestHTTPFetcher(&http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			if req.URL.Scheme != "https" {
 				t.Fatalf("scheme = %q, want https", req.URL.Scheme)
@@ -119,8 +136,31 @@ func TestHTTPFetcher_Fetch_RejectsRawIPHost(t *testing.T) {
 	}
 }
 
-func TestHTTPFetcher_Fetch_RejectsHTTPRedirect(t *testing.T) {
+func TestHTTPFetcher_Fetch_RejectsDNSNameResolvingToBlockedRange(t *testing.T) {
 	fetcher := builder.NewHTTPFetcher(&http.Client{
+		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			t.Fatal("network should not be used when SSRF validation rejects the host")
+			return nil, nil
+		}),
+	}, builder.WithResolver(fakeResolver{
+		"metadata.example.test": {"169.254.169.254"},
+	}))
+
+	_, err := fetcher.Fetch(context.Background(), v1alpha1.SourceSpec{
+		Type:     "cloud-image",
+		URL:      "https://metadata.example.test/ubuntu.img",
+		Checksum: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}, t.TempDir())
+	if err == nil {
+		t.Fatal("Fetch should reject DNS names resolving to blocked ranges")
+	}
+	if !strings.Contains(err.Error(), "blocked range") {
+		t.Fatalf("error = %q, want blocked range rejection", err.Error())
+	}
+}
+
+func TestHTTPFetcher_Fetch_RejectsHTTPRedirect(t *testing.T) {
+	fetcher := newTestHTTPFetcher(&http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			if req.URL.Scheme == "https" {
 				return &http.Response{
@@ -154,7 +194,7 @@ func TestHTTPFetcher_Fetch_RejectsHTTPRedirect(t *testing.T) {
 
 func TestHTTPFetcher_Fetch_RejectsChecksumMismatch(t *testing.T) {
 	payload := []byte("unexpected")
-	fetcher := builder.NewHTTPFetcher(&http.Client{
+	fetcher := newTestHTTPFetcher(&http.Client{
 		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 			return &http.Response{
 				StatusCode: http.StatusOK,
@@ -177,7 +217,7 @@ func TestHTTPFetcher_Fetch_RejectsChecksumMismatch(t *testing.T) {
 func TestHTTPFetcher_FetchWithCache_WritesVerifiedSourceToCache(t *testing.T) {
 	payload := []byte("cached cloud image bytes")
 	cacheDir := t.TempDir()
-	fetcher := builder.NewHTTPFetcher(&http.Client{
+	fetcher := newTestHTTPFetcher(&http.Client{
 		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 			return &http.Response{
 				StatusCode: http.StatusOK,
@@ -218,7 +258,7 @@ func TestHTTPFetcher_FetchWithCache_UsesValidCachedSourceWithoutNetwork(t *testi
 		t.Fatalf("write cache file: %v", err)
 	}
 
-	fetcher := builder.NewHTTPFetcher(&http.Client{
+	fetcher := newTestHTTPFetcher(&http.Client{
 		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 			t.Fatal("network should not be used when cache entry is valid")
 			return nil, nil
@@ -255,7 +295,7 @@ func TestHTTPFetcher_FetchWithCache_RefetchesCorruptCache(t *testing.T) {
 	}
 
 	networkCalls := 0
-	fetcher := builder.NewHTTPFetcher(&http.Client{
+	fetcher := newTestHTTPFetcher(&http.Client{
 		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 			networkCalls++
 			return &http.Response{
@@ -296,7 +336,7 @@ func TestHTTPFetcher_FetchWithCache_RefetchesExpiredCache(t *testing.T) {
 	}
 
 	networkCalls := 0
-	fetcher := builder.NewHTTPFetcher(&http.Client{
+	fetcher := newTestHTTPFetcher(&http.Client{
 		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 			networkCalls++
 			return &http.Response{
@@ -332,7 +372,7 @@ func TestHTTPFetcher_FetchWithCache_RemovesCacheEntryWhenRetainNever(t *testing.
 		t.Fatalf("write cache file: %v", err)
 	}
 
-	fetcher := builder.NewHTTPFetcher(&http.Client{
+	fetcher := newTestHTTPFetcher(&http.Client{
 		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 			t.Fatal("network should not be used when cache entry is valid")
 			return nil, nil
@@ -359,7 +399,7 @@ func TestHTTPFetcher_FetchWithCache_DoesNotStoreDownloadedSourceWhenRetainNever(
 	payload := []byte("downloaded image")
 	cacheDir := t.TempDir()
 	checksum := checksumSHA256(payload)
-	fetcher := builder.NewHTTPFetcher(&http.Client{
+	fetcher := newTestHTTPFetcher(&http.Client{
 		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 			return &http.Response{
 				StatusCode: http.StatusOK,
@@ -390,7 +430,7 @@ func TestEngine_Build_CloudImageCreatesArtifact(t *testing.T) {
 	payload := []byte("cloud image bytes")
 	workspace := t.TempDir()
 	engine := builder.NewEngine(builder.EngineOptions{
-		Fetcher: builder.NewHTTPFetcher(&http.Client{
+		Fetcher: newTestHTTPFetcher(&http.Client{
 			Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 				return &http.Response{
 					StatusCode: http.StatusOK,

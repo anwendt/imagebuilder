@@ -462,6 +462,7 @@ func (c *awsSDKRemoteBuildClient) reconcileImage(ctx context.Context, req awsRem
 			Done:         true,
 			AMIID:        ref.ImageID,
 			ImageName:    remoteImageName(req),
+			Hygiene:      c.remoteHygieneResult(req),
 		}, nil
 	case ec2types.ImageStatePending:
 		return &awsRemoteBuildState{
@@ -477,6 +478,46 @@ func (c *awsSDKRemoteBuildClient) reconcileImage(ctx context.Context, req awsRem
 			Phase:        platform.RemoteBuildPhaseRegistering,
 			Message:      fmt.Sprintf("AWS AMI state is %q", image.State),
 		}, nil
+	}
+}
+
+func (c *awsSDKRemoteBuildClient) remoteHygieneResult(req awsRemoteBuildRequest) *platform.RemoteHygieneResult {
+	checks := []string{
+		"aws-ami-available",
+		"aws-source-ami-validated",
+		"aws-imdsv2-required",
+		"aws-root-volume-encryption-requested",
+		"aws-kms-key-configured",
+		"aws-security-groups-validated",
+		"aws-temporary-instance-termination-requested",
+	}
+	if len(req.Provisioners) > 0 {
+		checks = append(checks, "aws-ssm-provisioning")
+	}
+	if req.OSFamily == platform.OSFamilyWindows {
+		checks = append(checks, "aws-windows-source-ami", "aws-ssm-powershell-ready")
+	}
+	if c.settings.KeyName == "" {
+		checks = append(checks, "aws-no-ssh-key")
+	}
+	if c.settings.AllowSSHKey {
+		return &platform.RemoteHygieneResult{
+			Status:  "failed",
+			Message: "AWS remote build allowed an SSH key on the temporary build instance",
+			Checks:  append(checks, "aws-ssh-key-allowed"),
+		}
+	}
+	if c.settings.AllowPublicIngress {
+		return &platform.RemoteHygieneResult{
+			Status:  "failed",
+			Message: "AWS remote build allowed public SSH/WinRM ingress during the build",
+			Checks:  append(checks, "aws-public-admin-ingress-allowed"),
+		}
+	}
+	return &platform.RemoteHygieneResult{
+		Status:  "passed",
+		Message: "AWS provider attested remote build controls and final AMI availability",
+		Checks:  checks,
 	}
 }
 
@@ -569,10 +610,73 @@ func (c *awsSDKRemoteBuildClient) validateRemoteBuildSettings(ctx context.Contex
 	if err := c.settings.validate(req); err != nil {
 		return err
 	}
+	if err := validateRemoteProvisioners(req); err != nil {
+		return err
+	}
+	if err := c.validateSourceAMI(ctx, req); err != nil {
+		return err
+	}
 	if err := c.validateSecurityGroups(ctx); err != nil {
 		return err
 	}
 	return nil
+}
+
+func (c *awsSDKRemoteBuildClient) validateSourceAMI(ctx context.Context, req awsRemoteBuildRequest) error {
+	sourceAMI := firstNonEmpty(req.SourceProviderRef, req.SourceURL)
+	out, err := c.ec2.DescribeImages(ctx, &ec2.DescribeImagesInput{ImageIds: []string{sourceAMI}})
+	if err != nil {
+		return fmt.Errorf("describe AWS remote source AMI %q: %w", sourceAMI, err)
+	}
+	if len(out.Images) == 0 {
+		return fmt.Errorf("AWS remote source AMI %q was not found", sourceAMI)
+	}
+	image := out.Images[0]
+	isWindowsAMI := image.Platform == ec2types.PlatformValuesWindows
+	switch req.OSFamily {
+	case platform.OSFamilyWindows:
+		if !isWindowsAMI {
+			return fmt.Errorf("AWS remote source AMI %q is not a Windows AMI", sourceAMI)
+		}
+	case platform.OSFamilyLinux:
+		if isWindowsAMI {
+			return fmt.Errorf("AWS remote source AMI %q is Windows but spec.os.family is linux", sourceAMI)
+		}
+	}
+	if req.OSArch != "" && image.Architecture != "" && !awsImageArchitectureMatches(req.OSArch, image.Architecture) {
+		return fmt.Errorf("AWS remote source AMI %q architecture %q does not match spec.os.arch %q", sourceAMI, image.Architecture, req.OSArch)
+	}
+	return nil
+}
+
+func validateRemoteProvisioners(req awsRemoteBuildRequest) error {
+	for _, provisioner := range req.Provisioners {
+		switch provisioner.Type {
+		case "shell":
+			if req.OSFamily == platform.OSFamilyWindows {
+				return fmt.Errorf("shell provisioner is not supported for AWS Windows remote builds; use powershell or file")
+			}
+		case "powershell":
+			if req.OSFamily == platform.OSFamilyLinux {
+				return fmt.Errorf("powershell provisioner is not supported for AWS Linux remote builds; use shell or file")
+			}
+		case "file":
+		default:
+			return fmt.Errorf("provisioner type %q is not supported by AWS SSM remote build", provisioner.Type)
+		}
+	}
+	return nil
+}
+
+func awsImageArchitectureMatches(osArch string, imageArch ec2types.ArchitectureValues) bool {
+	switch strings.ToLower(osArch) {
+	case "amd64", "x86_64":
+		return imageArch == ec2types.ArchitectureValuesX8664
+	case "arm64", "aarch64":
+		return imageArch == ec2types.ArchitectureValuesArm64
+	default:
+		return true
+	}
 }
 
 type awsRemoteOperationRef struct {

@@ -9,10 +9,66 @@ namespace:
     audit: restricted
     warn: restricted
 
+namespaceResourceGuardrails:
+  enabled: true
+  resourceQuota:
+    hard:
+      requests.cpu: "8"
+      requests.memory: 16Gi
+      requests.storage: 500Gi
+      limits.cpu: "16"
+      limits.memory: 32Gi
+      persistentvolumeclaims: "20"
+      pods: "50"
+      secrets: "100"
+      services: "20"
+  limitRange:
+    default:
+      cpu: 500m
+      memory: 512Mi
+    defaultRequest:
+      cpu: 100m
+      memory: 128Mi
+    max:
+      cpu: "4"
+      memory: 8Gi
+    min:
+      cpu: 50m
+      memory: 64Mi
+
 image:
   repository: ghcr.io/anwendt/imagebuilder-operator
-  tag: dev
+  tag: "0.1.0"
+  digest: ""
   pullPolicy: IfNotPresent
+
+builderImage:
+  repository: ghcr.io/anwendt/imagebuilder-builder
+  tag: "0.1.0"
+  digest: ""
+
+uploaderImage:
+  repository: ghcr.io/anwendt/imagebuilder-uploader
+  tag: "0.1.0"
+  digest: ""
+
+provisionerImages:
+  ansible:
+    repository: ghcr.io/anwendt/imagebuilder-provisioner-ansible
+    tag: "0.1.0"
+    digest: ""
+  chef:
+    repository: ghcr.io/anwendt/imagebuilder-provisioner-chef
+    tag: "0.1.0"
+    digest: ""
+  puppet:
+    repository: ghcr.io/anwendt/imagebuilder-provisioner-puppet
+    tag: "0.1.0"
+    digest: ""
+  saltstack:
+    repository: ghcr.io/anwendt/imagebuilder-provisioner-saltstack
+    tag: "0.1.0"
+    digest: ""
 
 replicaCount: 2
 
@@ -24,6 +80,23 @@ leaderElection:
   enabled: true
 
 schedulerNamespace: imagebuilder-system
+providerNamespace: imagebuilder-system
+
+providerSecurity:
+  requireMTLS: true
+  requireDigest: true
+  requireSignature: true
+  allowedRegistries:
+    - ghcr.io/anwendt
+
+imageSignaturePolicy:
+  enabled: true
+  imageReferences:
+    - ghcr.io/anwendt/*
+  keyless:
+    issuer: https://token.actions.githubusercontent.com
+    subject: https://github.com/*
+
 maxConcurrentBuilds: 3
 maxConcurrentBuildsPerNode: 1
 logLevel: info
@@ -78,3 +151,7 @@ affinity: {}
 
 networkPolicy:
   enabled: true
+  # Additional namespaces where VMImage build/upload jobs run. The chart renders
+  # a scoped egress policy for imagebuilder-managed build/upload pods in each
+  # namespace without applying namespace-wide default deny to tenant workloads.
+  workloadNamespaces: []

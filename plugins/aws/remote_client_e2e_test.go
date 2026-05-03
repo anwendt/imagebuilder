@@ -65,19 +65,17 @@ func TestAWSRemoteBuild_E2E(t *testing.T) {
 		Region:            cfg.region,
 		SourceType:        "cloud-image",
 		SourceProviderRef: os.Getenv("AWS_E2E_SOURCE_AMI"),
-		OSFamily:          platform.OSFamilyLinux,
-		OSDistribution:    "ubuntu",
-		OSVersion:         "24.04",
-		OSArch:            "amd64",
+		OSFamily:          e2eOSFamily(),
+		OSDistribution:    e2eOSDistribution(),
+		OSVersion:         e2eOSVersion(),
+		OSArch:            envDefault("AWS_E2E_OS_ARCH", "amd64"),
 		Target: v1alpha1.TargetSpec{
 			ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "aws-e2e"},
 			Format:            string(platform.FormatAMI),
 			Tags:              map[string]string{"imagebuilder.io/e2e": "true"},
 		},
-		Provisioners: []v1alpha1.ProvisionerSpec{
-			{Type: "shell", Inline: "set -eu\necho imagebuilder-aws-e2e >/tmp/imagebuilder-e2e.txt"},
-		},
-		Timeout: envDuration("AWS_E2E_BUILD_TIMEOUT", 40*time.Minute),
+		Provisioners: e2eProvisioners(),
+		Timeout:      envDuration("AWS_E2E_BUILD_TIMEOUT", 40*time.Minute),
 	}
 
 	var lastRef awsRemoteOperationRef
@@ -126,6 +124,38 @@ func envDefault(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func e2eOSFamily() platform.OSFamily {
+	if strings.EqualFold(envDefault("AWS_E2E_OS_FAMILY", "linux"), string(platform.OSFamilyWindows)) {
+		return platform.OSFamilyWindows
+	}
+	return platform.OSFamilyLinux
+}
+
+func e2eOSDistribution() string {
+	if e2eOSFamily() == platform.OSFamilyWindows {
+		return envDefault("AWS_E2E_OS_DISTRIBUTION", "windows-server")
+	}
+	return envDefault("AWS_E2E_OS_DISTRIBUTION", "ubuntu")
+}
+
+func e2eOSVersion() string {
+	if e2eOSFamily() == platform.OSFamilyWindows {
+		return envDefault("AWS_E2E_OS_VERSION", "2022")
+	}
+	return envDefault("AWS_E2E_OS_VERSION", "24.04")
+}
+
+func e2eProvisioners() []v1alpha1.ProvisionerSpec {
+	if e2eOSFamily() == platform.OSFamilyWindows {
+		return []v1alpha1.ProvisionerSpec{
+			{Type: "powershell", Inline: "$ErrorActionPreference = 'Stop'; Set-Content -Path C:\\imagebuilder-aws-e2e.txt -Value 'imagebuilder-aws-e2e'"},
+		}
+	}
+	return []v1alpha1.ProvisionerSpec{
+		{Type: "shell", Inline: "set -eu\necho imagebuilder-aws-e2e >/tmp/imagebuilder-e2e.txt"},
+	}
 }
 
 func envDuration(key string, fallback time.Duration) time.Duration {

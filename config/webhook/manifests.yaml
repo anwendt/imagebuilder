@@ -12,6 +12,28 @@ webhooks:
     service:
       name: imagebuilder-webhook-service
       namespace: imagebuilder-system
+      path: /validate-imagebuilder-io-v1alpha1-platformprovider
+  failurePolicy: Fail
+  matchPolicy: Equivalent
+  name: vplatformprovider.kb.io
+  rules:
+  - apiGroups:
+    - imagebuilder.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - platformproviders
+  sideEffects: None
+  timeoutSeconds: 10
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: imagebuilder-webhook-service
+      namespace: imagebuilder-system
       path: /validate-imagebuilder-io-v1alpha1-providerconfig
   failurePolicy: Fail
   matchPolicy: Equivalent

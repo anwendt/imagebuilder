@@ -33,8 +33,8 @@ func TestWebhookManifestIsFailClosedAndTargetsProductionService(t *testing.T) {
 	if got := cfg.Annotations["cert-manager.io/inject-ca-from"]; got != "imagebuilder-system/imagebuilder-webhook-serving-cert" {
 		t.Fatalf("inject-ca-from = %q, want imagebuilder-system/imagebuilder-webhook-serving-cert", got)
 	}
-	if len(cfg.Webhooks) != 2 {
-		t.Fatalf("webhooks = %d, want 2", len(cfg.Webhooks))
+	if len(cfg.Webhooks) != 3 {
+		t.Fatalf("webhooks = %d, want 3", len(cfg.Webhooks))
 	}
 	for _, webhook := range cfg.Webhooks {
 		if webhook.FailurePolicy == nil || *webhook.FailurePolicy != admissionv1.Fail {
@@ -103,6 +103,7 @@ func TestHelmChartDefaultsAdmissionFailClosed(t *testing.T) {
 	for _, want := range []string{
 		"failurePolicy: {{ .Values.webhook.failurePolicy }}",
 		"cert-manager.io/inject-ca-from:",
+		"path: /validate-imagebuilder-io-v1alpha1-platformprovider",
 		"path: /validate-imagebuilder-io-v1alpha1-vmimage",
 		"path: /validate-imagebuilder-io-v1alpha1-providerconfig",
 	} {

@@ -4,8 +4,12 @@
 BINARY_NAME    := imagebuilder-operator
 BUILDER_BINARY := imagebuilder-builder
 UPLOADER_BINARY := imagebuilder-uploader
+AWS_PROVIDER_BINARY := imagebuilder-provider-aws
 IMAGE_TAG      ?= dev
 REGISTRY       ?= ghcr.io/anwendt
+AWS_PROVIDER_IMAGE := $(REGISTRY)/$(AWS_PROVIDER_BINARY)
+AWS_PROVIDER_PLATFORMS ?= linux/amd64,linux/arm64
+AWS_PROVIDER_DIGEST ?=
 GO             := go
 GOFLAGS        ?=
 CGO_ENABLED    := 0
@@ -13,8 +17,12 @@ CGO_ENABLED    := 0
 # Tool versions
 CONTROLLER_GEN_VERSION := v0.19.0
 KUBEBUILDER_VERSION     := 3.15.0
+GOSEC_VERSION           := v2.22.10
+GOVULNCHECK_VERSION     := v1.1.4
+STATICCHECK_VERSION     := 2026.1
+GO_LICENSES_VERSION     := v1.6.0
 
-.PHONY: all build build-builder build-uploader test test-race test-core-e2e test-manifests test-e2e test-e2e-aws lint vet gosec govulncheck staticcheck security-check generate manifests run docker-build docker-build-builder docker-build-uploader license-check help deploy-production deploy-observability deploy-policies helm-lint helm-template
+.PHONY: all build build-builder build-uploader build-provider-aws test test-race test-core-e2e test-manifests test-e2e test-e2e-aws lint vet gosec govulncheck staticcheck security-check generate manifests run docker-build docker-build-builder docker-build-uploader docker-build-provider-aws docker-build-provider-aws-multiarch docker-push-provider-aws docker-digest-provider-aws sign-provider-aws update-aws-provider-samples license-check help deploy-production deploy-observability deploy-policies helm-lint helm-template
 
 all: generate manifests build
 
@@ -28,6 +36,9 @@ build-builder: ## Build the build-engine binary
 
 build-uploader: ## Build the upload/register binary
 	CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(GOFLAGS) -trimpath -o bin/$(UPLOADER_BINARY) ./cmd/uploader/
+
+build-provider-aws: ## Build the standalone AWS PlatformProvider binary
+	CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(GOFLAGS) -trimpath -o bin/$(AWS_PROVIDER_BINARY) ./cmd/provider-aws/
 
 run: generate manifests ## Run the operator locally (uses current kubeconfig context)
 	$(GO) run ./cmd/operator/ \
@@ -43,6 +54,35 @@ docker-build-builder: ## Build the build-engine Docker image
 
 docker-build-uploader: ## Build the upload/register Docker image
 	docker build -f Dockerfile.uploader -t $(REGISTRY)/$(UPLOADER_BINARY):$(IMAGE_TAG) .
+
+docker-build-provider-aws: ## Build the standalone AWS PlatformProvider Docker image
+	docker build -f Dockerfile.provider-aws -t $(AWS_PROVIDER_IMAGE):$(IMAGE_TAG) .
+
+docker-build-provider-aws-multiarch: ## Build the standalone AWS PlatformProvider multi-arch image locally via buildx
+	docker buildx build \
+		--platform $(AWS_PROVIDER_PLATFORMS) \
+		-f Dockerfile.provider-aws \
+		-t $(AWS_PROVIDER_IMAGE):$(IMAGE_TAG) \
+		.
+
+docker-push-provider-aws: ## Build and push the standalone AWS PlatformProvider multi-arch image
+	docker buildx build \
+		--platform $(AWS_PROVIDER_PLATFORMS) \
+		-f Dockerfile.provider-aws \
+		-t $(AWS_PROVIDER_IMAGE):$(IMAGE_TAG) \
+		--push \
+		.
+
+docker-digest-provider-aws: ## Print the pushed AWS PlatformProvider image digest
+	docker buildx imagetools inspect $(AWS_PROVIDER_IMAGE):$(IMAGE_TAG) --format '{{.Manifest.Digest}}'
+
+sign-provider-aws: ## Sign the pushed AWS PlatformProvider image by digest with cosign
+	test -n "$(AWS_PROVIDER_DIGEST)" || (echo "AWS_PROVIDER_DIGEST is required, e.g. sha256:..." && exit 1)
+	cosign sign $(AWS_PROVIDER_IMAGE)@$(AWS_PROVIDER_DIGEST)
+
+update-aws-provider-samples: ## Replace AWS PlatformProvider digest placeholders in samples
+	test -n "$(AWS_PROVIDER_DIGEST)" || (echo "AWS_PROVIDER_DIGEST is required, e.g. sha256:..." && exit 1)
+	hack/update-aws-provider-digest.sh "$(AWS_PROVIDER_IMAGE)" "$(AWS_PROVIDER_DIGEST)"
 
 docker-push: ## Push the operator Docker image
 	docker push $(REGISTRY)/$(BINARY_NAME):$(IMAGE_TAG)
@@ -93,15 +133,15 @@ vet: ## Run go vet (OSSF-Q-04, CERT-CON-04)
 	$(GO) vet ./...
 
 gosec: ## Run gosec SAST scanner (AS-060, CERT-MSC-04, REQ-010)
-	@which gosec > /dev/null 2>&1 || $(GO) install github.com/securego/gosec/v2/cmd/gosec@latest
+	@which gosec > /dev/null 2>&1 || $(GO) install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
 	gosec ./...
 
 govulncheck: ## Scan for known CVEs in Go module graph (AS-033, OSSF-S-06)
-	@which govulncheck > /dev/null 2>&1 || $(GO) install golang.org/x/vuln/cmd/govulncheck@latest
+	@which govulncheck > /dev/null 2>&1 || $(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 	govulncheck ./...
 
 staticcheck: ## Run staticcheck static analyser (CERT-ERR-01, SAMM-I-SB-03)
-	@which staticcheck > /dev/null 2>&1 || $(GO) install honnef.co/go/tools/cmd/staticcheck@latest
+	@which staticcheck > /dev/null 2>&1 || $(GO) install honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION)
 	staticcheck ./...
 
 security-check: vet gosec staticcheck govulncheck license-check ## Run all security gates (REQ-008, REQ-010)
@@ -109,11 +149,11 @@ security-check: vet gosec staticcheck govulncheck license-check ## Run all secur
 ## Compliance
 
 license-check: ## Check all dependencies are Apache 2.0 / MIT compatible
-	@which go-licenses > /dev/null 2>&1 || $(GO) install github.com/google/go-licenses@latest
+	@which go-licenses > /dev/null 2>&1 || $(GO) install github.com/google/go-licenses@$(GO_LICENSES_VERSION)
 	go-licenses check ./...
 
 license-report: ## Generate NOTICE file
-	@which go-licenses > /dev/null 2>&1 || $(GO) install github.com/google/go-licenses@latest
+	@which go-licenses > /dev/null 2>&1 || $(GO) install github.com/google/go-licenses@$(GO_LICENSES_VERSION)
 	go-licenses report ./... > NOTICE
 	@echo "NOTICE file updated"
 
@@ -160,7 +200,7 @@ undeploy: ## Remove operator from the cluster
 
 ## Tools
 
-CONTROLLER_GEN := $(shell which controller-gen 2>/dev/null || test -x "$$(go env GOPATH)/bin/controller-gen" && echo "$$(go env GOPATH)/bin/controller-gen")
+CONTROLLER_GEN := $(shell if command -v controller-gen >/dev/null 2>&1; then command -v controller-gen; elif test -x "$$(go env GOPATH)/bin/controller-gen"; then echo "$$(go env GOPATH)/bin/controller-gen"; fi)
 controller-gen:
 ifeq ($(CONTROLLER_GEN),)
 	$(GO) install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)

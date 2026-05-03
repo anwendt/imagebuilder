@@ -255,7 +255,7 @@ func (s *Server) CleanupRemoteBuild(ctx context.Context, req *providerv1.RemoteB
 }
 
 func remoteBuildInputFromProto(req *providerv1.RemoteBuildRequest) RemoteBuildInput {
-	return RemoteBuildInput{
+	out := RemoteBuildInput{
 		BuildID:            req.GetBuildId(),
 		OperationRef:       req.GetOperationRef(),
 		ImageName:          req.GetImageName(),
@@ -273,6 +273,27 @@ func remoteBuildInputFromProto(req *providerv1.RemoteBuildRequest) RemoteBuildIn
 		Tags:               cloneStringMap(req.GetTags()),
 		TimeoutSeconds:     req.GetTimeoutSeconds(),
 	}
+	for _, provisioner := range req.GetProvisioners() {
+		out.Provisioners = append(out.Provisioners, RemoteProvisioner{
+			Type:      provisioner.GetType(),
+			Image:     provisioner.GetImage(),
+			Inline:    provisioner.GetInline(),
+			Playbook:  provisioner.GetPlaybook(),
+			Args:      append([]string(nil), provisioner.GetArgs()...),
+			ExtraVars: cloneStringMap(provisioner.GetExtraVars()),
+		})
+	}
+	if guest := req.GetGuestAccess(); guest != nil {
+		out.GuestAccess = &RemoteGuestAccess{
+			Protocol:          guest.GetProtocol(),
+			User:              guest.GetUser(),
+			GuestPort:         guest.GetGuestPort(),
+			GeneratedSSHKey:   guest.GetGeneratedSshKey(),
+			GeneratedPassword: guest.GetGeneratedPassword(),
+			InjectionMethod:   guest.GetInjectionMethod(),
+		}
+	}
+	return out
 }
 
 type uploadProgressReporter struct {

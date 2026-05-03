@@ -1,0 +1,52 @@
+{{- if .Values.imageSignaturePolicy.enabled }}
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: {{ include "imagebuilder.fullname" . }}-require-signed-digests
+  labels:
+    {{- include "imagebuilder.labels" . | nindent 4 }}
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-provider-and-job-image-digests
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              selector:
+                matchLabels:
+                  app.kubernetes.io/managed-by: imagebuilder
+      validate:
+        message: imagebuilder pods must use digest-pinned images.
+        foreach:
+          - list: request.object.spec.containers
+            pattern:
+              image: "*@sha256:*"
+          - list: request.object.spec.initContainers || `[]`
+            pattern:
+              image: "*@sha256:*"
+    - name: verify-imagebuilder-images
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              selector:
+                matchLabels:
+                  app.kubernetes.io/managed-by: imagebuilder
+      verifyImages:
+        - imageReferences:
+            {{- range .Values.imageSignaturePolicy.imageReferences }}
+            - {{ . | quote }}
+            {{- end }}
+          mutateDigest: true
+          required: true
+          verifyDigest: true
+          attestors:
+            - entries:
+                - keyless:
+                    issuer: {{ .Values.imageSignaturePolicy.keyless.issuer | quote }}
+                    subject: {{ .Values.imageSignaturePolicy.keyless.subject | quote }}
+{{- end }}

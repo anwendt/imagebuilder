@@ -1,16 +1,16 @@
-# Example: AWS remote build from an existing AMI using SSM provisioners.
+# Example: AWS Windows remote build from an existing SSM-ready Windows AMI.
 # Replace AMI, subnet, security group, account, and KMS values before applying.
 
 ---
 apiVersion: imagebuilder.io/v1alpha1
 kind: VMImage
 metadata:
-  name: ubuntu-24-04-aws-remote
+  name: windows-2022-aws-remote
 spec:
   os:
-    family: linux
-    distribution: ubuntu
-    version: "24.04"
+    family: windows
+    distribution: windows-server
+    version: "2022"
     arch: amd64
 
   source:
@@ -18,48 +18,49 @@ spec:
     providerRef: ami-0123456789abcdef0
 
   provisioners:
-    - type: shell
+    - type: powershell
       inline: |
-        set -eu
-        sudo apt-get update
-        sudo apt-get install -y unattended-upgrades
-        echo "imagebuilder remote build" | sudo tee /etc/imagebuilder-release
+        $ErrorActionPreference = 'Stop'
+        New-Item -ItemType Directory -Force -Path C:\ImageBuilder | Out-Null
+        Set-Content -Path C:\ImageBuilder\build-info.txt -Value 'managed-by=imagebuilder'
 
     - type: file
       inline: |
         managed-by=imagebuilder
+        os=windows-server-2022
         build-mode=remote
       args:
-        - /etc/imagebuilder/build-info
+        - C:\ImageBuilder\metadata.txt
 
   targets:
     - providerConfigRef:
-        name: aws-eu-west-1-remote
+        name: aws-eu-west-1-windows
       format: ami
       tags:
         team: platform
+        os: windows-server-2022
         build-mode: remote
 
   build:
     mode: remote
-    timeout: 2h
+    timeout: 3h
 
 ---
 apiVersion: imagebuilder.io/v1alpha1
 kind: ProviderConfig
 metadata:
-  name: aws-eu-west-1-remote
+  name: aws-eu-west-1-windows
 spec:
   provider: aws
   region: eu-west-1
   extra:
     roleArn: arn:aws:iam::123456789012:role/ImageBuilderProviderRole
-    remote.instanceType: t3.small
+    remote.instanceType: t3.large
     remote.subnetId: subnet-0123456789abcdef0
     remote.securityGroupIds: sg-0123456789abcdef0
     remote.iamInstanceProfile: ImageBuilderInstanceProfile
     remote.kmsKeyId: alias/imagebuilder
-    remote.rootVolumeSizeGiB: "32"
+    remote.rootVolumeSizeGiB: "80"
 
 ---
 apiVersion: imagebuilder.io/v1alpha1

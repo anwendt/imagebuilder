@@ -20,16 +20,36 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: operator
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ include "imagebuilder.imageRef" .Values.image }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - --leader-elect={{ .Values.leaderElection.enabled }}
             - --max-concurrent-builds={{ .Values.maxConcurrentBuilds }}
             - --max-concurrent-builds-per-node={{ .Values.maxConcurrentBuildsPerNode }}
             - --scheduler-namespace={{ .Values.schedulerNamespace }}
+            - --provider-namespace={{ .Values.providerNamespace }}
+            - --require-provider-mtls={{ .Values.providerSecurity.requireMTLS }}
+            - --require-provider-digest={{ .Values.providerSecurity.requireDigest }}
+            - --require-provider-signature={{ .Values.providerSecurity.requireSignature }}
+            {{- if .Values.providerSecurity.allowedRegistries }}
+            - --allowed-provider-registries={{ join "," .Values.providerSecurity.allowedRegistries }}
+            {{- end }}
             - --metrics-bind-address={{ .Values.metrics.bindAddress }}
             - --health-probe-bind-address=:8081
             - --log-level={{ .Values.logLevel }}
+          env:
+            - name: BUILDER_IMAGE
+              value: {{ include "imagebuilder.imageRef" .Values.builderImage | quote }}
+            - name: UPLOADER_IMAGE
+              value: {{ include "imagebuilder.imageRef" .Values.uploaderImage | quote }}
+            - name: PROVISIONER_ANSIBLE_IMAGE
+              value: {{ include "imagebuilder.imageRef" .Values.provisionerImages.ansible | quote }}
+            - name: PROVISIONER_CHEF_IMAGE
+              value: {{ include "imagebuilder.imageRef" .Values.provisionerImages.chef | quote }}
+            - name: PROVISIONER_PUPPET_IMAGE
+              value: {{ include "imagebuilder.imageRef" .Values.provisionerImages.puppet | quote }}
+            - name: PROVISIONER_SALTSTACK_IMAGE
+              value: {{ include "imagebuilder.imageRef" .Values.provisionerImages.saltstack | quote }}
           ports:
             - name: metrics
               containerPort: 8080
