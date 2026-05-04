@@ -63,8 +63,9 @@ intended to be verifiable through code review, automated scanning, and ISAE audi
 | ID | Requirement | Priority |
 |---|---|---|
 | AS-013 | All user-supplied values from `VMImage` spec fields (URLs, script content, argument strings, environment variable values) SHALL be treated as **untrusted input** and validated against a strict schema before use. | Must |
-| AS-014 | Shell script content in `spec.provisioners[].inline` SHALL NOT be executed by the operator process directly. It is written to `/workspace/config.json` and executed by the provisioner init container in isolation. | Must |
-| AS-015 | URLs in `spec.source.url` SHALL be validated as well-formed HTTPS URLs. HTTP (unencrypted) source URLs are rejected. | Must |
+| AS-014 | Shell script content in `spec.provisioners[].inline` or loaded from `spec.provisioners[].source.git` SHALL NOT be executed by the operator process directly. It is expanded into the build/provider workspace and executed only by the selected provisioner runtime. | Must |
+| AS-015 | URLs in `spec.source.url` and `spec.provisioners[].source.git.url` SHALL be validated as well-formed HTTPS URLs. HTTP (unencrypted) URLs are rejected. | Must |
+| AS-015A | Credentials for private `spec.provisioners[].source.git.url` repositories SHALL be supplied through `auth.secretRef`; embedding credentials in URLs is prohibited. | Must |
 | AS-016 | Arguments passed to init-container provisioners (`spec.provisioners[].args[]`) SHALL be passed as a JSON array (never shell-interpolated) to prevent argument injection. | Must |
 | AS-017 | The operator SHALL NOT use `os/exec` with shell interpretation (`exec.Command("sh", "-c", userInput)`). All subprocess invocations use the array form with no shell expansion. | Must |
 | AS-018 | `go vet`, `staticcheck`, and `gosec` SHALL be run in CI to detect injection vulnerabilities, unsafe use of `os/exec`, and Go-specific security anti-patterns. | Must |
@@ -137,9 +138,11 @@ intended to be verifiable through code review, automated scanning, and ISAE audi
 
 | ID | Requirement | Priority |
 |---|---|---|
-| AS-047 | The operator SHALL validate `spec.source.url` against an allowlist of approved URL schemes (`https://` only) and, optionally, an allowlist of approved hostnames or CIDR ranges. | Must |
+| AS-047 | The operator SHALL validate `spec.source.url` and `spec.provisioners[].source.git.url` against an allowlist of approved URL schemes (`https://` only) and, optionally, an allowlist of approved hostnames or CIDR ranges. | Must |
 | AS-048 | The operator SHALL NOT proxy or forward arbitrary URLs on behalf of users. Source image downloads are performed by the build job pod with network egress restricted by `NetworkPolicy`. | Must |
 | AS-049 | Cloud provider API endpoints in `ProviderConfig.spec.endpoint` SHALL be validated to prevent SSRF via internal metadata service addresses (e.g., `169.254.169.254`, `fd00:ec2::254`). | Must |
+| AS-049A | Git-backed provisioner sources SHALL be revalidated at runtime before clone/checkout. Runtime validation SHALL fail closed on DNS failures or blocked address ranges. | Must |
+| AS-049B | Git-backed provisioner authentication data SHALL be read from Secret-mounted files for local builds or from transient provider request fields for remote builds. It SHALL NOT be written to logs, status, or generated provisioner content. | Must |
 
 ---
 

@@ -178,6 +178,54 @@ provisioners:
     playbook: s3://bucket/playbooks/harden.yml
 ```
 
+Provisioner content can also be loaded from a Git repository. `ref` is required;
+use an immutable commit SHA in production. If `path` points to a directory, all
+regular files are loaded in lexicographic order and executed as separate
+provisioner steps of the same type:
+
+```yaml
+provisioners:
+  - type: shell
+    source:
+      git:
+        url: https://github.com/yourorg/image-scripts.git
+        ref: 7f6e5d4c3b2a190817263544536271809abcdef0
+        path: ubuntu
+```
+
+With files `ubuntu/01-base.sh` and `ubuntu/02-hardening.sh`, `01-base.sh` runs
+first and `02-hardening.sh` runs second. Git source URLs must use HTTPS and pass
+the same SSRF host checks as image downloads.
+
+Private Git repositories are supported through a Secret in the `VMImage`
+namespace. Put credentials in the Secret, never in the Git URL:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: private-git
+type: Opaque
+stringData:
+  token: ghp_example
+---
+provisioners:
+  - type: shell
+    source:
+      git:
+        url: https://github.com/yourorg/private-image-scripts.git
+        ref: 7f6e5d4c3b2a190817263544536271809abcdef0
+        path: ubuntu
+        auth:
+          secretRef:
+            name: private-git
+            tokenKey: token
+```
+
+For basic authentication, store `username` and `password` keys instead. Local
+build pods mount the Secret read-only and pass only file paths to the builder.
+Remote providers receive credentials only in the transient build request.
+
 ## Supply Chain Policy For Provisioners
 
 Provisioner images can be restricted by registry and digest pinning:

@@ -281,6 +281,7 @@ func remoteBuildInputFromProto(req *providerv1.RemoteBuildRequest) RemoteBuildIn
 			Playbook:  provisioner.GetPlaybook(),
 			Args:      append([]string(nil), provisioner.GetArgs()...),
 			ExtraVars: cloneStringMap(provisioner.GetExtraVars()),
+			Source:    sdkRemoteProvisionerSource(provisioner.GetSource()),
 		})
 	}
 	if guest := req.GetGuestAccess(); guest != nil {
@@ -291,6 +292,28 @@ func remoteBuildInputFromProto(req *providerv1.RemoteBuildRequest) RemoteBuildIn
 			GeneratedSSHKey:   guest.GetGeneratedSshKey(),
 			GeneratedPassword: guest.GetGeneratedPassword(),
 			InjectionMethod:   guest.GetInjectionMethod(),
+		}
+	}
+	return out
+}
+
+func sdkRemoteProvisionerSource(source *providerv1.RemoteProvisionerSource) *RemoteProvisionerSource {
+	if source == nil {
+		return nil
+	}
+	out := &RemoteProvisionerSource{}
+	if git := source.GetGit(); git != nil {
+		out.Git = &RemoteGitProvisionerSource{
+			URL:  git.GetUrl(),
+			Ref:  git.GetRef(),
+			Path: git.GetPath(),
+		}
+		if auth := git.GetAuth(); auth != nil {
+			out.Git.Auth = &RemoteGitProvisionerAuth{
+				Token:    auth.GetToken(),
+				Username: auth.GetUsername(),
+				Password: auth.GetPassword(),
+			}
 		}
 	}
 	return out

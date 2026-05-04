@@ -157,12 +157,36 @@ The Helm chart keeps these defaults enforced through `values.schema.json`:
 Never place secrets in:
 
 - provisioner inline scripts
+- Git-backed provisioner scripts
 - provisioner args
 - non-secret ConfigMaps
 - image metadata
 - logs
 
 Use Secret references and mounted files instead.
+
+## Git-Backed Provisioners
+
+Git-backed provisioner sources are treated as executable supply-chain input:
+
+- use `spec.provisioners[].source.git.url`, `ref`, and `path`
+- use HTTPS URLs only
+- pin `ref` to an immutable commit SHA for production
+- keep `path` relative to the repository
+- store credentials in Secrets, not in URLs or scripts
+- use scoped, short-lived tokens where the Git host supports them
+
+Private repositories use `spec.provisioners[].source.git.auth.secretRef`.
+Token-based auth reads `token` by default. Basic auth reads `username` and
+`password` by default. Local build pods mount these Secrets read-only under
+`/credentials/git/<n>` and the builder receives only the mounted file paths.
+Remote builds resolve the Secret in the VMImage namespace and forward the
+credential material only in the in-memory provider request; it is not serialized
+into VMImage spec or status.
+
+When `path` is a directory, regular files are expanded in lexicographic order.
+Runtime clone/checkout paths repeat SSRF validation and fail closed if the host
+cannot be resolved safely.
 
 ## License Boundary
 

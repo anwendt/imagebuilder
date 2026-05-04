@@ -44,10 +44,15 @@ The referenced Secret must contain:
 stringData:
   username: administrator@vsphere.local
   password: redacted
+  # Required only for remote builds with provisioners.
+  guestUsername: imagebuilder
+  guestPassword: redacted
 ```
 
 The aliases `user` and `pass` are accepted for compatibility, but `username`
-and `password` are preferred.
+and `password` are preferred. The aliases `remoteGuestUsername` and
+`remoteGuestPassword` are accepted for remote guest credentials, but
+`guestUsername` and `guestPassword` are preferred.
 
 ## ProviderConfig
 
@@ -112,6 +117,8 @@ The service account needs permissions to:
 - Import vApps into the selected resource pool.
 - Create VMs in the selected folder.
 - Mark imported VMs as templates when `markAsTemplate=true`.
+- Clone VMs/templates, power temporary VMs on/off, run VMware Guest Operations,
+  and destroy failed temporary clones for remote builds with provisioners.
 - Create and update Content Library items when `contentLibrary` or
   `contentLibraryID` is configured.
 
@@ -126,8 +133,85 @@ live vCenter:
 IMAGEBUILDER_VSPHERE_SIMULATOR_TESTS=1 go test ./plugins/vsphere
 ```
 
+## Remote Builds
+
+vSphere remote mode starts from an existing vSphere VM or template reference in
+`spec.source.providerRef`. The reference may be a managed object ID such as
+`vm-123` or an inventory path resolvable by the configured datacenter.
+
+When `spec.provisioners` is empty, the provider clones the source and marks the
+clone as a template when `markAsTemplate=true`. When provisioners are present,
+the provider clones the source as a temporary VM, powers it on, waits for VMware
+Tools, runs supported provisioners through VMware Guest Operations, shuts the
+guest down, and then marks the result as a template.
+
+Supported remote provisioners:
+
+| OS family | Provisioners |
+| --- | --- |
+| Linux | `shell`, `file` |
+| Windows | `powershell`, `file` |
+
+Remote provisioner mode requires VMware Tools in the guest and guest
+credentials in the ProviderConfig Secret:
+
+| Secret key | Description |
+| --- | --- |
+| `guestUsername` | Guest user used by VMware Guest Operations. |
+| `guestPassword` | Guest password used by VMware Guest Operations. |
+
+The vCenter identity also needs permissions to clone VMs/templates, power VMs
+on/off, run Guest Operations programs, and destroy failed temporary clones.
+Set `spec.build.mode: remote`, `spec.source.type: snapshot`, and
+`spec.source.providerRef` to the source VM/template reference.
+
+When a remote request explicitly uses `spec.build.guestAccess.protocol: ssh`,
+`extra.network` is required. The provider retargets existing NICs on the cloned
+VM to that network, or adds a VMXNET3 NIC when the source VM/template has no
+NIC. Guest Operations remains the default remote provisioner transport and does
+not require SSH reachability.
+
+The real vSphere E2E test is opt-in because it uploads artifacts to a live
+datastore and may import OVA/OVF artifacts as templates or Content Library
+items depending on the configured extras:
+
+```bash
+VSPHERE_E2E=1 \
+VSPHERE_E2E_ENDPOINT=https://vcenter.example.com/sdk \
+VSPHERE_E2E_USERNAME=administrator@vsphere.local \
+VSPHERE_E2E_PASSWORD=... \
+VSPHERE_E2E_DATACENTER=DC0 \
+VSPHERE_E2E_DATASTORE=vsanDatastore \
+VSPHERE_E2E_ARTIFACT_PATH=/path/to/image.vmdk \
+go test ./plugins/vsphere -run TestVSphereProviderLive_E2E -count=1 -v -timeout=60m
+```
+
+Optional variables:
+
+| Variable | Default |
+|---|---|
+| `VSPHERE_E2E_FORMAT` | inferred from artifact extension; `vmdk` fallback |
+| `VSPHERE_E2E_INSECURE` | `true` |
+| `VSPHERE_E2E_TIMEOUT` | `55m` |
+| `VSPHERE_E2E_UPLOAD_PATH_PREFIX` | `imagebuilder-e2e` |
+| `VSPHERE_E2E_IMAGE_NAME` | timestamped `vsphere-e2e-*` |
+| `VSPHERE_E2E_OS_FAMILY` | `linux` |
+| `VSPHERE_E2E_CHECKSUM` | unset |
+| `VSPHERE_E2E_FOLDER` | unset |
+| `VSPHERE_E2E_CLUSTER` | unset |
+| `VSPHERE_E2E_RESOURCE_POOL` | unset |
+| `VSPHERE_E2E_HOST` | unset |
+| `VSPHERE_E2E_NETWORK` | unset |
+| `VSPHERE_E2E_OVF_NETWORK_NAME` | unset |
+| `VSPHERE_E2E_DISK_PROVISIONING` | provider default `thin` |
+| `VSPHERE_E2E_CONTENT_LIBRARY` | unset |
+| `VSPHERE_E2E_CONTENT_LIBRARY_ID` | unset |
+| `VSPHERE_E2E_MARK_AS_TEMPLATE` | provider default `true` |
+| `VSPHERE_E2E_REQUIRE_MANIFEST` | provider default `false` |
+
 ## Limitations
 
-- vSphere remote builds are not supported yet. Set `spec.build.mode: local`.
+- vSphere remote builds require an existing VM/template source with VMware Tools
+  and guest credentials when provisioners are configured.
 - Bare `vmdk` registration is intentionally a datastore-artifact reference. Use
   OVA/OVF if a template is required.

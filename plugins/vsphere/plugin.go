@@ -44,6 +44,8 @@ type config struct {
 	insecure           bool
 	username           string
 	password           string
+	guestUsername      string
+	guestPassword      string
 	datacenter         string
 	datastore          string
 	folder             string
@@ -68,6 +70,8 @@ type config struct {
 type client interface {
 	UploadArtifact(ctx context.Context, input uploadInput) (*platform.UploadResult, error)
 	RegisterImage(ctx context.Context, input registerInput) (*platform.ImageRef, error)
+	ReconcileRemoteBuild(ctx context.Context, input vsphereRemoteBuildInput) (*vsphereRemoteBuildState, error)
+	CleanupRemoteBuild(ctx context.Context, input vsphereRemoteBuildInput) error
 	Cleanup(ctx context.Context, metadata map[string]string) error
 	HealthCheck(ctx context.Context) error
 }
@@ -115,7 +119,7 @@ func (p *Plugin) SupportedOS() []platform.OSFamily {
 }
 
 func (p *Plugin) SupportedBuildModes() []string {
-	return []string{v1alpha1.BuildModeLocal}
+	return []string{v1alpha1.BuildModeLocal, v1alpha1.BuildModeRemote}
 }
 
 func (p *Plugin) Init(ctx context.Context, cfg platform.PluginConfig) error {
@@ -126,6 +130,8 @@ func (p *Plugin) Init(ctx context.Context, cfg platform.PluginConfig) error {
 		insecure:           cfg.Insecure,
 		username:           firstSecretValue(cfg.SecretData, "username", "user"),
 		password:           firstSecretValue(cfg.SecretData, "password", "pass"),
+		guestUsername:      firstSecretValue(cfg.SecretData, "guestUsername", "remoteGuestUsername"),
+		guestPassword:      firstSecretValue(cfg.SecretData, "guestPassword", "remoteGuestPassword"),
 		datacenter:         strings.TrimSpace(cfg.Extra["datacenter"]),
 		datastore:          strings.TrimSpace(cfg.Extra["datastore"]),
 		folder:             strings.TrimSpace(cfg.Extra["folder"]),
@@ -305,12 +311,76 @@ func (p *Plugin) HealthCheck(ctx context.Context) error {
 	return p.client.HealthCheck(ctx)
 }
 
-func (p *Plugin) ReconcileRemoteBuild(_ context.Context, _ *platform.RemoteBuildRequest) (*platform.RemoteBuildResult, error) {
-	return nil, fmt.Errorf("vsphere plugin: remote build is not implemented; use build.mode=local")
+func (p *Plugin) ReconcileRemoteBuild(ctx context.Context, req *platform.RemoteBuildRequest) (*platform.RemoteBuildResult, error) {
+	if req == nil {
+		return nil, fmt.Errorf("vsphere plugin: remote build request is required")
+	}
+	if !isSupportedFormat(platform.ImageFormat(req.Target.Format)) {
+		return nil, fmt.Errorf("vsphere plugin: unsupported remote target format %q; use ova, ovf, or vmdk", req.Target.Format)
+	}
+	sourceRef := strings.TrimSpace(firstNonEmpty(req.SourceProviderRef, req.SourceURL))
+	if sourceRef == "" {
+		return nil, fmt.Errorf("vsphere plugin: remote source requires source providerRef")
+	}
+	if p.client == nil {
+		return nil, fmt.Errorf("vsphere plugin: client is not initialised")
+	}
+	state, err := p.client.ReconcileRemoteBuild(ctx, vsphereRemoteBuildInput{
+		BuildID:            req.BuildID,
+		OperationRef:       req.OperationRef,
+		ImageName:          firstNonEmpty(req.ImageName, "imagebuilder-"+sanitizeName(req.BuildID)),
+		SourceType:         strings.ToLower(strings.TrimSpace(req.SourceType)),
+		SourceRef:          sourceRef,
+		SourceChecksum:     req.SourceChecksum,
+		OSFamily:           req.OSFamily,
+		Format:             platform.ImageFormat(req.Target.Format),
+		Tags:               req.Target.Tags,
+		ProviderConfigName: req.Target.ProviderConfigRef.Name,
+		Provisioners:       req.Provisioners,
+		GuestAccess:        req.GuestAccess,
+	})
+	if err != nil {
+		return nil, err
+	}
+	result := &platform.RemoteBuildResult{
+		OperationRef: state.OperationRef,
+		Phase:        state.Phase,
+		Message:      state.Message,
+		Done:         state.Done,
+		Hygiene:      state.Hygiene,
+	}
+	if state.Done {
+		if state.Image == nil || state.Image.ID == "" {
+			return nil, fmt.Errorf("vsphere plugin: completed remote build did not return an image reference")
+		}
+		result.Images = []platform.RemoteImageRef{{
+			Provider:       p.Name(),
+			ProviderConfig: req.Target.ProviderConfigRef.Name,
+			ImageRef:       *state.Image,
+			Format:         platform.ImageFormat(req.Target.Format),
+			Checksum:       req.SourceChecksum,
+		}}
+	}
+	return result, nil
 }
 
-func (p *Plugin) CleanupRemoteBuild(_ context.Context, _ *platform.RemoteBuildRequest) error {
-	return nil
+func (p *Plugin) CleanupRemoteBuild(ctx context.Context, req *platform.RemoteBuildRequest) error {
+	if req == nil || p.client == nil {
+		return nil
+	}
+	sourceRef := strings.TrimSpace(firstNonEmpty(req.SourceProviderRef, req.SourceURL))
+	return p.client.CleanupRemoteBuild(ctx, vsphereRemoteBuildInput{
+		BuildID:      req.BuildID,
+		OperationRef: req.OperationRef,
+		ImageName:    firstNonEmpty(req.ImageName, "imagebuilder-"+sanitizeName(req.BuildID)),
+		SourceType:   strings.ToLower(strings.TrimSpace(req.SourceType)),
+		SourceRef:    sourceRef,
+		OSFamily:     req.OSFamily,
+		Format:       platform.ImageFormat(req.Target.Format),
+		Tags:         req.Target.Tags,
+		Provisioners: req.Provisioners,
+		GuestAccess:  req.GuestAccess,
+	})
 }
 
 type govmomiClient struct {

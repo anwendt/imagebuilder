@@ -36,6 +36,9 @@ building of virtual machine (VM) images for multiple cloud and on-premises platf
 | FR-007 | The system SHALL report build phase transitions via Kubernetes status conditions. | Must |
 | FR-008 | The system SHALL record start time and completion time of each build in the VMImage status. | Must |
 | FR-009 | The system SHALL support configurable build timeouts. | Must |
+| FR-006A | The system SHALL support Git-backed provisioner content with an explicit HTTPS URL, ref, and path. Directory paths SHALL expand into regular files executed in lexicographic order. | Should |
+| FR-006B | Git-backed provisioner content SHALL be expanded before provisioner validation and execution so local and remote build providers observe the same ordered provisioner plan. | Must |
+| FR-006C | Git-backed provisioner content SHALL support private repositories through Kubernetes Secret references for token or username/password authentication. | Must |
 | FR-010 | The system SHALL publish the built image to all configured target platforms in one build run. | Must |
 
 ---
@@ -111,8 +114,8 @@ instead of by the local QEMU build backend in the build pod.
 | FR-043 | The system SHALL support cancellation and cleanup for remote builds through provider-owned cleanup operations. | Must |
 | FR-044 | The system SHALL apply the same credential handling rules to remote builds as local builds, including no secrets in logs, ephemeral credentials where possible, and status output without secret material. | Must |
 | FR-045 | The system SHALL apply final image hygiene checks or provider-attested hygiene results before a remotely built image is marked Ready. | Must |
-| FR-046 | The system SHOULD support remote build implementations for AWS and vSphere first because they remove the local KVM requirement for the most common target platforms. | Should |
-| FR-047 | The system MAY support remote build implementations for Azure, GCP, and OpenStack after the core contract and the first provider implementations are stable. | May |
+| FR-046 | The system SHOULD support remote build implementations for AWS, Azure, and vSphere because they remove the local KVM requirement for the most common target platforms. | Should |
+| FR-047 | The system MAY support remote build implementations for GCP and OpenStack after the core contract and first provider implementations are stable. | May |
 
 ---
 
@@ -137,10 +140,12 @@ passed through `spec.source.providerRef` and handled by the selected provider.
 | ID | Requirement | Priority |
 |---|---|---|
 | FR-053 | The system SHALL support provider-native snapshot sources for remote builds through `spec.source.type: snapshot` and `spec.source.providerRef`. | Must |
-| FR-054 | The core admission layer SHALL reject snapshot sources unless the build mode is `remote`, `providerRef` is set, `url` is empty, and no provisioners are configured. | Must |
+| FR-054 | The core admission layer SHALL reject snapshot sources unless the build mode is `remote`, `providerRef` is set, and `url` is empty. Provider implementations SHALL decide whether provisioners are supported for their provider-native source type. | Must |
 | FR-055 | The AWS provider SHALL support registering an AMI directly from an existing completed EBS snapshot. | Must |
-| FR-056 | Snapshot-source registration SHALL be treated as a direct provider registration operation without temporary guest boot, guest readiness, or provisioner execution. | Must |
-| FR-057 | Provider implementations SHALL preserve user-owned provider-native source artifacts during failure cleanup unless the provider itself created the artifact for the build. | Must |
+| FR-056 | The Azure provider SHALL support remote builds from existing Azure Snapshot and Managed Disk resource IDs, including provider-owned provisioning through Azure VM Run Command when provisioners are configured. | Must |
+| FR-057 | The vSphere provider SHALL support remote builds from existing VM or template references, including provider-owned provisioning through VMware Guest Operations when provisioners are configured. | Must |
+| FR-058 | Snapshot-source registration without provisioners SHALL be treated as a direct provider registration or clone operation without temporary guest boot, guest readiness, or provisioner execution. | Must |
+| FR-059 | Provider implementations SHALL preserve user-owned provider-native source artifacts during failure cleanup unless the provider itself created the artifact for the build. | Must |
 
 ---
 

@@ -1,0 +1,32 @@
+# Dockerfile.provider-azure - standalone Azure PlatformProvider
+
+FROM golang:1.26.2-alpine AS builder
+
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+
+RUN apk add --no-cache ca-certificates git
+
+WORKDIR /workspace
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build \
+      -trimpath \
+      -ldflags="-s -w -extldflags=-static" \
+      -o /workspace/provider-azure \
+      ./cmd/provider-azure
+
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY --from=builder /workspace/provider-azure /provider-azure
+
+USER 65532:65532
+
+EXPOSE 9443
+
+ENTRYPOINT ["/provider-azure"]

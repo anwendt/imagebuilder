@@ -324,6 +324,7 @@ VMImage
 │   ├── provisioners[]
 │   │   ├── type          (cloud-init | shell | file | powershell | ansible | ...)
 │   │   ├── inline        (for in-process types)
+│   │   ├── source.git    (url + ref + file/dir path)
 │   │   ├── image         (for init-container types; optional)
 │   │   ├── playbook / script / path
 │   │   ├── args[]
@@ -657,7 +658,7 @@ type Provisioner interface {
 | Plugin registry | Complete | `pkg/plugin/registry.go` |
 | Provisioner interface | Complete | `pkg/provisioner/interface.go` |
 | Operator entry point | Complete | `cmd/operator/main.go` |
-| Built-in providers | Scaffolded | AWS has placeholder upload/register logic; other providers are stubs. External providers are supported through gRPC. |
+| Built-in providers | In progress | AWS, Azure, and vSphere include standalone provider entrypoints and provider-owned remote build paths; other providers remain earlier-stage implementations. External providers are supported through gRPC. |
 | External Provider SDK | Complete | `pkg/provider/sdk/`, starter template in `templates/provider/` |
 | VMImage controller | Complete | `pkg/controller/vmimage/` |
 | PlatformProvider controller | Complete | `pkg/controller/provider/` |
@@ -680,12 +681,11 @@ type Provisioner interface {
 
 The next implementation sequence is:
 
-1. Harden the first production remote build provider path, starting with AWS remote build
-   execution, cleanup, provider-side hygiene checks, and provider-backed integration tests.
-2. Extend remote build support to vSphere after the AWS path is stable.
-3. Optimize developer and CI runtime by reducing Docker build context and running
+1. Harden provider-backed live E2E coverage for AWS, Azure, and vSphere remote
+   builds, including cleanup and provider-side hygiene assertions.
+2. Optimize developer and CI runtime by reducing Docker build context and running
    `make test-e2e` in CI.
-4. Extend remote build support to Azure, GCP, and OpenStack after the first provider paths are
+3. Extend remote build support to GCP and OpenStack after the current provider paths are
    stable.
 
 ---

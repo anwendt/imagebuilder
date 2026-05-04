@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -26,6 +27,7 @@ import (
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
+	provisionersource "github.com/anwendt/imagebuilder/pkg/provisioner/source"
 )
 
 type awsSDKRemoteBuildClient struct {
@@ -130,6 +132,12 @@ func awsEndpointResolver(endpoint string) awssdk.EndpointResolverWithOptions {
 }
 
 func (c *awsSDKRemoteBuildClient) ReconcileRemoteBuild(ctx context.Context, req awsRemoteBuildRequest) (*awsRemoteBuildState, error) {
+	expandedReq, cleanup, err := expandAWSRemoteProvisioners(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	req = expandedReq
 	if req.SourceType != "cloud-image" && req.SourceType != "marketplace" {
 		return nil, fmt.Errorf("AWS remote build supports source type cloud-image or marketplace, got %q", req.SourceType)
 	}
@@ -152,6 +160,24 @@ func (c *awsSDKRemoteBuildClient) ReconcileRemoteBuild(ctx context.Context, req 
 		return c.startInstance(ctx, req)
 	}
 	return c.reconcileInstance(ctx, req, ref)
+}
+
+func expandAWSRemoteProvisioners(ctx context.Context, req awsRemoteBuildRequest) (awsRemoteBuildRequest, func(), error) {
+	if !provisionersource.HasSources(req.Provisioners) {
+		return req, func() {}, nil
+	}
+	workspace, err := os.MkdirTemp("", "imagebuilder-aws-provisioners-*")
+	if err != nil {
+		return req, func() {}, fmt.Errorf("create AWS remote provisioner source workspace: %w", err)
+	}
+	cleanup := func() { _ = os.RemoveAll(workspace) }
+	provisioners, err := provisionersource.ExpandProvisioners(ctx, workspace, req.Provisioners)
+	if err != nil {
+		cleanup()
+		return req, func() {}, err
+	}
+	req.Provisioners = provisioners
+	return req, cleanup, nil
 }
 
 func (c *awsSDKRemoteBuildClient) CleanupRemoteBuild(ctx context.Context, req awsRemoteBuildRequest) error {
@@ -826,10 +852,22 @@ func (s awsRemoteBuildSettings) validate(req awsRemoteBuildRequest) error {
 	if s.KeyName != "" && !s.AllowSSHKey {
 		return fmt.Errorf("AWS remote build forbids remote.keyName unless remote.allowSshKey=true")
 	}
+	if awsRemoteRequiresSSH(req) {
+		if s.KeyName == "" {
+			return fmt.Errorf("AWS remote build with SSH guest access requires ProviderConfig extra remote.keyName")
+		}
+		if !s.AllowSSHKey {
+			return fmt.Errorf("AWS remote build with SSH guest access requires ProviderConfig extra remote.allowSshKey=true")
+		}
+	}
 	if len(req.Provisioners) > 0 && s.IAMProfileName == "" {
 		return fmt.Errorf("AWS remote build requires ProviderConfig extra remote.iamInstanceProfile when provisioners are configured")
 	}
 	return nil
+}
+
+func awsRemoteRequiresSSH(req awsRemoteBuildRequest) bool {
+	return req.GuestAccess != nil && strings.EqualFold(strings.TrimSpace(req.GuestAccess.Protocol), "ssh")
 }
 
 func (c *awsSDKRemoteBuildClient) validateSecurityGroups(ctx context.Context) error {

@@ -402,7 +402,10 @@ func (r *VMImageReconciler) reconcileRemoteBuild(ctx context.Context, img *v1alp
 		return r.setFailedWithReason(ctx, img, "RemoteBuildTimedOut", fmt.Sprintf("remote build timed out after %s", timeout))
 	}
 
-	req := remoteBuildRequest(img, target)
+	req, err := r.remoteBuildRequest(ctx, img, target)
+	if err != nil {
+		return r.setFailedWithReason(ctx, img, "RemoteBuildAuthFailed", err.Error())
+	}
 	result, err := remotePlugin.ReconcileRemoteBuild(ctx, req)
 	if err != nil {
 		setRemoteFailureSteps(img, "RemoteBuildFailed", err.Error())
@@ -1268,6 +1271,64 @@ func remoteBuildRequest(img *v1alpha1.VMImage, target v1alpha1.TargetSpec) *plat
 		GuestAccess:       img.Spec.Build.GuestAccess,
 		Timeout:           timeout,
 	}
+}
+
+func (r *VMImageReconciler) remoteBuildRequest(ctx context.Context, img *v1alpha1.VMImage, target v1alpha1.TargetSpec) (*platform.RemoteBuildRequest, error) {
+	req := remoteBuildRequest(img, target)
+	provisioners, err := r.withRemoteGitAuth(ctx, img.Namespace, req.Provisioners)
+	if err != nil {
+		return nil, err
+	}
+	req.Provisioners = provisioners
+	return req, nil
+}
+
+func (r *VMImageReconciler) withRemoteGitAuth(ctx context.Context, namespace string, specs []v1alpha1.ProvisionerSpec) ([]v1alpha1.ProvisionerSpec, error) {
+	out := make([]v1alpha1.ProvisionerSpec, 0, len(specs))
+	cache := map[string]*corev1.Secret{}
+	for _, spec := range specs {
+		spec = *spec.DeepCopy()
+		if spec.Source == nil || spec.Source.Git == nil || spec.Source.Git.Auth == nil ||
+			spec.Source.Git.Auth.SecretRef == nil || spec.Source.Git.Auth.SecretRef.Name == "" {
+			out = append(out, spec)
+			continue
+		}
+		ref := spec.Source.Git.Auth.SecretRef
+		secret, ok := cache[ref.Name]
+		if !ok {
+			secret = &corev1.Secret{}
+			if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: ref.Name}, secret); err != nil {
+				return nil, fmt.Errorf("read git provisioner auth secret %q: %w", ref.Name, err)
+			}
+			cache[ref.Name] = secret
+		}
+		spec.Source.Git.Auth.RuntimeToken = string(secret.Data[gitAuthTokenKey(ref)])
+		spec.Source.Git.Auth.RuntimeUsername = string(secret.Data[gitAuthUsernameKey(ref)])
+		spec.Source.Git.Auth.RuntimePassword = string(secret.Data[gitAuthPasswordKey(ref)])
+		out = append(out, spec)
+	}
+	return out, nil
+}
+
+func gitAuthTokenKey(ref *v1alpha1.GitProvisionerAuthSecretRef) string {
+	if ref.TokenKey != "" {
+		return ref.TokenKey
+	}
+	return "token"
+}
+
+func gitAuthUsernameKey(ref *v1alpha1.GitProvisionerAuthSecretRef) string {
+	if ref.UsernameKey != "" {
+		return ref.UsernameKey
+	}
+	return "username"
+}
+
+func gitAuthPasswordKey(ref *v1alpha1.GitProvisionerAuthSecretRef) string {
+	if ref.PasswordKey != "" {
+		return ref.PasswordKey
+	}
+	return "password"
 }
 
 func updateRemoteSteps(img *v1alpha1.VMImage, result *platform.RemoteBuildResult) {

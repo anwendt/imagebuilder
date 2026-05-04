@@ -553,6 +553,22 @@ func TestAWSRemoteBuildClient_ForbidsSSHKeyByDefault(t *testing.T) {
 	}
 }
 
+func TestAWSRemoteBuildClient_RequiresExplicitKeyForSSHGuestAccess(t *testing.T) {
+	client := testAWSRemoteBuildClient(&fakeEC2RemoteBuildAPI{})
+	client.settings.AllowSSHKey = true
+	req := remoteBuildRequest()
+	req.SourceProviderRef = "ami-source"
+	req.GuestAccess = &v1alpha1.GuestAccessSpec{Protocol: "ssh"}
+
+	_, err := client.ReconcileRemoteBuild(context.Background(), awsRemoteRequestFromPlatform(req))
+	if err == nil {
+		t.Fatal("ReconcileRemoteBuild should require remote.keyName for SSH guest access")
+	}
+	if !strings.Contains(err.Error(), "remote.keyName") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestAWSRemoteBuildClient_RejectsPublicRemoteAdminSecurityGroup(t *testing.T) {
 	ec2api := &fakeEC2RemoteBuildAPI{
 		securityGroups: []ec2types.SecurityGroup{

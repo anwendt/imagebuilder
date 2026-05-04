@@ -132,10 +132,9 @@ logic, weakening the provider extension model established in ADR-002 and ADR-006
 3. Define the provider-neutral remote build request and result contract.
 4. Add core controller orchestration for remote build status, events, timeout, cancellation,
    cleanup, and image hygiene result handling.
-5. Implement the first production provider path, with AWS or vSphere as the preferred first
-   target.
-6. Add a provider-backed E2E test and a mocked-provider E2E test for deterministic CI.
-7. Extend remote build support to Azure, GCP, and OpenStack after the first provider path is
+5. Implement production provider paths for AWS, Azure, and vSphere.
+6. Add provider-backed E2E tests and mocked-provider E2E tests for deterministic CI.
+7. Extend remote build support to GCP and OpenStack after the current provider paths are
    stable.
 
 ---

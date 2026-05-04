@@ -493,6 +493,7 @@ func remoteBuildProtoRequest(req *platform.RemoteBuildRequest) *providerv1.Remot
 			Playbook:  provisioner.Playbook,
 			Args:      provisioner.Args,
 			ExtraVars: provisioner.ExtraVars,
+			Source:    grpcRemoteProvisionerSource(provisioner.Source),
 		})
 	}
 	if req.GuestAccess != nil {
@@ -508,6 +509,28 @@ func remoteBuildProtoRequest(req *platform.RemoteBuildRequest) *providerv1.Remot
 			}
 			if creds.Injection != nil {
 				out.GuestAccess.InjectionMethod = creds.Injection.Method
+			}
+		}
+	}
+	return out
+}
+
+func grpcRemoteProvisionerSource(source *v1alpha1.ProvisionerSourceSpec) *providerv1.RemoteProvisionerSource {
+	if source == nil {
+		return nil
+	}
+	out := &providerv1.RemoteProvisionerSource{}
+	if source.Git != nil {
+		out.Git = &providerv1.RemoteGitProvisionerSource{
+			Url:  source.Git.URL,
+			Ref:  source.Git.Ref,
+			Path: source.Git.Path,
+		}
+		if source.Git.Auth != nil {
+			out.Git.Auth = &providerv1.RemoteGitProvisionerAuth{
+				Token:    source.Git.Auth.RuntimeToken,
+				Username: source.Git.Auth.RuntimeUsername,
+				Password: source.Git.Auth.RuntimePassword,
 			}
 		}
 	}

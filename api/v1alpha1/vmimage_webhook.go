@@ -16,6 +16,7 @@ package v1alpha1
 
 import (
 	"fmt"
+	"path"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -78,9 +79,6 @@ func (r *VMImage) validate() (admission.Warnings, error) {
 		if r.Spec.Source.URL != "" {
 			errs = append(errs, fmt.Errorf("spec.source.url must be empty when spec.source.type is snapshot"))
 		}
-		if len(r.Spec.Provisioners) > 0 {
-			errs = append(errs, fmt.Errorf("spec.provisioners must be empty when spec.source.type is snapshot"))
-		}
 	}
 
 	if strings.HasPrefix(r.Spec.Source.URL, "https://") {
@@ -127,6 +125,9 @@ func (r *VMImage) validate() (admission.Warnings, error) {
 		if err := validateGuestAccess(r.Spec.OS, r.Spec.Build.GuestAccess, buildMode); err != nil {
 			errs = append(errs, err)
 		}
+	}
+	if err := validateProvisionerSources(r.Spec.Provisioners); err != nil {
+		errs = append(errs, err)
 	}
 	if err := validateProvisionerImagePolicy(r.Spec.Provisioners, r.Spec.Build.Security); err != nil {
 		errs = append(errs, err)
@@ -207,6 +208,50 @@ func validateProvisionerImagePolicy(provisioners []ProvisionerSpec, security *Bu
 		}
 		if err := validateImagePolicy(fmt.Sprintf("spec.provisioners[%d].image", i), p.Image, security.ProvisionerImages); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func validateProvisionerSources(provisioners []ProvisionerSpec) error {
+	for i, p := range provisioners {
+		fieldPath := fmt.Sprintf("spec.provisioners[%d].source", i)
+		if p.Source == nil {
+			continue
+		}
+		if p.Inline != "" {
+			return fmt.Errorf("%s is mutually exclusive with spec.provisioners[%d].inline", fieldPath, i)
+		}
+		if p.Playbook != "" {
+			return fmt.Errorf("%s is mutually exclusive with spec.provisioners[%d].playbook", fieldPath, i)
+		}
+		if p.Source.Git == nil {
+			return fmt.Errorf("%s.git is required when source is set", fieldPath)
+		}
+		git := p.Source.Git
+		if strings.TrimSpace(git.URL) == "" {
+			return fmt.Errorf("%s.git.url is required", fieldPath)
+		}
+		if err := validateNoSSRF(fieldPath+".git.url", git.URL); err != nil {
+			return err
+		}
+		if strings.TrimSpace(git.Ref) == "" {
+			return fmt.Errorf("%s.git.ref is required", fieldPath)
+		}
+		if strings.TrimSpace(git.Path) == "" {
+			return fmt.Errorf("%s.git.path is required", fieldPath)
+		}
+		cleanPath := path.Clean(git.Path)
+		if strings.HasPrefix(cleanPath, "/") || cleanPath == ".." || strings.HasPrefix(cleanPath, "../") {
+			return fmt.Errorf("%s.git.path must be a relative repository path without '..'", fieldPath)
+		}
+		if git.Auth != nil && git.Auth.SecretRef != nil {
+			if strings.TrimSpace(git.Auth.SecretRef.Name) == "" {
+				return fmt.Errorf("%s.git.auth.secretRef.name is required", fieldPath)
+			}
+		}
+		if git.Auth != nil && (git.Auth.TokenPath != "" || git.Auth.UsernamePath != "" || git.Auth.PasswordPath != "") {
+			return fmt.Errorf("%s.git.auth runtime credential paths are controller-managed; use secretRef", fieldPath)
 		}
 	}
 	return nil

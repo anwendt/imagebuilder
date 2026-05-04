@@ -1,0 +1,38 @@
+{
+  "Name": "ImageBuilder Azure Provider",
+  "IsCustom": true,
+  "Description": "Least-privilege role for VM Image Builder Azure provider staging uploads and managed image registration.",
+  "Actions": [
+    "Microsoft.Compute/images/read",
+    "Microsoft.Compute/images/write",
+    "Microsoft.Compute/images/delete",
+    "Microsoft.Compute/disks/read",
+    "Microsoft.Compute/disks/write",
+    "Microsoft.Compute/disks/delete",
+    "Microsoft.Compute/virtualMachines/read",
+    "Microsoft.Compute/virtualMachines/write",
+    "Microsoft.Compute/virtualMachines/delete",
+    "Microsoft.Compute/virtualMachines/start/action",
+    "Microsoft.Compute/virtualMachines/deallocate/action",
+    "Microsoft.Compute/virtualMachines/generalize/action",
+    "Microsoft.Compute/virtualMachines/runCommand/action",
+    "Microsoft.Network/networkInterfaces/read",
+    "Microsoft.Network/networkInterfaces/join/action",
+    "Microsoft.Compute/galleries/images/versions/read",
+    "Microsoft.Compute/galleries/images/versions/write",
+    "Microsoft.Compute/galleries/images/versions/delete",
+    "Microsoft.Storage/storageAccounts/blobServices/containers/read",
+    "Microsoft.Storage/storageAccounts/blobServices/containers/write",
+    "Microsoft.Storage/storageAccounts/blobServices/containers/delete"
+  ],
+  "DataActions": [
+    "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read",
+    "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/write",
+    "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/delete"
+  ],
+  "NotActions": [],
+  "NotDataActions": [],
+  "AssignableScopes": [
+    "/subscriptions/<subscription-id>"
+  ]
+}

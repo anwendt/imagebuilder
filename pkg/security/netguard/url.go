@@ -45,6 +45,9 @@ func ValidatePublicHTTPSURL(ctx context.Context, fieldPath, rawURL string, opts 
 	if strings.ToLower(parsedURL.Scheme) != "https" {
 		return fmt.Errorf("%s: URL must use https, got %q", fieldPath, parsedURL.Scheme)
 	}
+	if parsedURL.User != nil {
+		return fmt.Errorf("%s: URL must not embed credentials; use Secret references for authentication", fieldPath)
+	}
 
 	host := parsedURL.Hostname()
 	if host == "" {

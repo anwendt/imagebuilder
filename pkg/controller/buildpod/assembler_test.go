@@ -1006,3 +1006,69 @@ func TestAssemble_Provisioners_PresentAsJSONArray(t *testing.T) {
 		t.Fatalf("decoded provisioners = %#v", parsed)
 	}
 }
+
+func TestAssemble_GitProvisionerAuthSecretMountedAndReferencedByPath(t *testing.T) {
+	img := baseImage()
+	img.Spec.Provisioners = []v1alpha1.ProvisionerSpec{{
+		Type: "shell",
+		Source: &v1alpha1.ProvisionerSourceSpec{Git: &v1alpha1.GitProvisionerSourceSpec{
+			URL:  "https://example.com/private.git",
+			Ref:  "main",
+			Path: "scripts",
+			Auth: &v1alpha1.GitProvisionerAuthSpec{
+				SecretRef: &v1alpha1.GitProvisionerAuthSecretRef{
+					Name:        "private-git",
+					TokenKey:    "pat",
+					UsernameKey: "user",
+					PasswordKey: "pass",
+				},
+			},
+		}},
+	}}
+
+	job, err := buildpod.Assemble(img, newScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble failed: %v", err)
+	}
+
+	var foundVolume bool
+	for _, volume := range job.Spec.Template.Spec.Volumes {
+		if volume.Name == "git-credentials-0" && volume.Secret != nil &&
+			volume.Secret.SecretName == "private-git" && volume.Secret.DefaultMode != nil &&
+			*volume.Secret.DefaultMode == 0o400 {
+			foundVolume = true
+		}
+	}
+	if !foundVolume {
+		t.Fatalf("git auth secret volume not mounted correctly: %#v", job.Spec.Template.Spec.Volumes)
+	}
+
+	main := job.Spec.Template.Spec.Containers[0]
+	var foundMount bool
+	for _, mount := range main.VolumeMounts {
+		if mount.Name == "git-credentials-0" && mount.MountPath == "/credentials/git/0" && mount.ReadOnly {
+			foundMount = true
+		}
+	}
+	if !foundMount {
+		t.Fatalf("git auth secret mount not found: %#v", main.VolumeMounts)
+	}
+
+	envMap := make(map[string]string)
+	for _, e := range main.Env {
+		envMap[e.Name] = e.Value
+	}
+	var parsed []v1alpha1.ProvisionerSpec
+	if err := json.Unmarshal([]byte(envMap["PROVISIONERS"]), &parsed); err != nil {
+		t.Fatalf("PROVISIONERS value is not valid JSON: %v", err)
+	}
+	auth := parsed[0].Source.Git.Auth
+	if auth.TokenPath != "/credentials/git/0/pat" ||
+		auth.UsernamePath != "/credentials/git/0/user" ||
+		auth.PasswordPath != "/credentials/git/0/pass" {
+		t.Fatalf("git auth paths = %#v", auth)
+	}
+	if auth.RuntimeToken != "" || auth.RuntimeUsername != "" || auth.RuntimePassword != "" {
+		t.Fatalf("runtime credentials must not be serialized into build pod env: %#v", auth)
+	}
+}

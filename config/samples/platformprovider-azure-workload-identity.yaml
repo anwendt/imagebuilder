@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: imagebuilder-provider-azure
+  namespace: imagebuilder-system
+  annotations:
+    azure.workload.identity/client-id: "<user-assigned-identity-client-id>"
+---
+apiVersion: imagebuilder.io/v1alpha1
+kind: PlatformProvider
+metadata:
+  name: azure
+  namespace: imagebuilder-system
+spec:
+  package: ghcr.io/anwendt/imagebuilder-provider-azure@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+  packagePullPolicy: IfNotPresent
+  serviceAccountName: imagebuilder-provider-azure
+  automountServiceAccountToken: true
+  podLabels:
+    azure.workload.identity/use: "true"
+  security:
+    allowedRegistries:
+      - ghcr.io/anwendt
+    requireDigest: true
+    verifySignature: true

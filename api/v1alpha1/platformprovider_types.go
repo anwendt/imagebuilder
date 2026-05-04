@@ -3,6 +3,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -38,6 +39,29 @@ type PlatformProviderSpec struct {
 	// global require-provider-mtls policy. Use mTLS for cross-boundary endpoints.
 	// +optional
 	Transport *ProviderTransportSpec `json:"transport,omitempty"`
+
+	// ServiceAccountName sets the ServiceAccount used by the provider pod.
+	// This is required for cloud workload identity integrations.
+	// +optional
+	ServiceAccountName string `json:"serviceAccountName,omitempty"`
+
+	// AutomountServiceAccountToken controls API token projection for provider
+	// pods. Defaults to false. Set true only when required by workload identity.
+	// +optional
+	AutomountServiceAccountToken *bool `json:"automountServiceAccountToken,omitempty"`
+
+	// PodLabels are merged into the provider pod template labels.
+	// +optional
+	PodLabels map[string]string `json:"podLabels,omitempty"`
+
+	// PodAnnotations are merged into the provider pod template annotations.
+	// +optional
+	PodAnnotations map[string]string `json:"podAnnotations,omitempty"`
+
+	// Env injects non-secret environment variables into the provider container.
+	// Use mounted Secret/ConfigMap references for sensitive values.
+	// +optional
+	Env []corev1.EnvVar `json:"env,omitempty"`
 }
 
 type ProviderTransportSpec struct {

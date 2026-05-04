@@ -1,0 +1,36 @@
+# Example: load multiple shell provisioner scripts from a Git directory.
+# Files under scripts/ubuntu are executed in lexicographic order, e.g.
+# 01-base.sh before 02-hardening.sh. Pin ref to an immutable commit SHA in production.
+apiVersion: imagebuilder.io/v1alpha1
+kind: VMImage
+metadata:
+  name: ubuntu-24-04-git-provisioners
+spec:
+  os:
+    family: linux
+    distribution: ubuntu
+    version: "24.04"
+    arch: amd64
+  source:
+    type: cloud-image
+    url: https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img
+    checksum: sha256:replace-with-published-checksum
+  provisioners:
+    - type: shell
+      source:
+        git:
+          url: https://github.com/yourorg/image-scripts.git
+          ref: 7f6e5d4c3b2a190817263544536271809abcdef0
+          path: scripts/ubuntu
+          # For private repositories, create this Secret in the VMImage namespace:
+          # kubectl create secret generic private-git --from-literal=token=...
+          # auth:
+          #   secretRef:
+          #     name: private-git
+          #     tokenKey: token
+  targets:
+    - providerConfigRef:
+        name: aws-eu-west-1
+      format: ami
+  build:
+    timeout: 2h

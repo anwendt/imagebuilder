@@ -41,6 +41,8 @@ const (
 	guestCredsVol       = "guest-credentials" // #nosec G101 -- Kubernetes volume name, not credential material.
 	generatedCredsMount = "/credentials/generated"
 	generatedCredsVol   = "generated-credentials"
+	gitCredsMount       = "/credentials/git"
+	gitCredsVolPrefix   = "git-credentials-"
 	tmpMount            = "/tmp"
 	tmpVol              = "tmp"
 	kvmMount            = "/dev/kvm"
@@ -209,7 +211,7 @@ func buildMainContainer(img *v1alpha1.VMImage) corev1.Container {
 	// without needing to understand any quoting or escaping conventions.
 	// Empty slice → empty JSON array "[]"; nil slice → omitted env var.
 	bootCmdEnv := bootCommandEnv(img.Spec.Source.BootCommand)
-	provisionersEnv := provisionersEnv(inProcessProvisioners(img.Spec.Provisioners))
+	provisionersEnv := provisionersEnv(withGitAuthMountPaths(inProcessProvisioners(img.Spec.Provisioners)))
 
 	env := []corev1.EnvVar{
 		{Name: "BUILD_ID", Value: buildID(img)},
@@ -249,6 +251,7 @@ func buildMainContainer(img *v1alpha1.VMImage) corev1.Container {
 			ReadOnly:  true,
 		})
 	}
+	volumeMounts = append(volumeMounts, gitAuthVolumeMounts(img)...)
 	if generatesGuestCredentials(img) {
 		env = append(env, corev1.EnvVar{Name: "GUEST_CREDENTIALS_DIR", Value: generatedCredsMount})
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
@@ -332,6 +335,7 @@ func buildVolumes(img *v1alpha1.VMImage) []corev1.Volume {
 	if hasGuestCredentials(img) {
 		volumes = append(volumes, guestCredentialsVolume(img))
 	}
+	volumes = append(volumes, gitAuthVolumes(img)...)
 	if generatesGuestCredentials(img) {
 		volumes = append(volumes, corev1.Volume{
 			Name: generatedCredsVol,
@@ -378,6 +382,118 @@ func guestCredentialsVolume(img *v1alpha1.VMImage) corev1.Volume {
 			},
 		},
 	}
+}
+
+func gitAuthVolumes(img *v1alpha1.VMImage) []corev1.Volume {
+	refs := gitAuthSecretRefs(img)
+	volumes := make([]corev1.Volume, 0, len(refs))
+	defaultMode := int32(0o400)
+	for i, ref := range refs {
+		volumes = append(volumes, corev1.Volume{
+			Name: gitAuthVolumeName(i),
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName:  ref.Name,
+					DefaultMode: &defaultMode,
+				},
+			},
+		})
+	}
+	return volumes
+}
+
+func gitAuthVolumeMounts(img *v1alpha1.VMImage) []corev1.VolumeMount {
+	refs := gitAuthSecretRefs(img)
+	mounts := make([]corev1.VolumeMount, 0, len(refs))
+	for i := range refs {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      gitAuthVolumeName(i),
+			MountPath: gitAuthMountPath(i),
+			ReadOnly:  true,
+		})
+	}
+	return mounts
+}
+
+func withGitAuthMountPaths(provisioners []v1alpha1.ProvisionerSpec) []v1alpha1.ProvisionerSpec {
+	out := make([]v1alpha1.ProvisionerSpec, 0, len(provisioners))
+	secretIndex := map[string]int{}
+	for _, spec := range provisioners {
+		spec = *spec.DeepCopy()
+		if spec.Source == nil || spec.Source.Git == nil || spec.Source.Git.Auth == nil ||
+			spec.Source.Git.Auth.SecretRef == nil || spec.Source.Git.Auth.SecretRef.Name == "" {
+			out = append(out, spec)
+			continue
+		}
+		ref := spec.Source.Git.Auth.SecretRef
+		key := gitAuthSecretIdentity(ref)
+		index, ok := secretIndex[key]
+		if !ok {
+			index = len(secretIndex)
+			secretIndex[key] = index
+		}
+		spec.Source.Git.Auth.TokenPath = gitAuthSecretFile(index, gitAuthTokenKey(ref))
+		spec.Source.Git.Auth.UsernamePath = gitAuthSecretFile(index, gitAuthUsernameKey(ref))
+		spec.Source.Git.Auth.PasswordPath = gitAuthSecretFile(index, gitAuthPasswordKey(ref))
+		out = append(out, spec)
+	}
+	return out
+}
+
+func gitAuthSecretRefs(img *v1alpha1.VMImage) []v1alpha1.GitProvisionerAuthSecretRef {
+	var refs []v1alpha1.GitProvisionerAuthSecretRef
+	seen := map[string]bool{}
+	for _, spec := range inProcessProvisioners(img.Spec.Provisioners) {
+		if spec.Source == nil || spec.Source.Git == nil || spec.Source.Git.Auth == nil ||
+			spec.Source.Git.Auth.SecretRef == nil || spec.Source.Git.Auth.SecretRef.Name == "" {
+			continue
+		}
+		ref := *spec.Source.Git.Auth.SecretRef
+		key := gitAuthSecretIdentity(&ref)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		refs = append(refs, ref)
+	}
+	return refs
+}
+
+func gitAuthSecretIdentity(ref *v1alpha1.GitProvisionerAuthSecretRef) string {
+	return ref.Name + "/" + gitAuthTokenKey(ref) + "/" + gitAuthUsernameKey(ref) + "/" + gitAuthPasswordKey(ref)
+}
+
+func gitAuthVolumeName(index int) string {
+	return fmt.Sprintf("%s%d", gitCredsVolPrefix, index)
+}
+
+func gitAuthMountPath(index int) string {
+	return fmt.Sprintf("%s/%d", gitCredsMount, index)
+}
+
+func gitAuthSecretFile(index int, key string) string {
+	return gitAuthMountPath(index) + "/" + key
+}
+
+func gitAuthTokenKey(ref *v1alpha1.GitProvisionerAuthSecretRef) string {
+	if ref.TokenKey != "" {
+		return ref.TokenKey
+	}
+	return "token"
+}
+
+func gitAuthUsernameKey(ref *v1alpha1.GitProvisionerAuthSecretRef) string {
+	if ref.UsernameKey != "" {
+		return ref.UsernameKey
+	}
+	return "username"
+}
+
+func gitAuthPasswordKey(ref *v1alpha1.GitProvisionerAuthSecretRef) string {
+	if ref.PasswordKey != "" {
+		return ref.PasswordKey
+	}
+	return "password"
 }
 
 func workspaceVolume(img *v1alpha1.VMImage) corev1.Volume {

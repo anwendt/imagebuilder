@@ -438,6 +438,81 @@ spec:
                       description: Playbook path for ansible (s3://, http://, or local
                         path in workspace)
                       type: string
+                    source:
+                      description: |-
+                        Source loads provisioner content from an external source. When source.git.path
+                        points to a directory, regular files are loaded in lexicographic order and
+                        expanded into separate provisioner steps of the same type.
+                      properties:
+                        git:
+                          description: Git loads provisioner content from a Git repository.
+                          properties:
+                            auth:
+                              description: Auth references credentials for private
+                                Git repositories.
+                              properties:
+                                passwordPath:
+                                  description: PasswordPath is a runtime-mounted file
+                                    containing the basic auth password/token.
+                                  type: string
+                                secretRef:
+                                  description: |-
+                                    SecretRef references a Secret in the VMImage namespace. Use tokenKey for
+                                    bearer/personal-access tokens, or usernameKey/passwordKey for basic auth.
+                                  properties:
+                                    name:
+                                      description: Name is the Secret name in the
+                                        VMImage namespace.
+                                      type: string
+                                    passwordKey:
+                                      description: |-
+                                        PasswordKey is the Secret key containing the basic auth password/token.
+                                        Defaults to password.
+                                      type: string
+                                    tokenKey:
+                                      description: |-
+                                        TokenKey is the Secret key containing a bearer or personal access token.
+                                        Defaults to token.
+                                      type: string
+                                    usernameKey:
+                                      description: |-
+                                        UsernameKey is the Secret key containing the basic auth username.
+                                        Defaults to username.
+                                      type: string
+                                  required:
+                                  - name
+                                  type: object
+                                tokenPath:
+                                  description: TokenPath is a runtime-mounted file
+                                    containing a bearer or personal access token.
+                                  type: string
+                                usernamePath:
+                                  description: UsernamePath is a runtime-mounted file
+                                    containing the basic auth username.
+                                  type: string
+                              type: object
+                            path:
+                              description: |-
+                                Path is a file or directory within the repository. Directories are expanded
+                                into regular files sorted by relative path, for example 01-base.sh before
+                                02-hardening.sh.
+                              type: string
+                            ref:
+                              description: |-
+                                Ref is the branch, tag, or commit to check out. Production manifests should
+                                use an immutable commit SHA.
+                              type: string
+                            url:
+                              description: |-
+                                URL is the HTTPS Git repository URL. Raw IP hosts and private/link-local
+                                resolved addresses are rejected by admission and runtime SSRF checks.
+                              type: string
+                          required:
+                          - path
+                          - ref
+                          - url
+                          type: object
+                      type: object
                     type:
                       description: |-
                         Type determines how the provisioner runs.

@@ -68,6 +68,8 @@ is authenticated (signed) by the build service itself.
 |---|---|---|
 | SC-013 | The `main` branch SHALL have **branch protection** enabled: require pull request, require status checks to pass, no force-push, no branch deletion. | Must |
 | SC-014 | All commits to `main` SHALL be traceable to an authenticated GitHub/GitLab identity. Anonymous commits are rejected. | Must |
+| SC-014A | Git repositories used as provisioner sources SHOULD be protected with branch protection, signed commits or signed tags, and immutable commit refs in production VMImage manifests. | Should |
+| SC-014B | Credentials for private Git provisioner repositories SHALL be scoped to read-only access for the required repository or path and SHOULD be short-lived where supported. | Should |
 | SC-015 | **Signed commits** (GPG or SSH) are recommended for all core contributors; required for release commits. | Should |
 | SC-016 | Git tags used for releases SHALL be **annotated and signed** (`git tag -s vX.Y.Z`). The tag signature identifies the release manager. | Must |
 

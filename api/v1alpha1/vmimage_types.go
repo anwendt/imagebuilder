@@ -231,6 +231,12 @@ type ProvisionerSpec struct {
 	// +optional
 	Inline string `json:"inline,omitempty"`
 
+	// Source loads provisioner content from an external source. When source.git.path
+	// points to a directory, regular files are loaded in lexicographic order and
+	// expanded into separate provisioner steps of the same type.
+	// +optional
+	Source *ProvisionerSourceSpec `json:"source,omitempty"`
+
 	// Playbook path for ansible (s3://, http://, or local path in workspace)
 	// +optional
 	Playbook string `json:"playbook,omitempty"`
@@ -250,6 +256,79 @@ type ProvisionerSpec struct {
 	// WindowsConfig holds Windows-specific provisioner settings
 	// +optional
 	WindowsConfig *WindowsProvisionerConfig `json:"windowsConfig,omitempty"`
+}
+
+type ProvisionerSourceSpec struct {
+	// Git loads provisioner content from a Git repository.
+	// +optional
+	Git *GitProvisionerSourceSpec `json:"git,omitempty"`
+}
+
+type GitProvisionerSourceSpec struct {
+	// URL is the HTTPS Git repository URL. Raw IP hosts and private/link-local
+	// resolved addresses are rejected by admission and runtime SSRF checks.
+	URL string `json:"url"`
+
+	// Ref is the branch, tag, or commit to check out. Production manifests should
+	// use an immutable commit SHA.
+	Ref string `json:"ref"`
+
+	// Path is a file or directory within the repository. Directories are expanded
+	// into regular files sorted by relative path, for example 01-base.sh before
+	// 02-hardening.sh.
+	Path string `json:"path"`
+
+	// Auth references credentials for private Git repositories.
+	// +optional
+	Auth *GitProvisionerAuthSpec `json:"auth,omitempty"`
+}
+
+type GitProvisionerAuthSpec struct {
+	// SecretRef references a Secret in the VMImage namespace. Use tokenKey for
+	// bearer/personal-access tokens, or usernameKey/passwordKey for basic auth.
+	// +optional
+	SecretRef *GitProvisionerAuthSecretRef `json:"secretRef,omitempty"`
+
+	// TokenPath is a runtime-mounted file containing a bearer or personal access token.
+	// +optional
+	TokenPath string `json:"tokenPath,omitempty"`
+
+	// UsernamePath is a runtime-mounted file containing the basic auth username.
+	// +optional
+	UsernamePath string `json:"usernamePath,omitempty"`
+
+	// PasswordPath is a runtime-mounted file containing the basic auth password/token.
+	// +optional
+	PasswordPath string `json:"passwordPath,omitempty"`
+
+	// RuntimeToken is populated by controllers for provider calls and is never serialized.
+	RuntimeToken string `json:"-"`
+
+	// RuntimeUsername is populated by controllers for provider calls and is never serialized.
+	RuntimeUsername string `json:"-"`
+
+	// RuntimePassword is populated by controllers for provider calls and is never serialized.
+	RuntimePassword string `json:"-"`
+}
+
+type GitProvisionerAuthSecretRef struct {
+	// Name is the Secret name in the VMImage namespace.
+	Name string `json:"name"`
+
+	// TokenKey is the Secret key containing a bearer or personal access token.
+	// Defaults to token.
+	// +optional
+	TokenKey string `json:"tokenKey,omitempty"`
+
+	// UsernameKey is the Secret key containing the basic auth username.
+	// Defaults to username.
+	// +optional
+	UsernameKey string `json:"usernameKey,omitempty"`
+
+	// PasswordKey is the Secret key containing the basic auth password/token.
+	// Defaults to password.
+	// +optional
+	PasswordKey string `json:"passwordKey,omitempty"`
 }
 
 type WindowsProvisionerConfig struct {

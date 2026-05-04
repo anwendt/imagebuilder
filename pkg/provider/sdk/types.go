@@ -117,6 +117,24 @@ type RemoteProvisioner struct {
 	Playbook  string
 	Args      []string
 	ExtraVars map[string]string
+	Source    *RemoteProvisionerSource
+}
+
+type RemoteProvisionerSource struct {
+	Git *RemoteGitProvisionerSource
+}
+
+type RemoteGitProvisionerSource struct {
+	URL  string
+	Ref  string
+	Path string
+	Auth *RemoteGitProvisionerAuth
+}
+
+type RemoteGitProvisionerAuth struct {
+	Token    string
+	Username string
+	Password string
 }
 
 type RemoteGuestAccess struct {

@@ -28,6 +28,9 @@ func validPluginConfig() platform.PluginConfig {
 type fakeClient struct {
 	uploadInput     uploadInput
 	registerInput   registerInput
+	remoteInput     vsphereRemoteBuildInput
+	remoteState     *vsphereRemoteBuildState
+	remoteCleanup   vsphereRemoteBuildInput
 	cleanupMetadata map[string]string
 	healthErr       error
 }
@@ -55,6 +58,23 @@ func (f *fakeClient) RegisterImage(_ context.Context, input registerInput) (*pla
 		Location: input.Datacenter,
 		Tags:     input.Tags,
 	}, nil
+}
+
+func (f *fakeClient) ReconcileRemoteBuild(_ context.Context, input vsphereRemoteBuildInput) (*vsphereRemoteBuildState, error) {
+	f.remoteInput = input
+	if f.remoteState != nil {
+		return f.remoteState, nil
+	}
+	return &vsphereRemoteBuildState{
+		OperationRef: "vsphere://remote-build/build-123?provisionerIndex=1&vmName=imagebuilder-build-123&vmRef=vm-123",
+		Phase:        platform.RemoteBuildPhaseProvisioning,
+		Message:      "provisioner completed",
+	}, nil
+}
+
+func (f *fakeClient) CleanupRemoteBuild(_ context.Context, input vsphereRemoteBuildInput) error {
+	f.remoteCleanup = input
+	return nil
 }
 
 func (f *fakeClient) Cleanup(_ context.Context, metadata map[string]string) error {
@@ -100,8 +120,8 @@ func TestPluginCapabilities(t *testing.T) {
 		}
 	}
 	modes := p.SupportedBuildModes()
-	if len(modes) != 1 || modes[0] != v1alpha1.BuildModeLocal {
-		t.Fatalf("SupportedBuildModes() = %v, want local only", modes)
+	if len(modes) != 2 || modes[0] != v1alpha1.BuildModeLocal || modes[1] != v1alpha1.BuildModeRemote {
+		t.Fatalf("SupportedBuildModes() = %v, want local and remote", modes)
 	}
 }
 
@@ -216,5 +236,64 @@ func TestPluginHealthCheckDelegates(t *testing.T) {
 	client.healthErr = errors.New("not healthy")
 	if err := p.HealthCheck(context.Background()); err == nil {
 		t.Fatal("HealthCheck should return client error")
+	}
+}
+
+func TestPluginReconcileRemoteBuildDelegates(t *testing.T) {
+	p, client := newInitializedPlugin(t)
+	result, err := p.ReconcileRemoteBuild(context.Background(), &platform.RemoteBuildRequest{
+		BuildID:           "build-123",
+		ImageName:         "ubuntu-template",
+		OSFamily:          platform.OSFamilyLinux,
+		SourceType:        "snapshot",
+		SourceProviderRef: "vm-100",
+		Provisioners: []v1alpha1.ProvisionerSpec{{
+			Type:   "shell",
+			Inline: "echo ok",
+		}},
+		Target: v1alpha1.TargetSpec{
+			ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "vsphere-prod"},
+			Format:            "ova",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ReconcileRemoteBuild returned error: %v", err)
+	}
+	if result.Done || result.Phase != platform.RemoteBuildPhaseProvisioning {
+		t.Fatalf("remote result = %#v, want provisioning", result)
+	}
+	if client.remoteInput.SourceRef != "vm-100" || len(client.remoteInput.Provisioners) != 1 {
+		t.Fatalf("remote input = %#v", client.remoteInput)
+	}
+}
+
+func TestPluginReconcileRemoteBuildReturnsImage(t *testing.T) {
+	p, client := newInitializedPlugin(t)
+	client.remoteState = &vsphereRemoteBuildState{
+		OperationRef: "vsphere://remote-build/build-123?imageRef=vm-123",
+		Phase:        platform.RemoteBuildPhaseReady,
+		Done:         true,
+		Image: &platform.ImageRef{
+			ID:       "vm-123",
+			Name:     "ubuntu-template",
+			Location: "dc01",
+		},
+	}
+	result, err := p.ReconcileRemoteBuild(context.Background(), &platform.RemoteBuildRequest{
+		BuildID:           "build-123",
+		ImageName:         "ubuntu-template",
+		OSFamily:          platform.OSFamilyLinux,
+		SourceType:        "snapshot",
+		SourceProviderRef: "vm-100",
+		Target: v1alpha1.TargetSpec{
+			ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "vsphere-prod"},
+			Format:            "ova",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ReconcileRemoteBuild returned error: %v", err)
+	}
+	if !result.Done || len(result.Images) != 1 || result.Images[0].ImageRef.ID != "vm-123" {
+		t.Fatalf("remote result = %#v, want ready image", result)
 	}
 }

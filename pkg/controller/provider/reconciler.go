@@ -163,7 +163,13 @@ func (r *PlatformProviderReconciler) buildDeployment(pp *v1alpha1.PlatformProvid
 		"app.kubernetes.io/managed-by":  "imagebuilder",
 		"imagebuilder.io/provider-name": pp.Name,
 	}
+	for key, value := range pp.Spec.PodLabels {
+		labels[key] = value
+	}
 	annotations := map[string]string{}
+	for key, value := range pp.Spec.PodAnnotations {
+		annotations[key] = value
+	}
 	if pp.Spec.Security != nil && pp.Spec.Security.VerifySignature {
 		annotations["imagebuilder.io/signature-policy"] = "cosign-required"
 		annotations["imagebuilder.io/signature-image"] = pp.Spec.Package
@@ -191,6 +197,7 @@ func (r *PlatformProviderReconciler) buildDeployment(pp *v1alpha1.PlatformProvid
 			},
 		},
 	}
+	container.Env = append(container.Env, pp.Spec.Env...)
 	var volumes []corev1.Volume
 	if tlsSpec := providerMutualTLS(pp); tlsSpec != nil {
 		container.Env = append(container.Env,
@@ -231,9 +238,10 @@ func (r *PlatformProviderReconciler) buildDeployment(pp *v1alpha1.PlatformProvid
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: annotations},
 				Spec: corev1.PodSpec{
-					ImagePullSecrets: pullSecrets,
-					// AS-028: provider pods do not need API server access.
-					AutomountServiceAccountToken: boolPtr(false),
+					ImagePullSecrets:   pullSecrets,
+					ServiceAccountName: pp.Spec.ServiceAccountName,
+					// AS-028: provider pods do not need API server access by default.
+					AutomountServiceAccountToken: providerAutomountServiceAccountToken(pp),
 					// AS-053: explicitly forbid host namespace sharing.
 					HostNetwork: false,
 					HostPID:     false,
@@ -250,6 +258,13 @@ func (r *PlatformProviderReconciler) buildDeployment(pp *v1alpha1.PlatformProvid
 			},
 		},
 	}
+}
+
+func providerAutomountServiceAccountToken(pp *v1alpha1.PlatformProvider) *bool {
+	if pp.Spec.AutomountServiceAccountToken != nil {
+		return pp.Spec.AutomountServiceAccountToken
+	}
+	return boolPtr(false)
 }
 
 // ---------------------------------------------------------------------------

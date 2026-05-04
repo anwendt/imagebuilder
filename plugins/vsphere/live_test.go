@@ -1,0 +1,175 @@
+package vsphere
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
+)
+
+func TestVSphereProviderLive_E2E(t *testing.T) {
+	if os.Getenv("VSPHERE_E2E") != "1" {
+		t.Skip("set VSPHERE_E2E=1 to run live vSphere provider E2E")
+	}
+	artifactPath := os.Getenv("VSPHERE_E2E_ARTIFACT_PATH")
+	if artifactPath == "" {
+		t.Fatal("VSPHERE_E2E_ARTIFACT_PATH is required and must point to a VMDK, OVA, or OVF artifact")
+	}
+	format := platform.ImageFormat(firstNonEmpty(os.Getenv("VSPHERE_E2E_FORMAT"), formatFromPath(artifactPath)))
+	if !isSupportedFormat(format) {
+		t.Fatalf("VSPHERE_E2E_FORMAT=%q is unsupported; use vmdk, ova, or ovf", format)
+	}
+	timeout := durationFromEnv(t, "VSPHERE_E2E_TIMEOUT", 55*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cfg := platform.PluginConfig{
+		ProviderConfigName: "vsphere-e2e",
+		Endpoint:           os.Getenv("VSPHERE_E2E_ENDPOINT"),
+		Insecure:           boolFromEnv("VSPHERE_E2E_INSECURE", true),
+		SecretData: map[string][]byte{
+			"username": []byte(os.Getenv("VSPHERE_E2E_USERNAME")),
+			"password": []byte(os.Getenv("VSPHERE_E2E_PASSWORD")),
+		},
+		Extra: liveExtraConfig(artifactPath),
+	}
+	requireVSphereE2EEnv(t, cfg)
+	plugin := &Plugin{}
+	if err := plugin.Init(ctx, cfg); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := plugin.HealthCheck(ctx); err != nil {
+		t.Fatalf("HealthCheck: %v", err)
+	}
+	info, err := os.Stat(artifactPath)
+	if err != nil {
+		t.Fatalf("stat artifact: %v", err)
+	}
+	buildID := "vsphere-e2e-" + strconv.FormatInt(time.Now().Unix(), 10)
+	artifact := &platform.BuildArtifact{
+		Path:      artifactPath,
+		Format:    format,
+		Checksum:  os.Getenv("VSPHERE_E2E_CHECKSUM"),
+		SizeBytes: info.Size(),
+		OS:        platform.OSFamily(firstNonEmpty(os.Getenv("VSPHERE_E2E_OS_FAMILY"), string(platform.OSFamilyLinux))),
+		Metadata: map[string]string{
+			"buildID":   buildID,
+			"imageName": firstNonEmpty(os.Getenv("VSPHERE_E2E_IMAGE_NAME"), buildID),
+		},
+	}
+	upload, err := plugin.Upload(ctx, artifact)
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	defer func() {
+		_ = plugin.Cleanup(context.Background(), &platform.BuildArtifact{Path: artifactPath, Format: format, Metadata: upload.Metadata})
+	}()
+	ref, err := plugin.Register(ctx, upload)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if ref.ID == "" {
+		t.Fatal("Register returned empty image ID")
+	}
+}
+
+func liveExtraConfig(artifactPath string) map[string]string {
+	extra := map[string]string{
+		"datacenter":       os.Getenv("VSPHERE_E2E_DATACENTER"),
+		"datastore":        os.Getenv("VSPHERE_E2E_DATASTORE"),
+		"uploadPathPrefix": firstNonEmpty(os.Getenv("VSPHERE_E2E_UPLOAD_PATH_PREFIX"), "imagebuilder-e2e"),
+		"imageName":        firstNonEmpty(os.Getenv("VSPHERE_E2E_IMAGE_NAME"), "vsphere-e2e-"+strconv.FormatInt(time.Now().Unix(), 10)),
+	}
+	for key, env := range map[string]string{
+		"folder":             "VSPHERE_E2E_FOLDER",
+		"cluster":            "VSPHERE_E2E_CLUSTER",
+		"resourcePool":       "VSPHERE_E2E_RESOURCE_POOL",
+		"host":               "VSPHERE_E2E_HOST",
+		"network":            "VSPHERE_E2E_NETWORK",
+		"ovfNetworkName":     "VSPHERE_E2E_OVF_NETWORK_NAME",
+		"diskProvisioning":   "VSPHERE_E2E_DISK_PROVISIONING",
+		"contentLibrary":     "VSPHERE_E2E_CONTENT_LIBRARY",
+		"contentLibraryID":   "VSPHERE_E2E_CONTENT_LIBRARY_ID",
+		"deployment":         "VSPHERE_E2E_DEPLOYMENT",
+		"ipAllocationPolicy": "VSPHERE_E2E_IP_ALLOCATION_POLICY",
+		"ipProtocol":         "VSPHERE_E2E_IP_PROTOCOL",
+		"annotation":         "VSPHERE_E2E_ANNOTATION",
+	} {
+		if value := os.Getenv(env); value != "" {
+			extra[key] = value
+		}
+	}
+	if value := os.Getenv("VSPHERE_E2E_MARK_AS_TEMPLATE"); value != "" {
+		extra["markAsTemplate"] = value
+	}
+	if value := os.Getenv("VSPHERE_E2E_REQUIRE_MANIFEST"); value != "" {
+		extra["requireManifest"] = value
+	}
+	if extra["imageName"] == "" {
+		extra["imageName"] = strings.TrimSuffix(filepath.Base(artifactPath), filepath.Ext(artifactPath))
+	}
+	return extra
+}
+
+func formatFromPath(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".ova":
+		return string(platform.FormatOVA)
+	case ".ovf":
+		return string(platform.FormatOVF)
+	default:
+		return string(platform.FormatVMDK)
+	}
+}
+
+func boolFromEnv(key string, fallback bool) bool {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func durationFromEnv(t *testing.T, key string, fallback time.Duration) time.Duration {
+	t.Helper()
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		t.Fatalf("%s must be a Go duration, for example 55m: %v", key, err)
+	}
+	if parsed <= 0 {
+		t.Fatalf("%s must be positive", key)
+	}
+	if parsed > 4*time.Hour {
+		t.Fatalf("%s=%s is too large for this live test", key, parsed)
+	}
+	return parsed
+}
+
+func requireVSphereE2EEnv(t *testing.T, cfg platform.PluginConfig) {
+	t.Helper()
+	required := map[string]string{
+		"VSPHERE_E2E_ENDPOINT":   cfg.Endpoint,
+		"VSPHERE_E2E_USERNAME":   string(cfg.SecretData["username"]),
+		"VSPHERE_E2E_PASSWORD":   string(cfg.SecretData["password"]),
+		"VSPHERE_E2E_DATACENTER": cfg.Extra["datacenter"],
+		"VSPHERE_E2E_DATASTORE":  cfg.Extra["datastore"],
+	}
+	for key, value := range required {
+		if strings.TrimSpace(value) == "" {
+			t.Fatalf("%s is required", key)
+		}
+	}
+}

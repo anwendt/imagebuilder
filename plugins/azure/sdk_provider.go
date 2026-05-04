@@ -1,4 +1,4 @@
-package aws
+package azure
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 type SDKProvider struct {
 	log     *slog.Logger
 	mu      sync.Mutex
-	plugins map[string]*AWSPlugin
+	plugins map[string]*Plugin
 	uploads map[string]*platform.UploadResult
 }
 
@@ -29,14 +29,14 @@ var (
 
 func NewSDKProvider() *SDKProvider {
 	return &SDKProvider{
-		log:     slog.Default().With(slog.String("provider", "aws")),
-		plugins: map[string]*AWSPlugin{},
+		log:     slog.Default().With(slog.String("provider", "azure")),
+		plugins: map[string]*Plugin{},
 		uploads: map[string]*platform.UploadResult{},
 	}
 }
 
 func (p *SDKProvider) Capabilities(context.Context) (sdk.Capabilities, error) {
-	plugin := &AWSPlugin{}
+	plugin := &Plugin{}
 	formats := make([]string, 0, len(plugin.SupportedFormats()))
 	for _, format := range plugin.SupportedFormats() {
 		formats = append(formats, string(format))
@@ -67,8 +67,7 @@ func (p *SDKProvider) ValidateConfig(ctx context.Context, config sdk.Config) err
 		}
 		return fmt.Errorf("provider config %q has not been initialised", config.ProviderConfigName)
 	}
-
-	plugin := &AWSPlugin{}
+	plugin := &Plugin{}
 	if err := plugin.Init(ctx, platform.PluginConfig{
 		ProviderConfigName: config.ProviderConfigName,
 		SecretData:         config.Credentials,
@@ -90,7 +89,7 @@ func (p *SDKProvider) UploadArtifact(ctx context.Context, artifact sdk.ArtifactI
 	if err != nil {
 		return sdk.UploadResult{}, err
 	}
-	tmp, err := os.CreateTemp("", "imagebuilder-aws-upload-*."+artifact.Format)
+	tmp, err := os.CreateTemp("", "imagebuilder-azure-upload-*."+artifact.Format)
 	if err != nil {
 		return sdk.UploadResult{}, fmt.Errorf("create temporary artifact file: %w", err)
 	}
@@ -105,16 +104,21 @@ func (p *SDKProvider) UploadArtifact(ctx context.Context, artifact sdk.ArtifactI
 	if err := tmp.Close(); err != nil {
 		return sdk.UploadResult{}, fmt.Errorf("close temporary artifact file: %w", err)
 	}
-	if err := progress.Report(ctx, sdk.Progress{
-		BytesWritten: written,
-		TotalBytes:   artifact.TotalSizeBytes,
-		Phase:        "uploading",
-		Message:      "artifact received by aws provider",
-	}); err != nil {
-		return sdk.UploadResult{}, err
+	if progress != nil {
+		if err := progress.Report(ctx, sdk.Progress{
+			BytesWritten: written,
+			TotalBytes:   artifact.TotalSizeBytes,
+			Phase:        "uploading",
+			Message:      "artifact received by azure provider",
+		}); err != nil {
+			return sdk.UploadResult{}, err
+		}
 	}
 
 	metadata := cloneStringMap(artifact.Metadata)
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
 	metadata["providerConfigName"] = artifact.ProviderConfigName
 	metadata["format"] = artifact.Format
 	buildArtifact := &platform.BuildArtifact{
@@ -151,6 +155,7 @@ func (p *SDKProvider) RegisterImage(ctx context.Context, input sdk.RegisterInput
 	if err != nil {
 		return sdk.ImageRef{}, err
 	}
+	p.cleanupUpload(input.ProviderRef)
 	return sdk.ImageRef{
 		ID:       ref.ID,
 		Name:     ref.Name,
@@ -168,16 +173,16 @@ func (p *SDKProvider) DeleteArtifact(ctx context.Context, input sdk.DeleteInput)
 		ProviderRef:        input.ProviderRef,
 		ProviderConfigName: input.ProviderConfigName,
 	})
-	artifact := &platform.BuildArtifact{Metadata: cloneStringMap(result.Metadata)}
-	if err := plugin.Cleanup(ctx, artifact); err != nil {
+	if err := plugin.Cleanup(ctx, &platform.BuildArtifact{Metadata: cloneStringMap(result.Metadata)}); err != nil {
 		return false, "", err
 	}
+	p.cleanupUpload(input.ProviderRef)
 	return true, "deleted", nil
 }
 
 func (p *SDKProvider) HealthCheck(ctx context.Context) (string, error) {
 	p.mu.Lock()
-	plugins := make([]*AWSPlugin, 0, len(p.plugins))
+	plugins := make([]*Plugin, 0, len(p.plugins))
 	for _, plugin := range p.plugins {
 		plugins = append(plugins, plugin)
 	}
@@ -213,7 +218,7 @@ func (p *SDKProvider) CleanupRemoteBuild(ctx context.Context, input sdk.RemoteBu
 	return sdk.RemoteBuildCleanupResult{Cleaned: true, Message: "cleaned"}, nil
 }
 
-func (p *SDKProvider) pluginForConfig(providerConfigName string) (*AWSPlugin, error) {
+func (p *SDKProvider) pluginForConfig(providerConfigName string) (*Plugin, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	plugin := p.plugins[providerConfigName]
@@ -238,12 +243,18 @@ func (p *SDKProvider) uploadResult(input sdk.RegisterInput) *platform.UploadResu
 	metadata := map[string]string{
 		"providerConfigName": input.ProviderConfigName,
 		"providerRef":        input.ProviderRef,
-		"key":                input.ProviderRef,
+		"blobURL":            input.ProviderRef,
 		"format":             input.Format,
 		"imageName":          input.ImageName,
 	}
 	mergeRegisterMetadata(metadata, input)
 	return &platform.UploadResult{ProviderRef: input.ProviderRef, Metadata: metadata}
+}
+
+func (p *SDKProvider) cleanupUpload(providerRef string) {
+	p.mu.Lock()
+	delete(p.uploads, providerRef)
+	p.mu.Unlock()
 }
 
 func mergeRegisterMetadata(metadata map[string]string, input sdk.RegisterInput) {
@@ -257,12 +268,11 @@ func mergeRegisterMetadata(metadata map[string]string, input sdk.RegisterInput) 
 		metadata["format"] = input.Format
 	}
 	for key, value := range input.Tags {
-		metadata[key] = value
+		metadata["tag."+key] = value
 	}
 }
 
 func platformRemoteBuildRequest(input sdk.RemoteBuildInput) *platform.RemoteBuildRequest {
-	timeout := time.Duration(input.TimeoutSeconds) * time.Second
 	req := &platform.RemoteBuildRequest{
 		BuildID:           input.BuildID,
 		OperationRef:      input.OperationRef,
@@ -281,7 +291,7 @@ func platformRemoteBuildRequest(input sdk.RemoteBuildInput) *platform.RemoteBuil
 			Format:            input.Format,
 			Tags:              cloneStringMap(input.Tags),
 		},
-		Timeout: timeout,
+		Timeout: time.Duration(input.TimeoutSeconds) * time.Second,
 	}
 	for _, provisioner := range input.Provisioners {
 		req.Provisioners = append(req.Provisioners, v1alpha1.ProvisionerSpec{
@@ -291,7 +301,7 @@ func platformRemoteBuildRequest(input sdk.RemoteBuildInput) *platform.RemoteBuil
 			Playbook:  provisioner.Playbook,
 			Args:      append([]string(nil), provisioner.Args...),
 			ExtraVars: cloneStringMap(provisioner.ExtraVars),
-			Source:    awsSDKProvisionerSource(provisioner.Source),
+			Source:    azureSDKProvisionerSource(provisioner.Source),
 		})
 	}
 	if input.GuestAccess != nil {
@@ -300,20 +310,11 @@ func platformRemoteBuildRequest(input sdk.RemoteBuildInput) *platform.RemoteBuil
 			User:      input.GuestAccess.User,
 			GuestPort: input.GuestAccess.GuestPort,
 		}
-		if input.GuestAccess.GeneratedSSHKey || input.GuestAccess.GeneratedPassword || input.GuestAccess.InjectionMethod != "" {
-			req.GuestAccess.Credentials = &v1alpha1.GuestCredentialsSpec{
-				Generate: &v1alpha1.GuestGeneratedCredentialsSpec{
-					SSHKey:   input.GuestAccess.GeneratedSSHKey,
-					Password: input.GuestAccess.GeneratedPassword,
-				},
-				Injection: &v1alpha1.GuestCredentialInjectionSpec{Method: input.GuestAccess.InjectionMethod},
-			}
-		}
 	}
 	return req
 }
 
-func awsSDKProvisionerSource(source *sdk.RemoteProvisionerSource) *v1alpha1.ProvisionerSourceSpec {
+func azureSDKProvisionerSource(source *sdk.RemoteProvisionerSource) *v1alpha1.ProvisionerSourceSpec {
 	if source == nil {
 		return nil
 	}
@@ -345,16 +346,6 @@ func sdkRemoteBuildResult(result *platform.RemoteBuildResult) sdk.RemoteBuildRes
 		Message:      result.Message,
 		Done:         result.Done,
 	}
-	if result.Artifact != nil {
-		out.Artifact = &sdk.RemoteArtifact{
-			Path:      result.Artifact.Path,
-			Format:    string(result.Artifact.Format),
-			Checksum:  result.Artifact.Checksum,
-			SizeBytes: result.Artifact.SizeBytes,
-			OSFamily:  string(result.Artifact.OS),
-			Metadata:  cloneStringMap(result.Artifact.Metadata),
-		}
-	}
 	if result.Hygiene != nil {
 		out.Hygiene = &sdk.RemoteHygieneResult{
 			Status:    result.Hygiene.Status,
@@ -374,17 +365,6 @@ func sdkRemoteBuildResult(result *platform.RemoteBuildResult) sdk.RemoteBuildRes
 			Checksum:           image.Checksum,
 			Tags:               cloneStringMap(image.ImageRef.Tags),
 		})
-	}
-	return out
-}
-
-func cloneStringMap(in map[string]string) map[string]string {
-	if in == nil {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	for key, value := range in {
-		out[key] = value
 	}
 	return out
 }

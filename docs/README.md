@@ -39,6 +39,8 @@ All documents are intended to support ISAE audit requirements.
 | [Production Readiness](operations/production-readiness.md) | Release images, policy flags, CI gates, and rollout checklist |
 | [AWS Remote Build](operations/aws-remote-build.md) | AWS remote build configuration, IAM, SSM provisioning, cleanup |
 | [vSphere Provider Operations](operations/vsphere-provider.md) | vSphere OVA/OVF import, Content Library publishing, and validation |
+| [Azure Provider Operations](operations/azure-provider.md) | Azure Managed Image and Compute Gallery publishing |
+| [Azure Provider Runbook](operations/azure-provider-runbook.md) | Azure rollback, quota, throttling, metrics, and troubleshooting |
 | [Troubleshooting](operations/troubleshooting.md) | Common failure modes and diagnostics |
 
 ## Security

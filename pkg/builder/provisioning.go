@@ -13,6 +13,7 @@ import (
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/provisioner"
+	provisionersource "github.com/anwendt/imagebuilder/pkg/provisioner/source"
 )
 
 type ProvisionerRunner interface {
@@ -66,8 +67,12 @@ func (r SequentialProvisionerRunner) Run(ctx context.Context, req ProvisioningRe
 		logger = slog.Default()
 	}
 
-	statuses := make([]ProvisionerStepStatus, 0, len(req.Image.Spec.Provisioners))
-	for step, spec := range req.Image.Spec.Provisioners {
+	provisioners, err := provisionersource.ExpandProvisioners(ctx, req.WorkspaceDir, req.Image.Spec.Provisioners)
+	if err != nil {
+		return err
+	}
+	statuses := make([]ProvisionerStepStatus, 0, len(provisioners))
+	for step, spec := range provisioners {
 		status := ProvisionerStepStatus{Step: step, Type: spec.Type}
 		runReq := &provisioner.RunRequest{
 			WorkspaceDir:            req.WorkspaceDir,

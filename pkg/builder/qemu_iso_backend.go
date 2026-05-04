@@ -11,6 +11,7 @@ import (
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
 	"github.com/anwendt/imagebuilder/pkg/provisioner"
+	provisionersource "github.com/anwendt/imagebuilder/pkg/provisioner/source"
 )
 
 const (
@@ -370,7 +371,11 @@ func (b *QEMUISOBackend) finalizeGuest(ctx context.Context, img *v1alpha1.VMImag
 
 func (b *QEMUISOBackend) runPrebootProvisioners(ctx context.Context, img *v1alpha1.VMImage, workspaceDir string, access GuestAccess) ([]v1alpha1.ProvisionerSpec, error) {
 	var postBoot []v1alpha1.ProvisionerSpec
-	for _, spec := range img.Spec.Provisioners {
+	provisioners, err := provisionersource.ExpandProvisioners(ctx, workspaceDir, img.Spec.Provisioners)
+	if err != nil {
+		return nil, err
+	}
+	for _, spec := range provisioners {
 		if spec.Type != "cloud-init" {
 			postBoot = append(postBoot, spec)
 			continue

@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"time"
 
+	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
 	"github.com/anwendt/imagebuilder/pkg/provider/sdk"
 )
@@ -19,7 +21,11 @@ type SDKProvider struct {
 	uploads map[string]*platform.UploadResult
 }
 
-var _ sdk.Provider = (*SDKProvider)(nil)
+var (
+	_ sdk.Provider                   = (*SDKProvider)(nil)
+	_ sdk.RemoteBuildProvider        = (*SDKProvider)(nil)
+	_ sdk.RemoteBuildCleanupProvider = (*SDKProvider)(nil)
+)
 
 func NewSDKProvider() *SDKProvider {
 	return &SDKProvider{
@@ -189,6 +195,29 @@ func (p *SDKProvider) HealthCheck(ctx context.Context) (string, error) {
 	return "ok", nil
 }
 
+func (p *SDKProvider) ReconcileRemoteBuild(ctx context.Context, input sdk.RemoteBuildInput) (sdk.RemoteBuildResult, error) {
+	plugin, err := p.pluginForConfig(input.ProviderConfigName)
+	if err != nil {
+		return sdk.RemoteBuildResult{}, err
+	}
+	result, err := plugin.ReconcileRemoteBuild(ctx, vspherePlatformRemoteBuildRequest(input))
+	if err != nil {
+		return sdk.RemoteBuildResult{}, err
+	}
+	return vsphereSDKRemoteBuildResult(result), nil
+}
+
+func (p *SDKProvider) CleanupRemoteBuild(ctx context.Context, input sdk.RemoteBuildInput) (sdk.RemoteBuildCleanupResult, error) {
+	plugin, err := p.pluginForConfig(input.ProviderConfigName)
+	if err != nil {
+		return sdk.RemoteBuildCleanupResult{}, err
+	}
+	if err := plugin.CleanupRemoteBuild(ctx, vspherePlatformRemoteBuildRequest(input)); err != nil {
+		return sdk.RemoteBuildCleanupResult{}, err
+	}
+	return sdk.RemoteBuildCleanupResult{Cleaned: true, Message: "cleaned"}, nil
+}
+
 func (p *SDKProvider) pluginForConfig(providerConfigName string) (*Plugin, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -252,4 +281,101 @@ func mergeRegisterMetadata(metadata map[string]string, input sdk.RegisterInput) 
 	for key, value := range input.Tags {
 		metadata[key] = value
 	}
+}
+
+func vspherePlatformRemoteBuildRequest(input sdk.RemoteBuildInput) *platform.RemoteBuildRequest {
+	req := &platform.RemoteBuildRequest{
+		BuildID:           input.BuildID,
+		OperationRef:      input.OperationRef,
+		ImageName:         input.ImageName,
+		Namespace:         input.Namespace,
+		OSFamily:          platform.OSFamily(input.OSFamily),
+		OSDistribution:    input.OSDistribution,
+		OSVersion:         input.OSVersion,
+		OSArch:            input.OSArch,
+		SourceType:        input.SourceType,
+		SourceURL:         input.SourceURL,
+		SourceProviderRef: input.SourceProviderRef,
+		SourceChecksum:    input.SourceChecksum,
+		Target: v1alpha1.TargetSpec{
+			ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: input.ProviderConfigName},
+			Format:            input.Format,
+			Tags:              cloneStringMap(input.Tags),
+		},
+		Timeout: time.Duration(input.TimeoutSeconds) * time.Second,
+	}
+	for _, provisioner := range input.Provisioners {
+		req.Provisioners = append(req.Provisioners, v1alpha1.ProvisionerSpec{
+			Type:      provisioner.Type,
+			Image:     provisioner.Image,
+			Inline:    provisioner.Inline,
+			Playbook:  provisioner.Playbook,
+			Args:      append([]string(nil), provisioner.Args...),
+			ExtraVars: cloneStringMap(provisioner.ExtraVars),
+			Source:    vsphereSDKProvisionerSource(provisioner.Source),
+		})
+	}
+	if input.GuestAccess != nil {
+		req.GuestAccess = &v1alpha1.GuestAccessSpec{
+			Protocol:  input.GuestAccess.Protocol,
+			User:      input.GuestAccess.User,
+			GuestPort: input.GuestAccess.GuestPort,
+		}
+	}
+	return req
+}
+
+func vsphereSDKProvisionerSource(source *sdk.RemoteProvisionerSource) *v1alpha1.ProvisionerSourceSpec {
+	if source == nil {
+		return nil
+	}
+	out := &v1alpha1.ProvisionerSourceSpec{}
+	if source.Git != nil {
+		out.Git = &v1alpha1.GitProvisionerSourceSpec{
+			URL:  source.Git.URL,
+			Ref:  source.Git.Ref,
+			Path: source.Git.Path,
+		}
+		if source.Git.Auth != nil {
+			out.Git.Auth = &v1alpha1.GitProvisionerAuthSpec{
+				RuntimeToken:    source.Git.Auth.Token,
+				RuntimeUsername: source.Git.Auth.Username,
+				RuntimePassword: source.Git.Auth.Password,
+			}
+		}
+	}
+	return out
+}
+
+func vsphereSDKRemoteBuildResult(result *platform.RemoteBuildResult) sdk.RemoteBuildResult {
+	if result == nil {
+		return sdk.RemoteBuildResult{}
+	}
+	out := sdk.RemoteBuildResult{
+		OperationRef: result.OperationRef,
+		Phase:        string(result.Phase),
+		Message:      result.Message,
+		Done:         result.Done,
+	}
+	if result.Hygiene != nil {
+		out.Hygiene = &sdk.RemoteHygieneResult{
+			Status:    result.Hygiene.Status,
+			Message:   result.Hygiene.Message,
+			Checks:    append([]string(nil), result.Hygiene.Checks...),
+			ResultRef: result.Hygiene.ResultRef,
+		}
+	}
+	for _, image := range result.Images {
+		out.Images = append(out.Images, sdk.RemoteImageRef{
+			Provider:           image.Provider,
+			ProviderConfigName: image.ProviderConfig,
+			ImageRef:           image.ImageRef.ID,
+			ImageName:          image.ImageRef.Name,
+			Location:           image.ImageRef.Location,
+			Format:             string(image.Format),
+			Checksum:           image.Checksum,
+			Tags:               cloneStringMap(image.ImageRef.Tags),
+		})
+	}
+	return out
 }

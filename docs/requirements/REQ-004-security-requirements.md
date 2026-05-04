@@ -99,7 +99,20 @@ isolation. These requirements are mandatory for ISAE audit compliance.
 
 ---
 
-## 9. Traceability Matrix
+## 9. Provisioner Source Security
+
+| ID | Requirement | Priority |
+|---|---|---|
+| SR-033 | Git-backed provisioner sources SHALL use `spec.provisioners[].source.git` with explicit `url`, `ref`, and `path`; overloading `inline` with URLs is prohibited. | Must |
+| SR-034 | Production Git-backed provisioner refs SHOULD be immutable commit SHAs. Mutable branch or tag refs are allowed only when explicitly accepted by policy. | Should |
+| SR-035 | Git-backed provisioner paths SHALL be relative repository paths and SHALL NOT escape the checked-out repository. | Must |
+| SR-036 | Git-backed provisioner source expansion SHALL enforce per-file and total content size limits before execution. | Must |
+| SR-037 | Private Git-backed provisioner credentials SHALL be referenced through Kubernetes Secrets. Credentials in Git URLs, inline scripts, provisioner args, logs, VMImage status, or persisted provider config are prohibited. | Must |
+| SR-038 | Git-backed provisioner authentication SHALL support scoped token auth and username/password auth. Local builds SHALL mount credentials read-only; remote builds SHALL forward credentials only as transient in-memory request data. | Must |
+
+---
+
+## 10. Traceability Matrix
 
 | Requirement | Architecture Component | ADR Reference |
 |---|---|---|

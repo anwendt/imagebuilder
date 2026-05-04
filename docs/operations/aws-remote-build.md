@@ -150,6 +150,10 @@ Security defaults:
 | `remote.allowPublicIngress` | `false` | Allows security groups exposing SSH/WinRM to `0.0.0.0/0` or `::/0`. Should remain disabled. |
 
 The provider rejects `remote.keyName` unless `remote.allowSshKey=true`.
+When a remote request explicitly uses `spec.build.guestAccess.protocol: ssh`,
+the provider also requires `remote.keyName` and `remote.allowSshKey=true` so
+the temporary EC2 instance has both a NIC path and an explicit SSH bootstrap
+key. Prefer the default SSM path unless SSH is required.
 The provider also rejects security groups that expose ports `22`, `5985`, or
 `5986` to the public internet unless `remote.allowPublicIngress=true`.
 

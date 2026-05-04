@@ -101,20 +101,20 @@ func TestVMImageWebhook_SnapshotSource_RejectsLocalBuild(t *testing.T) {
 	}
 }
 
-func TestVMImageWebhook_SnapshotSource_RejectsProvisioners(t *testing.T) {
+func TestVMImageWebhook_SnapshotSource_AllowsProviderManagedProvisioners(t *testing.T) {
 	img := &VMImage{
 		Spec: VMImageSpec{
 			OS:           OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
-			Source:       SourceSpec{Type: "snapshot", ProviderRef: "snap-0123456789abcdef0"},
+			Source:       SourceSpec{Type: "snapshot", ProviderRef: "vm-123"},
 			Build:        BuildSpec{Mode: BuildModeRemote},
-			Provisioners: []ProvisionerSpec{{Type: "shell", Inline: "echo no"}},
+			Provisioners: []ProvisionerSpec{{Type: "shell", Inline: "echo ok"}},
 			Targets: []TargetSpec{
-				{ProviderConfigRef: ProviderConfigRef{Name: "aws-cfg"}, Format: "ami"},
+				{ProviderConfigRef: ProviderConfigRef{Name: "vsphere-cfg"}, Format: "ova"},
 			},
 		},
 	}
-	if _, err := img.ValidateCreate(); err == nil {
-		t.Fatal("snapshot source should reject provisioners")
+	if _, err := img.ValidateCreate(); err != nil {
+		t.Fatalf("snapshot source with provider-managed provisioners should be admitted: %v", err)
 	}
 }
 
@@ -841,5 +841,138 @@ func TestValidateNoSSRF_LoopbackIP_Rejected(t *testing.T) {
 func TestValidateNoSSRF_LinkLocalIP_Rejected(t *testing.T) {
 	if err := validateNoSSRF("field", "https://169.254.169.254/latest/meta-data/"); err == nil {
 		t.Error("link-local (metadata) IP should be rejected")
+	}
+}
+
+func TestVMImageWebhook_ProvisionerGitSource_Valid(t *testing.T) {
+	img := &VMImage{
+		Spec: VMImageSpec{
+			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
+			Source: SourceSpec{Type: "cloud-image", URL: "https://example.com/ubuntu.qcow2", Checksum: "sha256:abc"},
+			Provisioners: []ProvisionerSpec{{
+				Type: "shell",
+				Source: &ProvisionerSourceSpec{Git: &GitProvisionerSourceSpec{
+					URL:  "https://example.com/hardening.git",
+					Ref:  "7f6e5d4c3b2a190817263544536271809abcdef0",
+					Path: "scripts",
+				}},
+			}},
+			Targets: []TargetSpec{{ProviderConfigRef: ProviderConfigRef{Name: "cfg"}, Format: "vmdk"}},
+		},
+	}
+	if _, err := img.ValidateCreate(); err != nil {
+		t.Fatalf("provisioner git source should be valid: %v", err)
+	}
+}
+
+func TestVMImageWebhook_ProvisionerGitSourceAuthSecret_Valid(t *testing.T) {
+	img := &VMImage{
+		Spec: VMImageSpec{
+			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
+			Source: SourceSpec{Type: "cloud-image", URL: "https://example.com/ubuntu.qcow2", Checksum: "sha256:abc"},
+			Provisioners: []ProvisionerSpec{{
+				Type: "shell",
+				Source: &ProvisionerSourceSpec{Git: &GitProvisionerSourceSpec{
+					URL:  "https://example.com/private.git",
+					Ref:  "7f6e5d4c3b2a190817263544536271809abcdef0",
+					Path: "scripts",
+					Auth: &GitProvisionerAuthSpec{SecretRef: &GitProvisionerAuthSecretRef{
+						Name:     "private-git",
+						TokenKey: "pat",
+					}},
+				}},
+			}},
+			Targets: []TargetSpec{{ProviderConfigRef: ProviderConfigRef{Name: "cfg"}, Format: "vmdk"}},
+		},
+	}
+	if _, err := img.ValidateCreate(); err != nil {
+		t.Fatalf("provisioner git source auth secret should be valid: %v", err)
+	}
+}
+
+func TestVMImageWebhook_ProvisionerGitSourceAuthSecret_RejectsEmptyName(t *testing.T) {
+	img := &VMImage{
+		Spec: VMImageSpec{
+			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
+			Source: SourceSpec{Type: "cloud-image", URL: "https://example.com/ubuntu.qcow2", Checksum: "sha256:abc"},
+			Provisioners: []ProvisionerSpec{{
+				Type: "shell",
+				Source: &ProvisionerSourceSpec{Git: &GitProvisionerSourceSpec{
+					URL:  "https://example.com/private.git",
+					Ref:  "main",
+					Path: "scripts",
+					Auth: &GitProvisionerAuthSpec{SecretRef: &GitProvisionerAuthSecretRef{}},
+				}},
+			}},
+			Targets: []TargetSpec{{ProviderConfigRef: ProviderConfigRef{Name: "cfg"}, Format: "vmdk"}},
+		},
+	}
+	if _, err := img.ValidateCreate(); err == nil {
+		t.Fatal("provisioner git source auth secret without name should be rejected")
+	}
+}
+
+func TestVMImageWebhook_ProvisionerGitSourceAuth_RejectsUserManagedRuntimePaths(t *testing.T) {
+	img := &VMImage{
+		Spec: VMImageSpec{
+			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
+			Source: SourceSpec{Type: "cloud-image", URL: "https://example.com/ubuntu.qcow2", Checksum: "sha256:abc"},
+			Provisioners: []ProvisionerSpec{{
+				Type: "shell",
+				Source: &ProvisionerSourceSpec{Git: &GitProvisionerSourceSpec{
+					URL:  "https://example.com/private.git",
+					Ref:  "main",
+					Path: "scripts",
+					Auth: &GitProvisionerAuthSpec{TokenPath: "/var/run/secrets/token"},
+				}},
+			}},
+			Targets: []TargetSpec{{ProviderConfigRef: ProviderConfigRef{Name: "cfg"}, Format: "vmdk"}},
+		},
+	}
+	if _, err := img.ValidateCreate(); err == nil {
+		t.Fatal("user-managed git auth runtime paths should be rejected")
+	}
+}
+
+func TestVMImageWebhook_ProvisionerGitSource_RejectsCredentialsInURL(t *testing.T) {
+	img := &VMImage{
+		Spec: VMImageSpec{
+			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
+			Source: SourceSpec{Type: "cloud-image", URL: "https://example.com/ubuntu.qcow2", Checksum: "sha256:abc"},
+			Provisioners: []ProvisionerSpec{{
+				Type: "shell",
+				Source: &ProvisionerSourceSpec{Git: &GitProvisionerSourceSpec{
+					URL:  "https://token@example.com/private.git",
+					Ref:  "main",
+					Path: "scripts",
+				}},
+			}},
+			Targets: []TargetSpec{{ProviderConfigRef: ProviderConfigRef{Name: "cfg"}, Format: "vmdk"}},
+		},
+	}
+	if _, err := img.ValidateCreate(); err == nil {
+		t.Fatal("git source credentials embedded in URL should be rejected")
+	}
+}
+
+func TestVMImageWebhook_ProvisionerGitSource_RejectsInline(t *testing.T) {
+	img := &VMImage{
+		Spec: VMImageSpec{
+			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
+			Source: SourceSpec{Type: "cloud-image", URL: "https://example.com/ubuntu.qcow2", Checksum: "sha256:abc"},
+			Provisioners: []ProvisionerSpec{{
+				Type:   "shell",
+				Inline: "echo inline",
+				Source: &ProvisionerSourceSpec{Git: &GitProvisionerSourceSpec{
+					URL:  "https://example.com/hardening.git",
+					Ref:  "main",
+					Path: "scripts",
+				}},
+			}},
+			Targets: []TargetSpec{{ProviderConfigRef: ProviderConfigRef{Name: "cfg"}, Format: "vmdk"}},
+		},
+	}
+	if _, err := img.ValidateCreate(); err == nil {
+		t.Fatal("provisioner git source with inline should be rejected")
 	}
 }

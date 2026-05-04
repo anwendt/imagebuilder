@@ -128,6 +128,24 @@ message RemoteProvisioner {
   string playbook = 4;
   repeated string args = 5;
   map<string, string> extra_vars = 6;
+  RemoteProvisionerSource source = 7;
+}
+
+message RemoteProvisionerSource {
+  RemoteGitProvisionerSource git = 1;
+}
+
+message RemoteGitProvisionerSource {
+  string url = 1;
+  string ref = 2;
+  string path = 3;
+  RemoteGitProvisionerAuth auth = 4;
+}
+
+message RemoteGitProvisionerAuth {
+  string token = 1;
+  string username = 2;
+  string password = 3;
 }
 
 message RemoteGuestAccess {

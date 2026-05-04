@@ -1,0 +1,114 @@
+# Example: Build a hardened Ubuntu 24.04 image and publish it as an Azure Managed Image.
+# Replace checksum, credentials, and provider digest values before applying.
+
+---
+apiVersion: imagebuilder.io/v1alpha1
+kind: VMImage
+metadata:
+  name: ubuntu-24-04-azure
+spec:
+  os:
+    family: linux
+    distribution: ubuntu
+    version: "24.04"
+    arch: amd64
+  source:
+    type: cloud-image
+    url: https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+    checksum: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  provisioners:
+    - type: cloud-init
+      inline: |
+        #cloud-config
+        package_update: true
+        packages:
+          - unattended-upgrades
+        runcmd:
+          - systemctl enable unattended-upgrades
+  targets:
+    - providerConfigRef:
+        name: azure-westeurope
+      format: vhd
+      tags:
+        team: platform
+        environment: production
+  build:
+    timeout: 2h
+
+---
+apiVersion: imagebuilder.io/v1alpha1
+kind: ProviderConfig
+metadata:
+  name: azure-westeurope
+spec:
+  provider: azure
+  credentials:
+    secretRef:
+      name: azure-credentials
+      key: credentials
+  region: westeurope
+  extra:
+    authMode: clientSecret
+    resourceGroup: rg-imagebuilder-prod
+    storageAccount: imagebuilderprod
+    storageContainer: vhds
+    blobPrefix: imagebuilder
+    pageUploadConcurrency: "4"
+    pageUploadChunkMiB: "4"
+    hyperVGeneration: V2
+    osState: generalized
+    storageAccountType: Standard_LRS
+    # Required only for remote builds with provisioners.
+    # remote.vmSize: Standard_B2s
+    # remote.networkInterfaceId: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-imagebuilder-prod/providers/Microsoft.Network/networkInterfaces/imagebuilder-build-nic
+    # Optional Compute Gallery publishing. The gallery image definition must exist.
+    # galleryName: imagebuilder
+    # galleryImageName: ubuntu-24-04
+    # galleryVersion: 1.0.0
+    # galleryTargetRegions: westeurope,northeurope
+
+---
+apiVersion: imagebuilder.io/v1alpha1
+kind: VMImage
+metadata:
+  name: ubuntu-azure-snapshot
+spec:
+  os:
+    family: linux
+    distribution: ubuntu
+    version: "24.04"
+    arch: amd64
+  source:
+    type: snapshot
+    providerRef: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-imagebuilder-prod/providers/Microsoft.Compute/snapshots/source-snapshot
+  provisioners:
+    - type: shell
+      inline: |
+        set -eux
+        sudo apt-get update
+        sudo apt-get install -y unattended-upgrades
+    - type: file
+      args: ["/etc/imagebuilder-release"]
+      inline: |
+        built-by=imagebuilder
+  targets:
+    - providerConfigRef:
+        name: azure-westeurope
+      format: vhd
+  build:
+    mode: remote
+    timeout: 1h
+
+---
+apiVersion: imagebuilder.io/v1alpha1
+kind: PlatformProvider
+metadata:
+  name: azure
+spec:
+  package: ghcr.io/anwendt/imagebuilder-provider-azure@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+  packagePullPolicy: IfNotPresent
+  security:
+    allowedRegistries:
+      - ghcr.io/anwendt
+    requireDigest: true
+    verifySignature: true

@@ -41,6 +41,12 @@ func TestValidatePublicHTTPSURL(t *testing.T) {
 			wantErrSubstr: "raw IP",
 		},
 		{
+			name:          "rejects embedded credentials",
+			rawURL:        "https://token@example.test/source.img",
+			wantErr:       true,
+			wantErrSubstr: "must not embed credentials",
+		},
+		{
 			name:          "rejects DNS names resolving to private ranges",
 			rawURL:        "https://metadata.example.test/source.img",
 			opts:          netguard.Options{Resolver: fakeResolver{"metadata.example.test": {"169.254.169.254"}}},
