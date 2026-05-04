@@ -14,7 +14,7 @@
 # ---------------------------------------------------------------------------
 # Stage 1 — Builder
 # ---------------------------------------------------------------------------
-FROM golang:1.22-alpine AS builder
+FROM golang:1.26.2-alpine AS builder
 
 # Install ca-certificates so TLS works when fetching modules.
 RUN apk add --no-cache ca-certificates git

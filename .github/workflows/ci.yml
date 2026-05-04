@@ -136,6 +136,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+      actions: read
       security-events: write
     steps:
       - uses: actions/checkout@v4
@@ -149,11 +150,17 @@ jobs:
           cache: true
 
       - name: Run gosec SARIF
-        run: go run github.com/securego/gosec/v2/cmd/gosec@v2.22.10 -fmt sarif -out gosec.sarif -severity high ./...
+        run: |
+          go run github.com/securego/gosec/v2/cmd/gosec@v2.22.10 \
+            -exclude-generated \
+            -fmt sarif \
+            -out gosec.sarif \
+            -severity high \
+            $(go list -f '{{.Dir}}' ./... | grep -v '/templates/')
 
       - name: Upload gosec SARIF
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        if: always() && hashFiles('gosec.sarif') != ''
         with:
           sarif_file: gosec.sarif
 
@@ -250,6 +257,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      actions: read
       security-events: write
     steps:
       - uses: actions/checkout@v4
@@ -279,8 +287,8 @@ jobs:
           exit-code: "0"
 
       - name: Upload Trivy SARIF
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        if: always() && hashFiles('trivy-results.sarif') != ''
         with:
           sarif_file: trivy-results.sarif
 
@@ -305,8 +313,8 @@ jobs:
           exit-code: "0"
 
       - name: Upload AWS provider Trivy SARIF
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        if: always() && hashFiles('trivy-aws-provider-results.sarif') != ''
         with:
           sarif_file: trivy-aws-provider-results.sarif
 

@@ -1,0 +1,6 @@
+.cache/
+.git/
+bin/
+gosec.sarif
+*.sarif
+*.dockerbuild

@@ -3,7 +3,7 @@
 # The builder runs as a Kubernetes Job main container and writes only to the
 # mounted /workspace volume. It does not need Kubernetes API credentials.
 
-FROM golang:1.22-alpine AS builder
+FROM golang:1.26.2-alpine AS builder
 
 RUN apk add --no-cache ca-certificates
 

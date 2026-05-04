@@ -141,28 +141,28 @@ vet: ## Run go vet (OSSF-Q-04, CERT-CON-04)
 	$(GO) vet ./...
 
 gosec: ## Run gosec SAST scanner (AS-060, CERT-MSC-04, REQ-010)
-	@which gosec > /dev/null 2>&1 || $(GO) install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
-	gosec -exclude-generated $$($(GO) list -f '{{.Dir}}' ./... | grep -v '/templates/')
+	GOBIN=$(LOCALBIN) $(GO) install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
+	$(LOCALBIN)/gosec -exclude-generated $$($(GO) list -f '{{.Dir}}' ./... | grep -v '/templates/')
 
 govulncheck: ## Scan for known CVEs in Go module graph (AS-033, OSSF-S-06)
-	@which govulncheck > /dev/null 2>&1 || $(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
-	govulncheck ./...
+	GOBIN=$(LOCALBIN) $(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+	$(LOCALBIN)/govulncheck ./...
 
 staticcheck: ## Run staticcheck static analyser (CERT-ERR-01, SAMM-I-SB-03)
-	@which staticcheck > /dev/null 2>&1 || $(GO) install honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION)
-	staticcheck ./...
+	GOBIN=$(LOCALBIN) $(GO) install honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION)
+	$(LOCALBIN)/staticcheck ./...
 
 security-check: vet gosec staticcheck govulncheck license-check ## Run all security gates (REQ-008, REQ-010)
 
 ## Compliance
 
 license-check: ## Check all dependencies are Apache 2.0 / MIT compatible
-	@which go-licenses > /dev/null 2>&1 || $(GO) install github.com/google/go-licenses@$(GO_LICENSES_VERSION)
-	go-licenses check ./...
+	GOBIN=$(LOCALBIN) $(GO) install github.com/google/go-licenses@$(GO_LICENSES_VERSION)
+	$(LOCALBIN)/go-licenses check ./...
 
 license-report: ## Generate NOTICE file
-	@which go-licenses > /dev/null 2>&1 || $(GO) install github.com/google/go-licenses@$(GO_LICENSES_VERSION)
-	go-licenses report ./... > NOTICE
+	GOBIN=$(LOCALBIN) $(GO) install github.com/google/go-licenses@$(GO_LICENSES_VERSION)
+	$(LOCALBIN)/go-licenses report ./... > NOTICE
 	@echo "NOTICE file updated"
 
 ## Installation
