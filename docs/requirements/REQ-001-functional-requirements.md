@@ -1,9 +1,9 @@
 ---
 document-id: REQ-001
 title: Functional Requirements
-version: 1.0.0
+version: 1.1.0
 status: Draft
-date: 2026-04-18
+date: 2026-05-04
 author: Platform Engineering
 classification: Internal
 ---
@@ -31,7 +31,7 @@ building of virtual machine (VM) images for multiple cloud and on-premises platf
 | FR-002 | The system SHALL validate VMImage specifications against a defined schema before initiating a build. | Must |
 | FR-003 | The system SHALL build VM images from ISO or pre-built cloud images as source. | Must |
 | FR-004 | The system SHALL support marketplace images as source (cloud-provider-provided base images). | Should |
-| FR-005 | The system SHALL verify the integrity of source images via checksum (SHA-256) before use. | Must |
+| FR-005 | The system SHALL verify the integrity of downloadable source images via checksum (SHA-256) before use. Provider-native source identifiers are validated by the selected provider instead of by checksum. | Must |
 | FR-006 | The system SHALL execute provisioners sequentially in the order defined in the VMImage spec. | Must |
 | FR-007 | The system SHALL report build phase transitions via Kubernetes status conditions. | Must |
 | FR-008 | The system SHALL record start time and completion time of each build in the VMImage status. | Must |
@@ -128,7 +128,23 @@ instead of by the local QEMU build backend in the build pod.
 
 ---
 
-## 10. Traceability Matrix
+## 10. Provider-Native Source Requirements
+
+Provider-native sources are platform identifiers that do not represent
+downloadable artifacts, for example an AWS AMI ID or EBS snapshot ID. They are
+passed through `spec.source.providerRef` and handled by the selected provider.
+
+| ID | Requirement | Priority |
+|---|---|---|
+| FR-053 | The system SHALL support provider-native snapshot sources for remote builds through `spec.source.type: snapshot` and `spec.source.providerRef`. | Must |
+| FR-054 | The core admission layer SHALL reject snapshot sources unless the build mode is `remote`, `providerRef` is set, `url` is empty, and no provisioners are configured. | Must |
+| FR-055 | The AWS provider SHALL support registering an AMI directly from an existing completed EBS snapshot. | Must |
+| FR-056 | Snapshot-source registration SHALL be treated as a direct provider registration operation without temporary guest boot, guest readiness, or provisioner execution. | Must |
+| FR-057 | Provider implementations SHALL preserve user-owned provider-native source artifacts during failure cleanup unless the provider itself created the artifact for the build. | Must |
+
+---
+
+## 11. Traceability Matrix
 
 | Requirement | Architecture Component | ADR Reference |
 |---|---|---|
@@ -139,3 +155,4 @@ instead of by the local QEMU build backend in the build pod.
 | FR-033 – FR-037 | PlatformProvider / ProviderConfig CRDs | ADR-002, ADR-005 |
 | FR-038 – FR-047 | Remote Build Contract and Provider Orchestration | ADR-002, ADR-005, ADR-007 |
 | FR-048 – FR-052 | Source Cache and Build Engine | ADR-001, ADR-004 |
+| FR-053 – FR-057 | VMImage admission, Remote Build Contract, AWS Provider | ADR-002, ADR-007 |

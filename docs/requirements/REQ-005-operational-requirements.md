@@ -1,9 +1,9 @@
 ---
 document-id: REQ-005
 title: Operational Requirements
-version: 1.0.0
+version: 1.1.0
 status: Draft
-date: 2026-04-18
+date: 2026-05-04
 author: Platform Engineering
 classification: Internal
 ---
@@ -66,6 +66,7 @@ and supports ISAE audit traceability.
 | OR-015 | VMImage CRD instances (desired state) SHALL be recoverable via standard Kubernetes etcd backup/restore. | Must |
 | OR-016 | A failed build SHALL leave the VMImage in `Failed` phase with a human-readable reason in `.status.conditions`. The resource SHALL be retryable by updating `.spec` or by deleting and re-creating it. | Must |
 | OR-017 | Provider configuration (ProviderConfig) SHALL be recoverable from Kubernetes etcd backup. Credentials (Secrets) SHALL be recoverable from the Secret backup or external secret store. | Must |
+| OR-026 | Direct provider-native source operations, such as AWS AMI registration from an EBS snapshot, SHALL document which source artifacts are user-owned and therefore excluded from automated cleanup. | Must |
 
 ---
 
@@ -98,6 +99,6 @@ and supports ISAE audit traceability.
 | OR-001 – OR-006 | CRD/RBAC manifests, Deployment | ADR-002 |
 | OR-007 – OR-010 | Operator main.go, metrics endpoint | — |
 | OR-011 – OR-014 | Structured logging (`log/slog`) | — |
-| OR-015 – OR-017 | Kubernetes etcd, VMImage status | ADR-003 |
+| OR-015 – OR-017, OR-026 | Kubernetes etcd, VMImage status, provider cleanup documentation | ADR-003, ADR-007 |
 | OR-018 – OR-021 | Release process, proto versioning | ADR-005 |
 | OR-022 – OR-025 | Build job spec, resource config | ADR-003 |

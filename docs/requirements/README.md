@@ -1,7 +1,7 @@
 ---
 title: Requirements Index
-version: 1.0.0
-date: 2026-04-18
+version: 1.1.0
+date: 2026-05-04
 classification: Internal
 ---
 

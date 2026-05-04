@@ -1,9 +1,9 @@
 ---
 document-id: REQ-004
 title: Security Requirements
-version: 1.0.0
+version: 1.1.0
 status: Draft
-date: 2026-04-18
+date: 2026-05-04
 author: Platform Engineering
 classification: Internal
 ---
@@ -88,7 +88,18 @@ isolation. These requirements are mandatory for ISAE audit compliance.
 
 ---
 
-## 8. Traceability Matrix
+## 8. Provider-Native Source Security
+
+| ID | Requirement | Priority |
+|---|---|---|
+| SR-029 | Provider-native source references SHALL be passed via `spec.source.providerRef`, not via downloadable `url` fields, to avoid bypassing URL validation and SSRF controls. | Must |
+| SR-030 | Providers SHALL validate provider-native source references immediately before use, including existence, ownership/accessibility, and provider-specific ready state. | Must |
+| SR-031 | Providers SHALL NOT delete or mutate user-owned provider-native source artifacts during failure cleanup unless the provider created the artifact as part of the same build operation. | Must |
+| SR-032 | Direct provider-native image registration paths SHALL produce provider-attested hygiene results before the VMImage is marked Ready. | Must |
+
+---
+
+## 9. Traceability Matrix
 
 | Requirement | Architecture Component | ADR Reference |
 |---|---|---|
@@ -98,3 +109,4 @@ isolation. These requirements are mandatory for ISAE audit compliance.
 | SR-016 – SR-020 | PlatformProvider loader, go.sum, CI | ADR-002, ADR-005 |
 | SR-021 – SR-024 | Provider gRPC transport, NetworkPolicy | ADR-002 |
 | SR-025 – SR-028 | Operator logging, Kubernetes audit | — |
+| SR-029 – SR-032 | VMImage admission, provider validation, provider cleanup | ADR-002, ADR-007 |
