@@ -64,6 +64,7 @@ jobs:
           make build-provider-aws
           make build-provider-vsphere
           make build-provider-azure
+          make build-provider-openstack
 
   vsphere-simulator:
     name: vSphere Provider Simulator
@@ -357,6 +358,26 @@ jobs:
           ignore-unfixed: true
           exit-code: "1"
 
+      - name: Build OpenStack provider image
+        uses: docker/build-push-action@v7.1.0
+        with:
+          context: .
+          file: Dockerfile.provider-openstack
+          push: false
+          tags: ghcr.io/${{ github.repository_owner }}/imagebuilder-provider-openstack:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy vulnerability scanner for OpenStack provider
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/imagebuilder-provider-openstack:ci
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
   image-scan-sarif:
     name: Upload Container Image SARIF
     runs-on: ubuntu-latest
@@ -535,6 +556,33 @@ jobs:
         continue-on-error: true
         with:
           sarif_file: trivy-azure-provider-results.sarif
+
+      - name: Build OpenStack provider image
+        uses: docker/build-push-action@v7.1.0
+        with:
+          context: .
+          file: Dockerfile.provider-openstack
+          push: false
+          tags: ghcr.io/${{ github.repository_owner }}/imagebuilder-provider-openstack:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy vulnerability scanner for OpenStack provider
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/imagebuilder-provider-openstack:ci
+          format: sarif
+          output: trivy-openstack-provider-results.sarif
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+
+      - name: Upload OpenStack provider Trivy SARIF
+        uses: github/codeql-action/upload-sarif@v4
+        if: always() && hashFiles('trivy-openstack-provider-results.sarif') != ''
+        continue-on-error: true
+        with:
+          sarif_file: trivy-openstack-provider-results.sarif
 
   required:
     name: Required CI Gate

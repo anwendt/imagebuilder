@@ -114,8 +114,9 @@ instead of by the local QEMU build backend in the build pod.
 | FR-043 | The system SHALL support cancellation and cleanup for remote builds through provider-owned cleanup operations. | Must |
 | FR-044 | The system SHALL apply the same credential handling rules to remote builds as local builds, including no secrets in logs, ephemeral credentials where possible, and status output without secret material. | Must |
 | FR-045 | The system SHALL apply final image hygiene checks or provider-attested hygiene results before a remotely built image is marked Ready. | Must |
-| FR-046 | The system SHOULD support remote build implementations for AWS, Azure, and vSphere because they remove the local KVM requirement for the most common target platforms. | Should |
-| FR-047 | The system MAY support remote build implementations for GCP and OpenStack after the core contract and first provider implementations are stable. | May |
+| FR-046 | The system SHOULD support remote build implementations for AWS, Azure, vSphere, and OpenStack because they remove the local KVM requirement for common target platforms. | Should |
+| FR-047 | The system MAY support remote build implementations for GCP after the core contract and first provider implementations are stable. | May |
+| FR-060 | The OpenStack provider SHALL support local Glance image upload/register and remote builds from existing Glance image UUIDs through temporary Nova servers and server snapshots. | Must |
 
 ---
 

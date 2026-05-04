@@ -41,6 +41,7 @@ All documents are intended to support ISAE audit requirements.
 | [vSphere Provider Operations](operations/vsphere-provider.md) | vSphere OVA/OVF import, Content Library publishing, and validation |
 | [Azure Provider Operations](operations/azure-provider.md) | Azure Managed Image and Compute Gallery publishing |
 | [Azure Provider Runbook](operations/azure-provider-runbook.md) | Azure rollback, quota, throttling, metrics, and troubleshooting |
+| [OpenStack Provider Operations](operations/openstack-provider.md) | Glance upload and Nova-backed remote builds |
 | [Troubleshooting](operations/troubleshooting.md) | Common failure modes and diagnostics |
 
 ## Security

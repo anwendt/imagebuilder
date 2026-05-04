@@ -1,0 +1,49 @@
+name: Windows Cloudbase-Init E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_labels:
+        description: JSON array of runner labels with QEMU and Windows media, for example ["self-hosted","windows-imagebuilder"]
+        required: false
+        default: '["self-hosted","windows-imagebuilder"]'
+      iso_path:
+        description: Absolute path to the Windows installer ISO on the runner
+        required: true
+      cloudbase_init_msi:
+        description: Guest-visible Cloudbase-Init MSI path, for example E:\CloudbaseInitSetup.msi
+        required: false
+      virtio_driver_path:
+        description: Guest-visible VirtIO driver path, for example E:\viostor\2k22\amd64
+        required: false
+      timeout:
+        description: Go duration for the build context
+        required: false
+        default: 3h
+
+permissions:
+  contents: read
+
+jobs:
+  windows-cloudbase-e2e:
+    name: Windows Cloudbase-Init/Sysprep E2E
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    timeout-minutes: 250
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@v6.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run Windows Cloudbase-Init/Sysprep E2E
+        env:
+          IMAGEBUILDER_WINDOWS_E2E: "1"
+          IMAGEBUILDER_WINDOWS_E2E_ISO_PATH: ${{ inputs.iso_path }}
+          IMAGEBUILDER_WINDOWS_E2E_CLOUDBASE_INIT_MSI: ${{ inputs.cloudbase_init_msi }}
+          IMAGEBUILDER_WINDOWS_E2E_VIRTIO_DRIVER_PATH: ${{ inputs.virtio_driver_path }}
+          IMAGEBUILDER_WINDOWS_E2E_TIMEOUT: ${{ inputs.timeout }}
+        run: go test ./pkg/builder -run TestQEMUISOBackend_WindowsCloudbaseInitSysprep_E2E -count=1 -v -timeout=4h

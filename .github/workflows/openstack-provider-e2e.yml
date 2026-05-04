@@ -1,0 +1,88 @@
+name: OpenStack Provider E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      auth_url:
+        description: Keystone auth URL
+        required: true
+      region:
+        description: OpenStack region
+        required: true
+      source_image_id:
+        description: Existing Glance image UUID used as the remote build source
+        required: true
+      flavor_ref:
+        description: Nova flavor ID or name
+        required: true
+      network_id:
+        description: Optional Neutron network UUID
+        required: false
+      network_name:
+        description: Optional network name used to select the SSH address
+        required: false
+      security_groups:
+        description: Optional comma-separated security group names
+        required: false
+      key_name:
+        description: Nova keypair name for SSH provisioning
+        required: false
+      ssh_user:
+        description: SSH user in the source image
+        required: false
+        default: ubuntu
+      source_type:
+        description: Source type passed to the provider
+        required: false
+        default: cloud-image
+      os_family:
+        description: OS family, linux or windows
+        required: false
+        default: linux
+      disable_provisioner:
+        description: Set true to run capture without SSH provisioning
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+
+jobs:
+  openstack-provider-e2e:
+    name: OpenStack Remote Build E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@v6.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run OpenStack provider E2E
+        env:
+          OPENSTACK_E2E: "1"
+          OPENSTACK_E2E_AUTH_URL: ${{ inputs.auth_url }}
+          OPENSTACK_E2E_REGION: ${{ inputs.region }}
+          OPENSTACK_E2E_SOURCE_IMAGE_ID: ${{ inputs.source_image_id }}
+          OPENSTACK_E2E_FLAVOR_REF: ${{ inputs.flavor_ref }}
+          OPENSTACK_E2E_NETWORK_ID: ${{ inputs.network_id }}
+          OPENSTACK_E2E_NETWORK_NAME: ${{ inputs.network_name }}
+          OPENSTACK_E2E_SECURITY_GROUPS: ${{ inputs.security_groups }}
+          OPENSTACK_E2E_KEY_NAME: ${{ inputs.key_name }}
+          OPENSTACK_E2E_SSH_USER: ${{ inputs.ssh_user }}
+          OPENSTACK_E2E_SOURCE_TYPE: ${{ inputs.source_type }}
+          OPENSTACK_E2E_OS_FAMILY: ${{ inputs.os_family }}
+          OPENSTACK_E2E_DISABLE_PROVISIONER: ${{ inputs.disable_provisioner }}
+          OPENSTACK_E2E_USERNAME: ${{ secrets.OPENSTACK_E2E_USERNAME }}
+          OPENSTACK_E2E_PASSWORD: ${{ secrets.OPENSTACK_E2E_PASSWORD }}
+          OPENSTACK_E2E_TOKEN: ${{ secrets.OPENSTACK_E2E_TOKEN }}
+          OPENSTACK_E2E_PROJECT_ID: ${{ secrets.OPENSTACK_E2E_PROJECT_ID }}
+          OPENSTACK_E2E_PROJECT_NAME: ${{ secrets.OPENSTACK_E2E_PROJECT_NAME }}
+          OPENSTACK_E2E_DOMAIN_ID: ${{ secrets.OPENSTACK_E2E_DOMAIN_ID }}
+          OPENSTACK_E2E_DOMAIN_NAME: ${{ secrets.OPENSTACK_E2E_DOMAIN_NAME }}
+          OPENSTACK_E2E_REMOTE_PRIVATE_KEY: ${{ secrets.OPENSTACK_E2E_REMOTE_PRIVATE_KEY }}
+        run: go test ./plugins/openstack -run TestOpenStackRemoteBuild_E2E -count=1 -v -timeout=60m

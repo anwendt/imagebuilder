@@ -462,5 +462,5 @@ go-licenses report ./... > NOTICE
 - [x] Tenant-aware NetworkPolicies for build/upload Jobs
 - [x] Namespace ResourceQuota and LimitRange guardrails in the production Helm chart
 - [ ] Multi-arch support (arm64)
-- [ ] Windows: finalize cloudbase-init integration
+- [x] Windows: Cloudbase-Init/Sysprep live E2E gate
 - [ ] Set up provider SDK repository

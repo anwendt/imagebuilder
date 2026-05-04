@@ -15,6 +15,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.68.6
 	github.com/aws/aws-sdk-go-v2/service/sts v1.42.1
 	github.com/go-git/go-git/v5 v5.17.1
+	github.com/gophercloud/gophercloud/v2 v2.12.0
 	github.com/prometheus/client_golang v1.16.0
 	github.com/vmware/govmomi v0.53.1
 	golang.org/x/sync v0.20.0

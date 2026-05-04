@@ -56,7 +56,7 @@ The following table lists all approved direct dependencies with their license st
 | google.golang.org/grpc | v1.64.x | Apache 2.0 | gRPC provider communication | Approved |
 | google.golang.org/protobuf | v1.34.x | BSD-3-Clause | Protobuf serialization | Approved |
 | github.com/vmware/govmomi | — | Apache 2.0 | vSphere/VCF SDK | Approved |
-| github.com/gophercloud/gophercloud | — | Apache 2.0 | OpenStack SDK | Approved |
+| github.com/gophercloud/gophercloud/v2 | — | Apache 2.0 | OpenStack SDK | Approved |
 | github.com/aws/aws-sdk-go-v2 | — | Apache 2.0 | AWS SDK | Approved |
 | github.com/Azure/azure-sdk-for-go | — | MIT | Azure SDK | Approved |
 | cloud.google.com/go | — | Apache 2.0 | GCP SDK | Approved |

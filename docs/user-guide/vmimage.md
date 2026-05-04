@@ -110,6 +110,21 @@ When `cloudbaseInitMsi` is set, the builder writes
 `cloudbase-init` service, and keeps WinRM bootstrap separate from final image
 hygiene checks.
 
+The live Windows ISO E2E gate exercises Cloudbase-Init installation, WinRM
+readiness, a PowerShell provisioner, generated credential cleanup, Sysprep, and
+artifact conversion:
+
+```bash
+IMAGEBUILDER_WINDOWS_E2E=1 \
+IMAGEBUILDER_WINDOWS_E2E_ISO_PATH=/srv/images/windows-server-2022.iso \
+IMAGEBUILDER_WINDOWS_E2E_CLOUDBASE_INIT_MSI='E:\CloudbaseInitSetup.msi' \
+IMAGEBUILDER_WINDOWS_E2E_VIRTIO_DRIVER_PATH='E:\viostor\2k22\amd64' \
+make test-e2e-windows-cloudbase
+```
+
+The MSI and driver paths are guest-visible paths. The runner must attach or
+provide media that makes those paths available to Windows Setup.
+
 ## Guest Access
 
 Guest access is required when provisioning needs to connect into a booted VM.

@@ -27,6 +27,10 @@ AWS_PROVIDER_DIGEST=sha256:<digest> make update-aws-provider-samples REGISTRY=gh
 make docker-push-provider-vsphere REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.1.0
 VSPHERE_PROVIDER_DIGEST=sha256:<digest> make sign-provider-vsphere REGISTRY=ghcr.io/anwendt
 VSPHERE_PROVIDER_DIGEST=sha256:<digest> make update-vsphere-provider-samples REGISTRY=ghcr.io/anwendt
+
+make docker-push-provider-openstack REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.1.0
+OPENSTACK_PROVIDER_DIGEST=sha256:<digest> make sign-provider-openstack REGISTRY=ghcr.io/anwendt
+OPENSTACK_PROVIDER_DIGEST=sha256:<digest> make update-openstack-provider-samples REGISTRY=ghcr.io/anwendt
 ```
 
 The release workflows publish multi-arch images, generate provenance and SBOM
@@ -106,10 +110,14 @@ CI now treats the following as required gates:
 - `go vet`, `staticcheck`, `gosec`, `govulncheck`, and license checks;
 - gitleaks secret scanning;
 - Helm lint/render;
-- Trivy scans for operator, builder, uploader, AWS provider, and vSphere provider.
+- Trivy scans for operator, builder, uploader, AWS provider, Azure provider,
+  vSphere provider, and OpenStack provider.
   The blocking gate fails on fixable `HIGH` and `CRITICAL` findings; the SARIF
   upload job still reports the full scanner output for review;
 - govmomi simulator integration test for vSphere upload/register/cleanup.
+- opt-in live provider E2E workflows for AWS, OpenStack, and local
+  Windows Cloudbase-Init/Sysprep validation. Azure and vSphere live provider
+  tests are available through `make test-e2e-azure` and `make test-e2e-vsphere`.
 
 Before approving a production rollout, also run one real provider smoke test per
 target environment. The simulator validates code paths, not vCenter inventory,
