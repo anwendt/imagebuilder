@@ -13,6 +13,9 @@ AWS_PROVIDER_DIGEST ?=
 GO             := go
 GOFLAGS        ?=
 CGO_ENABLED    := 0
+LOCALBIN       ?= $(CURDIR)/bin
+API_PATHS      := ./api/...
+GEN_PATHS      := ./api/...;./pkg/controller/...
 
 # Tool versions
 CONTROLLER_GEN_VERSION := v0.19.0
@@ -22,7 +25,7 @@ GOVULNCHECK_VERSION     := v1.1.4
 STATICCHECK_VERSION     := 2026.1
 GO_LICENSES_VERSION     := v1.6.0
 
-.PHONY: all build build-builder build-uploader build-provider-aws test test-race test-core-e2e test-manifests test-e2e test-e2e-aws lint vet gosec govulncheck staticcheck security-check generate manifests run docker-build docker-build-builder docker-build-uploader docker-build-provider-aws docker-build-provider-aws-multiarch docker-push-provider-aws docker-digest-provider-aws sign-provider-aws update-aws-provider-samples license-check help deploy-production deploy-observability deploy-policies helm-lint helm-template
+.PHONY: all build build-builder build-uploader build-provider-aws test test-race test-core-e2e test-manifests test-e2e test-e2e-aws lint vet gosec govulncheck staticcheck security-check generate manifests patch-webhook-manifest run docker-build docker-build-builder docker-build-uploader docker-build-provider-aws docker-build-provider-aws-multiarch docker-push-provider-aws docker-digest-provider-aws sign-provider-aws update-aws-provider-samples license-check help deploy-production deploy-observability deploy-policies helm-lint helm-template
 
 all: generate manifests build
 
@@ -90,14 +93,18 @@ docker-push: ## Push the operator Docker image
 ## Code generation
 
 generate: controller-gen ## Generate DeepCopy methods (run after changing api/v1alpha1/)
-	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
+	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="$(API_PATHS)"
 
 manifests: controller-gen ## Generate CRD YAMLs and RBAC manifests
 	$(CONTROLLER_GEN) \
 		crd rbac:roleName=imagebuilder-operator webhook \
-		paths="./..." \
+		paths="$(GEN_PATHS)" \
 		output:crd:artifacts:config=config/crd \
 		output:rbac:artifacts:config=config/rbac
+	$(MAKE) patch-webhook-manifest
+
+patch-webhook-manifest: ## Keep generated webhook manifest aligned with production cert-manager deployment
+	perl -0pi -e 's/metadata:\n  name: validating-webhook-configuration/metadata:\n  annotations:\n    cert-manager.io\/inject-ca-from: imagebuilder-system\/imagebuilder-webhook-serving-cert\n  name: imagebuilder-validating-webhook-configuration/' config/webhook/manifests.yaml
 
 proto: ## Generate Go code from proto files (requires protoc + protoc-gen-go + protoc-gen-go-grpc)
 	protoc \
@@ -200,12 +207,9 @@ undeploy: ## Remove operator from the cluster
 
 ## Tools
 
-CONTROLLER_GEN := $(shell if command -v controller-gen >/dev/null 2>&1; then command -v controller-gen; elif test -x "$$(go env GOPATH)/bin/controller-gen"; then echo "$$(go env GOPATH)/bin/controller-gen"; fi)
+CONTROLLER_GEN := $(LOCALBIN)/controller-gen
 controller-gen:
-ifeq ($(CONTROLLER_GEN),)
-	$(GO) install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
-	$(eval CONTROLLER_GEN := $(shell go env GOPATH)/bin/controller-gen)
-endif
+	test -s $(CONTROLLER_GEN) || GOBIN=$(LOCALBIN) $(GO) install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
 
 ## Help
 
