@@ -400,6 +400,67 @@ func TestAWSPlugin_Register_UsesImportedSnapshotFlow(t *testing.T) {
 	}
 }
 
+func TestAWSPlugin_ReconcileRemoteBuild_RegisterFromSnapshot(t *testing.T) {
+	p := newInitializedPlugin(t)
+	fake := &fakeAWSLocalImageClient{}
+	p.localClient = fake
+
+	result, err := p.ReconcileRemoteBuild(context.Background(), &platform.RemoteBuildRequest{
+		BuildID:           "build-123",
+		ImageName:         "ubuntu-snapshot",
+		Namespace:         "images",
+		OSFamily:          platform.OSFamilyLinux,
+		OSArch:            "arm64",
+		SourceType:        "snapshot",
+		SourceProviderRef: "snap-0123456789abcdef0",
+		Target: v1alpha1.TargetSpec{
+			ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "aws-prod"},
+			Format:            "ami",
+			Tags:              map[string]string{"env": "prod"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ReconcileRemoteBuild returned error: %v", err)
+	}
+	if !result.Done || len(result.Images) != 1 {
+		t.Fatalf("result = %#v, want completed image result", result)
+	}
+	if got := fake.registerInput.SnapshotID; got != "snap-0123456789abcdef0" {
+		t.Fatalf("SnapshotID = %q, want source snapshot", got)
+	}
+	if !fake.registerInput.SourceSnapshot {
+		t.Fatal("SourceSnapshot should be true for existing snapshot source")
+	}
+	if fake.registerInput.OSArch != "arm64" {
+		t.Fatalf("OSArch = %q, want arm64", fake.registerInput.OSArch)
+	}
+	if fake.registerInput.Tags["env"] != "prod" {
+		t.Fatalf("env tag = %q, want prod", fake.registerInput.Tags["env"])
+	}
+	if result.Images[0].ImageRef.ID != "ami-0123456789abcdef0" {
+		t.Fatalf("image ref = %q, want AMI ID", result.Images[0].ImageRef.ID)
+	}
+}
+
+func TestAWSPlugin_ReconcileRemoteBuild_SnapshotRejectsProvisioners(t *testing.T) {
+	p := newInitializedPlugin(t)
+	_, err := p.ReconcileRemoteBuild(context.Background(), &platform.RemoteBuildRequest{
+		BuildID:           "build-123",
+		ImageName:         "ubuntu-snapshot",
+		OSFamily:          platform.OSFamilyLinux,
+		SourceType:        "snapshot",
+		SourceProviderRef: "snap-0123456789abcdef0",
+		Target: v1alpha1.TargetSpec{
+			ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "aws-prod"},
+			Format:            "ami",
+		},
+		Provisioners: []v1alpha1.ProvisionerSpec{{Type: "shell", Inline: "echo no"}},
+	})
+	if err == nil {
+		t.Fatal("snapshot source should reject provisioners")
+	}
+}
+
 func TestLocalRegisterInput_UsesLocalKMSKey(t *testing.T) {
 	cfg := awsConfig{
 		providerConfigName: "aws-prod",

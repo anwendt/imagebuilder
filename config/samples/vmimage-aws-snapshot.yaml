@@ -1,0 +1,56 @@
+# Example: register an AWS AMI from an existing completed EBS snapshot.
+# Replace snapshot, account, and digest values before applying.
+
+---
+apiVersion: imagebuilder.io/v1alpha1
+kind: VMImage
+metadata:
+  name: ubuntu-24-04-from-snapshot
+spec:
+  os:
+    family: linux
+    distribution: ubuntu
+    version: "24.04"
+    arch: amd64
+
+  source:
+    type: snapshot
+    providerRef: snap-0123456789abcdef0
+
+  targets:
+    - providerConfigRef:
+        name: aws-eu-west-1-snapshot
+      format: ami
+      tags:
+        team: platform
+        source: snapshot
+
+  build:
+    mode: remote
+    timeout: 1h
+
+---
+apiVersion: imagebuilder.io/v1alpha1
+kind: ProviderConfig
+metadata:
+  name: aws-eu-west-1-snapshot
+spec:
+  provider: aws
+  region: eu-west-1
+  extra:
+    roleArn: arn:aws:iam::123456789012:role/ImageBuilderProviderRole
+    rootVolumeSizeGiB: "32"
+
+---
+apiVersion: imagebuilder.io/v1alpha1
+kind: PlatformProvider
+metadata:
+  name: aws
+spec:
+  package: ghcr.io/anwendt/imagebuilder-provider-aws@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  packagePullPolicy: IfNotPresent
+  security:
+    allowedRegistries:
+      - ghcr.io/anwendt
+    requireDigest: true
+    verifySignature: true

@@ -643,11 +643,16 @@ spec:
                       or presigned URLs.
                     type: string
                   type:
-                    description: 'Type is one of: iso, cloud-image, marketplace'
+                    description: |-
+                      Type is one of: iso, cloud-image, marketplace, snapshot.
+                      snapshot is a provider-native source that registers an image from an
+                      existing platform snapshot, for example an AWS EBS snapshot ID in
+                      providerRef.
                     enum:
                     - iso
                     - cloud-image
                     - marketplace
+                    - snapshot
                     type: string
                   url:
                     description: |-

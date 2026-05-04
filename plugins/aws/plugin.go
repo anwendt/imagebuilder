@@ -306,6 +306,9 @@ func (p *AWSPlugin) ReconcileRemoteBuild(ctx context.Context, req *platform.Remo
 	if firstNonEmpty(req.SourceProviderRef, req.SourceURL) == "" {
 		return nil, fmt.Errorf("aws plugin: remote build source providerRef is required")
 	}
+	if req.SourceType == "snapshot" {
+		return p.reconcileSnapshotImage(ctx, req)
+	}
 
 	client := p.remoteClient
 	if client == nil {
@@ -377,6 +380,61 @@ func (p *AWSPlugin) ReconcileRemoteBuild(ctx context.Context, req *platform.Remo
 	}
 
 	return result, nil
+}
+
+func (p *AWSPlugin) reconcileSnapshotImage(ctx context.Context, req *platform.RemoteBuildRequest) (*platform.RemoteBuildResult, error) {
+	if req.Target.Format != string(platform.FormatAMI) {
+		return nil, fmt.Errorf("aws plugin: snapshot source requires target format %q, got %q", platform.FormatAMI, req.Target.Format)
+	}
+	if len(req.Provisioners) > 0 {
+		return nil, fmt.Errorf("aws plugin: snapshot source registers an AMI directly and does not support provisioners")
+	}
+	snapshotID := strings.TrimSpace(req.SourceProviderRef)
+	if !strings.HasPrefix(snapshotID, "snap-") {
+		return nil, fmt.Errorf("aws plugin: snapshot source providerRef must be an EBS snapshot ID, got %q", snapshotID)
+	}
+	client := p.localClient
+	if client == nil {
+		return nil, fmt.Errorf("aws plugin: local image client is not initialised")
+	}
+	input, err := snapshotRegisterInput(p.config, req)
+	if err != nil {
+		return nil, err
+	}
+	ref, err := client.RegisterAMI(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("aws plugin: register AMI from snapshot %q: %w", snapshotID, err)
+	}
+	operationRef := "aws:snapshot:" + snapshotID
+	if req.OperationRef != "" {
+		operationRef = req.OperationRef
+	}
+	return &platform.RemoteBuildResult{
+		OperationRef: operationRef,
+		Phase:        platform.RemoteBuildPhaseReady,
+		Message:      "AWS AMI registered from existing EBS snapshot",
+		Done:         true,
+		Hygiene: &platform.RemoteHygieneResult{
+			Status:    "passed",
+			Message:   "AWS snapshot source validated and registered without provider-side boot",
+			Checks:    []string{"aws-source-snapshot-completed", "aws-snapshot-ami-registered"},
+			ResultRef: ref.ID,
+		},
+		Images: []platform.RemoteImageRef{
+			{
+				Provider:       p.Name(),
+				ProviderConfig: req.Target.ProviderConfigRef.Name,
+				Format:         platform.FormatAMI,
+				Checksum:       req.SourceChecksum,
+				ImageRef: platform.ImageRef{
+					ID:       ref.ID,
+					Name:     ref.Name,
+					Location: ref.Location,
+					Tags:     ref.Tags,
+				},
+			},
+		},
+	}, nil
 }
 
 func (p *AWSPlugin) CleanupRemoteBuild(ctx context.Context, req *platform.RemoteBuildRequest) error {
@@ -461,6 +519,7 @@ type ec2LocalImageAPI interface {
 	DescribeImportSnapshotTasks(ctx context.Context, params *ec2.DescribeImportSnapshotTasksInput, optFns ...func(*ec2.Options)) (*ec2.DescribeImportSnapshotTasksOutput, error)
 	RegisterImage(ctx context.Context, params *ec2.RegisterImageInput, optFns ...func(*ec2.Options)) (*ec2.RegisterImageOutput, error)
 	DescribeImages(ctx context.Context, params *ec2.DescribeImagesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeImagesOutput, error)
+	DescribeSnapshots(ctx context.Context, params *ec2.DescribeSnapshotsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSnapshotsOutput, error)
 	DeregisterImage(ctx context.Context, params *ec2.DeregisterImageInput, optFns ...func(*ec2.Options)) (*ec2.DeregisterImageOutput, error)
 	DeleteSnapshot(ctx context.Context, params *ec2.DeleteSnapshotInput, optFns ...func(*ec2.Options)) (*ec2.DeleteSnapshotOutput, error)
 	CancelImportTask(ctx context.Context, params *ec2.CancelImportTaskInput, optFns ...func(*ec2.Options)) (*ec2.CancelImportTaskOutput, error)
@@ -480,17 +539,20 @@ type stsLocalImageAPI interface {
 }
 
 type awsLocalRegisterInput struct {
-	Bucket     string
-	Key        string
-	BuildID    string
-	ImageName  string
-	Format     platform.ImageFormat
-	OS         platform.OSFamily
-	Checksum   string
-	Tags       map[string]string
-	Timeout    time.Duration
-	VolumeSize int32
-	KMSKeyID   string
+	Bucket         string
+	Key            string
+	BuildID        string
+	ImageName      string
+	Format         platform.ImageFormat
+	OS             platform.OSFamily
+	Checksum       string
+	Tags           map[string]string
+	Timeout        time.Duration
+	VolumeSize     int32
+	KMSKeyID       string
+	SnapshotID     string
+	SourceSnapshot bool
+	OSArch         string
 }
 
 func newAWSLocalImageClient(ctx context.Context, cfg awsConfig) (awsLocalImageClient, error) {
@@ -633,18 +695,34 @@ func (c *awsSDKLocalImageClient) RegisterAMI(ctx context.Context, input awsLocal
 	if existing != nil {
 		return existing, nil
 	}
-	snapshotID, err := c.importSnapshot(ctx, input, timeout)
-	if err != nil {
-		return nil, err
+	cleanupSnapshotOnFailure := true
+	var snapshotID string
+	if input.SnapshotID != "" {
+		snapshotID, err = c.validateSourceSnapshot(ctx, input)
+		if err != nil {
+			return nil, err
+		}
+		cleanupSnapshotOnFailure = false
+	} else {
+		snapshotID, err = c.importSnapshot(ctx, input, timeout)
+		if err != nil {
+			return nil, err
+		}
 	}
 	imageID, err := c.registerImage(ctx, input, snapshotID)
 	if err != nil {
-		_ = c.CleanupLocalImage(ctx, map[string]string{"snapshotId": snapshotID})
+		if cleanupSnapshotOnFailure {
+			_ = c.CleanupLocalImage(ctx, map[string]string{"snapshotId": snapshotID})
+		}
 		return nil, err
 	}
 	ref, err := c.waitForAMI(ctx, input, imageID, timeout)
 	if err != nil {
-		_ = c.CleanupLocalImage(ctx, map[string]string{"imageId": imageID, "snapshotId": snapshotID})
+		metadata := map[string]string{"imageId": imageID}
+		if cleanupSnapshotOnFailure {
+			metadata["snapshotId"] = snapshotID
+		}
+		_ = c.CleanupLocalImage(ctx, metadata)
 		return nil, err
 	}
 	return ref, nil
@@ -732,6 +810,32 @@ func (c *awsSDKLocalImageClient) importSnapshot(ctx context.Context, input awsLo
 	}
 }
 
+func (c *awsSDKLocalImageClient) validateSourceSnapshot(ctx context.Context, input awsLocalRegisterInput) (string, error) {
+	snapshotID := strings.TrimSpace(input.SnapshotID)
+	if snapshotID == "" {
+		return "", fmt.Errorf("snapshot ID is required")
+	}
+	out, err := c.ec2.DescribeSnapshots(ctx, &ec2.DescribeSnapshotsInput{SnapshotIds: []string{snapshotID}})
+	if err != nil {
+		return "", fmt.Errorf("describe snapshot %q: %w", snapshotID, err)
+	}
+	if len(out.Snapshots) == 0 {
+		return "", fmt.Errorf("snapshot %q was not found", snapshotID)
+	}
+	snapshot := out.Snapshots[0]
+	if snapshot.State != ec2types.SnapshotStateCompleted {
+		message := string(snapshot.State)
+		if snapshot.StateMessage != nil && *snapshot.StateMessage != "" {
+			message += ": " + *snapshot.StateMessage
+		}
+		return "", fmt.Errorf("snapshot %q is not completed: %s", snapshotID, message)
+	}
+	if input.VolumeSize > 0 && snapshot.VolumeSize != nil && input.VolumeSize < *snapshot.VolumeSize {
+		return "", fmt.Errorf("rootVolumeSizeGiB %d is smaller than source snapshot %q size %d", input.VolumeSize, snapshotID, *snapshot.VolumeSize)
+	}
+	return snapshotID, nil
+}
+
 func (c *awsSDKLocalImageClient) registerImage(ctx context.Context, input awsLocalRegisterInput, snapshotID string) (string, error) {
 	ebs := &ec2types.EbsBlockDevice{
 		SnapshotId:          awssdk.String(snapshotID),
@@ -739,6 +843,12 @@ func (c *awsSDKLocalImageClient) registerImage(ctx context.Context, input awsLoc
 	}
 	if input.VolumeSize > 0 {
 		ebs.VolumeSize = awssdk.Int32(input.VolumeSize)
+	}
+	tagSpecifications := []ec2types.TagSpecification{
+		{ResourceType: ec2types.ResourceTypeImage, Tags: localBuildTags(input)},
+	}
+	if !input.SourceSnapshot {
+		tagSpecifications = append(tagSpecifications, ec2types.TagSpecification{ResourceType: ec2types.ResourceTypeSnapshot, Tags: localBuildTags(input)})
 	}
 	out, err := c.ec2.RegisterImage(ctx, &ec2.RegisterImageInput{
 		Name:           awssdk.String(input.ImageName),
@@ -752,10 +862,7 @@ func (c *awsSDKLocalImageClient) registerImage(ctx context.Context, input awsLoc
 		},
 		VirtualizationType: awssdk.String("hvm"),
 		EnaSupport:         awssdk.Bool(true),
-		TagSpecifications: []ec2types.TagSpecification{
-			{ResourceType: ec2types.ResourceTypeImage, Tags: localBuildTags(input)},
-			{ResourceType: ec2types.ResourceTypeSnapshot, Tags: localBuildTags(input)},
-		},
+		TagSpecifications:  tagSpecifications,
 	})
 	if err != nil {
 		return "", fmt.Errorf("register image from snapshot %q: %w", snapshotID, err)
@@ -889,6 +996,51 @@ func localRegisterInput(cfg awsConfig, result *platform.UploadResult) (awsLocalR
 		Timeout:    timeout,
 		VolumeSize: volumeSize,
 		KMSKeyID:   kmsKeyID,
+		OSArch:     result.Metadata["arch"],
+	}, nil
+}
+
+func snapshotRegisterInput(cfg awsConfig, req *platform.RemoteBuildRequest) (awsLocalRegisterInput, error) {
+	if req == nil {
+		return awsLocalRegisterInput{}, fmt.Errorf("aws plugin: snapshot remote build request is required")
+	}
+	timeout := defaultAWSLocalRegisterTimeout
+	if req.Timeout > 0 {
+		timeout = req.Timeout
+	}
+	if raw := strings.TrimSpace(cfg.extraConfig["registerTimeout"]); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil {
+			return awsLocalRegisterInput{}, fmt.Errorf("aws plugin: extra registerTimeout must be a duration: %w", err)
+		}
+		timeout = parsed
+	}
+	volumeSize := int32(0)
+	if raw := strings.TrimSpace(cfg.extraConfig["rootVolumeSizeGiB"]); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil || parsed <= 0 {
+			return awsLocalRegisterInput{}, fmt.Errorf("aws plugin: extra rootVolumeSizeGiB must be a positive integer")
+		}
+		volumeSize = int32(parsed)
+	}
+	tags := map[string]string{"imagebuilder.io/provider-config": cfg.providerConfigName}
+	for key, value := range req.Target.Tags {
+		tags[key] = value
+	}
+	tags["arch"] = req.OSArch
+	return awsLocalRegisterInput{
+		BuildID:        req.BuildID,
+		ImageName:      sanitizeAWSName(firstNonEmpty(req.ImageName, "imagebuilder-"+req.BuildID)),
+		Format:         platform.FormatAMI,
+		OS:             req.OSFamily,
+		Checksum:       req.SourceChecksum,
+		Tags:           tags,
+		Timeout:        timeout,
+		VolumeSize:     volumeSize,
+		KMSKeyID:       strings.TrimSpace(firstNonEmpty(cfg.extraConfig["local.kmsKeyId"], cfg.extraConfig["kmsKeyId"])),
+		SnapshotID:     strings.TrimSpace(req.SourceProviderRef),
+		SourceSnapshot: true,
+		OSArch:         req.OSArch,
 	}, nil
 }
 
@@ -914,7 +1066,7 @@ func importSnapshotFormat(format platform.ImageFormat) string {
 }
 
 func awsArchitecture(input awsLocalRegisterInput) string {
-	if strings.EqualFold(input.Tags["arch"], "arm64") {
+	if strings.EqualFold(firstNonEmpty(input.OSArch, input.Tags["arch"]), "arm64") {
 		return string(ec2types.ArchitectureValuesArm64)
 	}
 	return string(ec2types.ArchitectureValuesX8664)

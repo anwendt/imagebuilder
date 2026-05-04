@@ -63,8 +63,11 @@ type OSSpec struct {
 }
 
 type SourceSpec struct {
-	// Type is one of: iso, cloud-image, marketplace
-	// +kubebuilder:validation:Enum=iso;cloud-image;marketplace
+	// Type is one of: iso, cloud-image, marketplace, snapshot.
+	// snapshot is a provider-native source that registers an image from an
+	// existing platform snapshot, for example an AWS EBS snapshot ID in
+	// providerRef.
+	// +kubebuilder:validation:Enum=iso;cloud-image;marketplace;snapshot
 	Type string `json:"type"`
 
 	// URL to download the source image from.

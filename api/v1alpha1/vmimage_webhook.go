@@ -68,6 +68,20 @@ func (r *VMImage) validate() (admission.Warnings, error) {
 	default:
 		errs = append(errs, fmt.Errorf("spec.build.mode must be local or remote"))
 	}
+	if r.Spec.Source.Type == "snapshot" {
+		if buildMode != BuildModeRemote {
+			errs = append(errs, fmt.Errorf("spec.source.type snapshot requires spec.build.mode remote"))
+		}
+		if strings.TrimSpace(r.Spec.Source.ProviderRef) == "" {
+			errs = append(errs, fmt.Errorf("spec.source.providerRef is required when spec.source.type is snapshot"))
+		}
+		if r.Spec.Source.URL != "" {
+			errs = append(errs, fmt.Errorf("spec.source.url must be empty when spec.source.type is snapshot"))
+		}
+		if len(r.Spec.Provisioners) > 0 {
+			errs = append(errs, fmt.Errorf("spec.provisioners must be empty when spec.source.type is snapshot"))
+		}
+	}
 
 	if strings.HasPrefix(r.Spec.Source.URL, "https://") {
 		// AS-047: SSRF check — source URL must not resolve to a private IP.

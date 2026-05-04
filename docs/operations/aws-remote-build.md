@@ -6,7 +6,7 @@ existing source AMI, executes supported provisioners through AWS Systems Manager
 (SSM), stops the instance, creates a final AMI, and waits until the AMI becomes
 available.
 
-## Supported Source
+## Supported Sources
 
 Remote AWS builds currently require `spec.source.providerRef` to be an AMI ID:
 
@@ -26,6 +26,26 @@ spec:
 `cloud-image` and `marketplace` are accepted as source types when the source
 provider reference is an AMI ID. `spec.source.url` is reserved for downloadable
 HTTPS sources and is not used for provider-native identifiers.
+
+AWS can also register an AMI directly from an existing completed EBS snapshot:
+
+```yaml
+spec:
+  build:
+    mode: remote
+  source:
+    type: snapshot
+    providerRef: snap-0123456789abcdef0
+  targets:
+    - providerConfigRef:
+        name: aws-eu-west-1
+      format: ami
+```
+
+Snapshot sources are direct registration operations. They do not boot a temporary
+instance and therefore do not support provisioners. The provider validates that
+the EBS snapshot exists and is `completed`, registers an AMI with the configured
+root device metadata, and never deletes the source snapshot during cleanup.
 
 For Windows remote builds, the source AMI must be an AWS Windows AMI with SSM
 Agent/EC2Launch already working. The AWS provider validates the source AMI

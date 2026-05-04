@@ -70,6 +70,54 @@ func TestVMImageWebhook_RemoteProviderRefSource_DoesNotRequireChecksum(t *testin
 	}
 }
 
+func TestVMImageWebhook_SnapshotSource_AllowsRemoteProviderRef(t *testing.T) {
+	img := &VMImage{
+		Spec: VMImageSpec{
+			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
+			Source: SourceSpec{Type: "snapshot", ProviderRef: "snap-0123456789abcdef0"},
+			Build:  BuildSpec{Mode: BuildModeRemote},
+			Targets: []TargetSpec{
+				{ProviderConfigRef: ProviderConfigRef{Name: "aws-cfg"}, Format: "ami"},
+			},
+		},
+	}
+	if _, err := img.ValidateCreate(); err != nil {
+		t.Fatalf("snapshot source should be valid for remote provider registration: %v", err)
+	}
+}
+
+func TestVMImageWebhook_SnapshotSource_RejectsLocalBuild(t *testing.T) {
+	img := &VMImage{
+		Spec: VMImageSpec{
+			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
+			Source: SourceSpec{Type: "snapshot", ProviderRef: "snap-0123456789abcdef0"},
+			Targets: []TargetSpec{
+				{ProviderConfigRef: ProviderConfigRef{Name: "aws-cfg"}, Format: "ami"},
+			},
+		},
+	}
+	if _, err := img.ValidateCreate(); err == nil {
+		t.Fatal("snapshot source should require remote build mode")
+	}
+}
+
+func TestVMImageWebhook_SnapshotSource_RejectsProvisioners(t *testing.T) {
+	img := &VMImage{
+		Spec: VMImageSpec{
+			OS:           OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
+			Source:       SourceSpec{Type: "snapshot", ProviderRef: "snap-0123456789abcdef0"},
+			Build:        BuildSpec{Mode: BuildModeRemote},
+			Provisioners: []ProvisionerSpec{{Type: "shell", Inline: "echo no"}},
+			Targets: []TargetSpec{
+				{ProviderConfigRef: ProviderConfigRef{Name: "aws-cfg"}, Format: "ami"},
+			},
+		},
+	}
+	if _, err := img.ValidateCreate(); err == nil {
+		t.Fatal("snapshot source should reject provisioners")
+	}
+}
+
 func TestVMImageWebhook_ProviderNativeSourceInURL_ReturnsError(t *testing.T) {
 	img := &VMImage{
 		Spec: VMImageSpec{
