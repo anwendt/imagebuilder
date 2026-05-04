@@ -61,7 +61,7 @@ func main() {
 		_ = writeJSON(terminationLog, map[string]string{"error": err.Error()})
 		os.Exit(1)
 	}
-	payload := uploadResultFile{Images: result.Images, Operations: result.Operations}
+	payload := uploadResultFile(result)
 	if err := writeJSON(terminationLog, payload); err != nil {
 		slog.Warn("write termination message", slog.Any("error", err))
 	}

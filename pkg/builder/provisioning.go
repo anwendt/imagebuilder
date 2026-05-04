@@ -264,12 +264,3 @@ func provisionersRequireGuestAccess(specs []v1alpha1.ProvisionerSpec) bool {
 	}
 	return false
 }
-
-func hasProvisioner(specs []v1alpha1.ProvisionerSpec, typeName string) bool {
-	for _, spec := range specs {
-		if spec.Type == typeName {
-			return true
-		}
-	}
-	return false
-}

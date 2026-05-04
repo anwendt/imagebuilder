@@ -84,8 +84,10 @@ func (a *Adapter) Connect(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	conn, err := grpc.DialContext(ctx, a.address, //nolint:staticcheck // DialContext deprecated in grpc v1.65 but NewClient requires separate connect
+	//lint:ignore SA1019 DialContext is retained until grpc.NewClient has equivalent blocking dial semantics for this adapter.
+	conn, err := grpc.DialContext(ctx, a.address,
 		grpc.WithTransportCredentials(transport),
+		//lint:ignore SA1019 WithBlock is tied to DialContext blocking semantics.
 		grpc.WithBlock(),
 	)
 	if err != nil {

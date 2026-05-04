@@ -2,7 +2,6 @@ package builder
 
 import (
 	"errors"
-	"fmt"
 )
 
 const (
@@ -61,8 +60,4 @@ func ErrorDetail(err error) string {
 		return ""
 	}
 	return err.Error()
-}
-
-func classifiedf(reason, format string, args ...any) error {
-	return Classify(reason, fmt.Errorf(format, args...))
 }

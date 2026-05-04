@@ -43,7 +43,6 @@ import (
 
 var (
 	scheme = runtime.NewScheme()
-	log    = ctrl.Log.WithName("main")
 )
 
 func init() {

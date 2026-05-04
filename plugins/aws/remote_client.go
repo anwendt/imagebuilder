@@ -101,6 +101,7 @@ func loadAWSConfig(ctx context.Context, cfg awsConfig) (awssdk.Config, error) {
 		)))
 	}
 	if cfg.endpoint != "" {
+		//lint:ignore SA1019 Global endpoint override is used only for explicit test/custom endpoints until all AWS service clients are migrated to service-specific resolvers.
 		options = append(options, awsconfig.WithEndpointResolverWithOptions(awsEndpointResolver(cfg.endpoint)))
 	}
 
@@ -115,8 +116,11 @@ func loadAWSConfig(ctx context.Context, cfg awsConfig) (awssdk.Config, error) {
 	return awsCfg, nil
 }
 
+//lint:ignore SA1019 Global endpoint override is used only for explicit test/custom endpoints until service-specific resolvers cover EC2, S3, SSM, and STS consistently.
 func awsEndpointResolver(endpoint string) awssdk.EndpointResolverWithOptions {
+	//lint:ignore SA1019 See awsEndpointResolver comment.
 	return awssdk.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (awssdk.Endpoint, error) {
+		//lint:ignore SA1019 See awsEndpointResolver comment.
 		return awssdk.Endpoint{
 			URL:               endpoint,
 			SigningRegion:     region,

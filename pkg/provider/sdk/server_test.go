@@ -158,6 +158,7 @@ func startServer(t *testing.T, provider sdk.Provider) (providerv1.PlatformProvid
 	go func() {
 		_ = grpcServer.Serve(listener)
 	}()
+	//lint:ignore SA1019 DialContext remains the supported bufconn test pattern for blocking setup here.
 	conn, err := grpc.DialContext(context.Background(), "bufnet",
 		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
 			return listener.Dial()

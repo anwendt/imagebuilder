@@ -101,22 +101,6 @@ func envValue(env []corev1.EnvVar, name string) string {
 	return ""
 }
 
-// newReconciler creates a VMImageReconciler backed by the fake client.
-func newReconciler(t *testing.T, objs ...runtime.Object) (*vmimage.VMImageReconciler, *fake.ClientBuilder) {
-	t.Helper()
-	s := testScheme(t)
-	cb := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{})
-	for _, o := range objs {
-		cb = cb.WithRuntimeObjects(o)
-	}
-	r := &vmimage.VMImageReconciler{
-		Client:   cb.Build(),
-		Scheme:   s,
-		Registry: plugin.Default(),
-	}
-	return r, cb
-}
-
 func newImg(name, namespace, phase string) *v1alpha1.VMImage {
 	img := &v1alpha1.VMImage{
 		TypeMeta: metav1.TypeMeta{
