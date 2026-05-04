@@ -16,6 +16,9 @@
 # ---------------------------------------------------------------------------
 FROM golang:1.26.2-alpine AS builder
 
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+
 # Install ca-certificates so TLS works when fetching modules.
 RUN apk add --no-cache ca-certificates git
 
@@ -32,7 +35,7 @@ COPY . .
 #   -trimpath        — remove local FS paths from binary (AS-059)
 #   -ldflags "-s -w" — strip debug info to reduce attack surface and image size
 #   CGO_ENABLED=0    — static binary, no dynamic C libraries (AS-055)
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build \
       -trimpath \
       -ldflags="-s -w -extldflags=-static" \

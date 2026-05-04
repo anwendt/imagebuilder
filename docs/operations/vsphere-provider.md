@@ -3,6 +3,25 @@
 The vSphere provider supports local build output registration for `ova`, `ovf`,
 and `vmdk` targets.
 
+## Provider Image Release
+
+The standalone vSphere PlatformProvider image is built from
+`cmd/provider-vsphere`:
+
+```bash
+make build-provider-vsphere
+make docker-build-provider-vsphere REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.1.0
+make docker-push-provider-vsphere REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.1.0
+VSPHERE_PROVIDER_DIGEST=sha256:<digest> make sign-provider-vsphere REGISTRY=ghcr.io/anwendt
+VSPHERE_PROVIDER_DIGEST=sha256:<digest> make update-vsphere-provider-samples REGISTRY=ghcr.io/anwendt
+```
+
+`docker-push-provider-vsphere` publishes a multi-arch image for `linux/amd64`
+and `linux/arm64` by default. Override `VSPHERE_PROVIDER_PLATFORMS` when a
+release needs a narrower platform set. The `vSphere Provider Image Release`
+workflow performs the same lifecycle in GitHub Actions with provenance, SBOM,
+and keyless Cosign signing.
+
 ## Image Registration Modes
 
 | Format | Production behavior |

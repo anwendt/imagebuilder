@@ -5,6 +5,9 @@
 
 FROM golang:1.26.2-alpine AS builder
 
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+
 RUN apk add --no-cache ca-certificates
 
 WORKDIR /workspace
@@ -14,7 +17,7 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build \
       -trimpath \
       -ldflags="-s -w -extldflags=-static" \

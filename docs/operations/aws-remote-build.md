@@ -104,6 +104,9 @@ The repository also contains GitHub Actions workflows for this lifecycle:
 - `AWS Provider E2E` runs the opt-in real AWS remote build test with explicit
   AWS region, AMI, subnet, security group, instance profile, KMS key, and role.
 
+The sample digest updater covers every AWS sample, including snapshot-backed
+`VMImage` resources.
+
 ```yaml
 apiVersion: imagebuilder.io/v1alpha1
 kind: ProviderConfig

@@ -8,10 +8,17 @@ AWS_PROVIDER_BINARY := imagebuilder-provider-aws
 VSPHERE_PROVIDER_BINARY := imagebuilder-provider-vsphere
 IMAGE_TAG      ?= dev
 REGISTRY       ?= ghcr.io/anwendt
+OPERATOR_IMAGE := $(REGISTRY)/$(BINARY_NAME)
+BUILDER_IMAGE := $(REGISTRY)/$(BUILDER_BINARY)
+UPLOADER_IMAGE := $(REGISTRY)/$(UPLOADER_BINARY)
 AWS_PROVIDER_IMAGE := $(REGISTRY)/$(AWS_PROVIDER_BINARY)
 VSPHERE_PROVIDER_IMAGE := $(REGISTRY)/$(VSPHERE_PROVIDER_BINARY)
+CORE_IMAGE_PLATFORMS ?= linux/amd64,linux/arm64
 AWS_PROVIDER_PLATFORMS ?= linux/amd64,linux/arm64
 VSPHERE_PROVIDER_PLATFORMS ?= linux/amd64,linux/arm64
+OPERATOR_DIGEST ?=
+BUILDER_DIGEST ?=
+UPLOADER_DIGEST ?=
 AWS_PROVIDER_DIGEST ?=
 VSPHERE_PROVIDER_DIGEST ?=
 GO             := go
@@ -29,7 +36,7 @@ GOVULNCHECK_VERSION     := v1.1.4
 STATICCHECK_VERSION     := 2026.1
 GO_LICENSES_VERSION     := v1.6.0
 
-.PHONY: all build build-builder build-uploader build-provider-aws build-provider-vsphere test test-race test-core-e2e test-manifests test-e2e test-e2e-aws lint vet gosec govulncheck staticcheck security-check generate manifests patch-webhook-manifest run docker-build docker-build-builder docker-build-uploader docker-build-provider-aws docker-build-provider-vsphere docker-build-provider-aws-multiarch docker-build-provider-vsphere-multiarch docker-push-provider-aws docker-push-provider-vsphere docker-digest-provider-aws docker-digest-provider-vsphere sign-provider-aws sign-provider-vsphere update-aws-provider-samples license-check help deploy-production deploy-observability deploy-policies helm-lint helm-template
+.PHONY: all build build-builder build-uploader build-provider-aws build-provider-vsphere test test-race test-core-e2e test-manifests test-vsphere-simulator test-e2e test-e2e-aws lint vet gosec govulncheck staticcheck security-check generate manifests patch-webhook-manifest run docker-build docker-build-builder docker-build-uploader docker-build-provider-aws docker-build-provider-vsphere docker-build-core-multiarch docker-build-provider-aws-multiarch docker-build-provider-vsphere-multiarch docker-push-core docker-push-builder docker-push-uploader docker-push-provider-aws docker-push-provider-vsphere docker-digest-core docker-digest-builder docker-digest-uploader docker-digest-provider-aws docker-digest-provider-vsphere sign-core sign-builder sign-uploader sign-provider-aws sign-provider-vsphere update-provider-samples update-aws-provider-samples update-vsphere-provider-samples license-check help deploy-production deploy-observability deploy-policies helm-lint helm-template
 
 all: generate manifests build
 
@@ -57,19 +64,24 @@ run: generate manifests ## Run the operator locally (uses current kubeconfig con
 		--max-concurrent-builds-per-node=1
 
 docker-build: ## Build the operator Docker image
-	docker build -t $(REGISTRY)/$(BINARY_NAME):$(IMAGE_TAG) .
+	docker build -t $(OPERATOR_IMAGE):$(IMAGE_TAG) .
 
 docker-build-builder: ## Build the build-engine Docker image
-	docker build -f Dockerfile.builder -t $(REGISTRY)/$(BUILDER_BINARY):$(IMAGE_TAG) .
+	docker build -f Dockerfile.builder -t $(BUILDER_IMAGE):$(IMAGE_TAG) .
 
 docker-build-uploader: ## Build the upload/register Docker image
-	docker build -f Dockerfile.uploader -t $(REGISTRY)/$(UPLOADER_BINARY):$(IMAGE_TAG) .
+	docker build -f Dockerfile.uploader -t $(UPLOADER_IMAGE):$(IMAGE_TAG) .
 
 docker-build-provider-aws: ## Build the standalone AWS PlatformProvider Docker image
 	docker build -f Dockerfile.provider-aws -t $(AWS_PROVIDER_IMAGE):$(IMAGE_TAG) .
 
 docker-build-provider-vsphere: ## Build the standalone vSphere PlatformProvider Docker image
 	docker build -f Dockerfile.provider-vsphere -t $(VSPHERE_PROVIDER_IMAGE):$(IMAGE_TAG) .
+
+docker-build-core-multiarch: ## Build operator, builder, and uploader multi-arch images locally via buildx
+	docker buildx build --platform $(CORE_IMAGE_PLATFORMS) -t $(OPERATOR_IMAGE):$(IMAGE_TAG) .
+	docker buildx build --platform $(CORE_IMAGE_PLATFORMS) -f Dockerfile.builder -t $(BUILDER_IMAGE):$(IMAGE_TAG) .
+	docker buildx build --platform $(CORE_IMAGE_PLATFORMS) -f Dockerfile.uploader -t $(UPLOADER_IMAGE):$(IMAGE_TAG) .
 
 docker-build-provider-aws-multiarch: ## Build the standalone AWS PlatformProvider multi-arch image locally via buildx
 	docker buildx build \
@@ -101,6 +113,31 @@ docker-push-provider-vsphere: ## Build and push the standalone vSphere PlatformP
 		--push \
 		.
 
+docker-push-core: ## Build and push operator, builder, and uploader multi-arch images
+	docker buildx build --platform $(CORE_IMAGE_PLATFORMS) -t $(OPERATOR_IMAGE):$(IMAGE_TAG) --push .
+	docker buildx build --platform $(CORE_IMAGE_PLATFORMS) -f Dockerfile.builder -t $(BUILDER_IMAGE):$(IMAGE_TAG) --push .
+	docker buildx build --platform $(CORE_IMAGE_PLATFORMS) -f Dockerfile.uploader -t $(UPLOADER_IMAGE):$(IMAGE_TAG) --push .
+
+docker-push-builder: ## Build and push the build-engine multi-arch image
+	docker buildx build --platform $(CORE_IMAGE_PLATFORMS) -f Dockerfile.builder -t $(BUILDER_IMAGE):$(IMAGE_TAG) --push .
+
+docker-push-uploader: ## Build and push the upload/register multi-arch image
+	docker buildx build --platform $(CORE_IMAGE_PLATFORMS) -f Dockerfile.uploader -t $(UPLOADER_IMAGE):$(IMAGE_TAG) --push .
+
+docker-digest-core: ## Print pushed operator, builder, and uploader image digests
+	@printf "operator "
+	@docker buildx imagetools inspect $(OPERATOR_IMAGE):$(IMAGE_TAG) --format '{{.Manifest.Digest}}'
+	@printf "builder "
+	@docker buildx imagetools inspect $(BUILDER_IMAGE):$(IMAGE_TAG) --format '{{.Manifest.Digest}}'
+	@printf "uploader "
+	@docker buildx imagetools inspect $(UPLOADER_IMAGE):$(IMAGE_TAG) --format '{{.Manifest.Digest}}'
+
+docker-digest-builder: ## Print the pushed build-engine image digest
+	docker buildx imagetools inspect $(BUILDER_IMAGE):$(IMAGE_TAG) --format '{{.Manifest.Digest}}'
+
+docker-digest-uploader: ## Print the pushed upload/register image digest
+	docker buildx imagetools inspect $(UPLOADER_IMAGE):$(IMAGE_TAG) --format '{{.Manifest.Digest}}'
+
 docker-digest-provider-aws: ## Print the pushed AWS PlatformProvider image digest
 	docker buildx imagetools inspect $(AWS_PROVIDER_IMAGE):$(IMAGE_TAG) --format '{{.Manifest.Digest}}'
 
@@ -115,12 +152,38 @@ sign-provider-vsphere: ## Sign the pushed vSphere PlatformProvider image by dige
 	test -n "$(VSPHERE_PROVIDER_DIGEST)" || (echo "VSPHERE_PROVIDER_DIGEST is required, e.g. sha256:..." && exit 1)
 	cosign sign $(VSPHERE_PROVIDER_IMAGE)@$(VSPHERE_PROVIDER_DIGEST)
 
+sign-core: ## Sign the pushed operator, builder, and uploader images by digest with cosign
+	test -n "$(OPERATOR_DIGEST)" || (echo "OPERATOR_DIGEST is required, e.g. sha256:..." && exit 1)
+	test -n "$(BUILDER_DIGEST)" || (echo "BUILDER_DIGEST is required, e.g. sha256:..." && exit 1)
+	test -n "$(UPLOADER_DIGEST)" || (echo "UPLOADER_DIGEST is required, e.g. sha256:..." && exit 1)
+	cosign sign $(OPERATOR_IMAGE)@$(OPERATOR_DIGEST)
+	cosign sign $(BUILDER_IMAGE)@$(BUILDER_DIGEST)
+	cosign sign $(UPLOADER_IMAGE)@$(UPLOADER_DIGEST)
+
+sign-builder: ## Sign the pushed build-engine image by digest with cosign
+	test -n "$(BUILDER_DIGEST)" || (echo "BUILDER_DIGEST is required, e.g. sha256:..." && exit 1)
+	cosign sign $(BUILDER_IMAGE)@$(BUILDER_DIGEST)
+
+sign-uploader: ## Sign the pushed upload/register image by digest with cosign
+	test -n "$(UPLOADER_DIGEST)" || (echo "UPLOADER_DIGEST is required, e.g. sha256:..." && exit 1)
+	cosign sign $(UPLOADER_IMAGE)@$(UPLOADER_DIGEST)
+
+update-provider-samples: ## Replace PlatformProvider digest placeholders in samples (PROVIDER=aws|vsphere)
+	test -n "$(PROVIDER)" || (echo "PROVIDER is required, e.g. aws or vsphere" && exit 1)
+	test -n "$(PROVIDER_IMAGE)" || (echo "PROVIDER_IMAGE is required, e.g. ghcr.io/anwendt/imagebuilder-provider-aws" && exit 1)
+	test -n "$(PROVIDER_DIGEST)" || (echo "PROVIDER_DIGEST is required, e.g. sha256:..." && exit 1)
+	hack/update-provider-digest.sh "$(PROVIDER)" "$(PROVIDER_IMAGE)" "$(PROVIDER_DIGEST)"
+
 update-aws-provider-samples: ## Replace AWS PlatformProvider digest placeholders in samples
 	test -n "$(AWS_PROVIDER_DIGEST)" || (echo "AWS_PROVIDER_DIGEST is required, e.g. sha256:..." && exit 1)
-	hack/update-aws-provider-digest.sh "$(AWS_PROVIDER_IMAGE)" "$(AWS_PROVIDER_DIGEST)"
+	hack/update-provider-digest.sh aws "$(AWS_PROVIDER_IMAGE)" "$(AWS_PROVIDER_DIGEST)"
+
+update-vsphere-provider-samples: ## Replace vSphere PlatformProvider digest placeholders in samples
+	test -n "$(VSPHERE_PROVIDER_DIGEST)" || (echo "VSPHERE_PROVIDER_DIGEST is required, e.g. sha256:..." && exit 1)
+	hack/update-provider-digest.sh vsphere "$(VSPHERE_PROVIDER_IMAGE)" "$(VSPHERE_PROVIDER_DIGEST)"
 
 docker-push: ## Push the operator Docker image
-	docker push $(REGISTRY)/$(BINARY_NAME):$(IMAGE_TAG)
+	docker push $(OPERATOR_IMAGE):$(IMAGE_TAG)
 
 ## Code generation
 
@@ -165,6 +228,9 @@ test-e2e: ## Run kind-based smoke test (requires kind + kubectl)
 
 test-e2e-aws: ## Run opt-in real AWS remote build E2E test (requires AWS_E2E=1 and AWS_E2E_* env)
 	AWS_E2E=1 $(GO) test ./plugins/aws -run TestAWSRemoteBuild_E2E -count=1 -v
+
+test-vsphere-simulator: ## Run opt-in vSphere provider test against govmomi simulator
+	IMAGEBUILDER_VSPHERE_SIMULATOR_TESTS=1 $(GO) test ./plugins/vsphere -run TestGovmomiClientUploadCleanupWithSimulator -count=1 -v
 
 lint: ## Run golangci-lint
 	golangci-lint run ./...
