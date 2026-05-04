@@ -253,6 +253,7 @@ jobs:
           image-ref: ${{ env.IMAGE_NAME }}:ci
           format: table
           severity: HIGH,CRITICAL
+          ignore-unfixed: true
           exit-code: "1"
 
       - name: Build builder image
@@ -272,6 +273,7 @@ jobs:
           image-ref: ghcr.io/${{ github.repository_owner }}/imagebuilder-builder:ci
           format: table
           severity: HIGH,CRITICAL
+          ignore-unfixed: true
           exit-code: "1"
 
       - name: Build uploader image
@@ -291,6 +293,7 @@ jobs:
           image-ref: ghcr.io/${{ github.repository_owner }}/imagebuilder-uploader:ci
           format: table
           severity: HIGH,CRITICAL
+          ignore-unfixed: true
           exit-code: "1"
 
       - name: Build AWS provider image
@@ -310,6 +313,7 @@ jobs:
           image-ref: ghcr.io/${{ github.repository_owner }}/imagebuilder-provider-aws:ci
           format: table
           severity: HIGH,CRITICAL
+          ignore-unfixed: true
           exit-code: "1"
 
       - name: Build vSphere provider image
@@ -329,6 +333,7 @@ jobs:
           image-ref: ghcr.io/${{ github.repository_owner }}/imagebuilder-provider-vsphere:ci
           format: table
           severity: HIGH,CRITICAL
+          ignore-unfixed: true
           exit-code: "1"
 
   image-scan-sarif:

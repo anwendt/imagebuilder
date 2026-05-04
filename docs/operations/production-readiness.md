@@ -106,7 +106,9 @@ CI now treats the following as required gates:
 - `go vet`, `staticcheck`, `gosec`, `govulncheck`, and license checks;
 - gitleaks secret scanning;
 - Helm lint/render;
-- Trivy scans for operator, builder, uploader, AWS provider, and vSphere provider;
+- Trivy scans for operator, builder, uploader, AWS provider, and vSphere provider.
+  The blocking gate fails on fixable `HIGH` and `CRITICAL` findings; the SARIF
+  upload job still reports the full scanner output for review;
 - govmomi simulator integration test for vSphere upload/register/cleanup.
 
 Before approving a production rollout, also run one real provider smoke test per
