@@ -1,0 +1,220 @@
+package vsphere
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/anwendt/imagebuilder/api/v1alpha1"
+	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
+)
+
+func validPluginConfig() platform.PluginConfig {
+	return platform.PluginConfig{
+		ProviderConfigName: "vsphere-prod",
+		Endpoint:           "https://vcenter.example.com/sdk",
+		SecretData: map[string][]byte{
+			"username": []byte("administrator@vsphere.local"),
+			"password": []byte("secret"),
+		},
+		Extra: map[string]string{
+			"datacenter":       "dc01",
+			"datastore":        "vsanDatastore",
+			"uploadPathPrefix": "imagebuilder",
+		},
+	}
+}
+
+type fakeClient struct {
+	uploadInput     uploadInput
+	registerInput   registerInput
+	cleanupMetadata map[string]string
+	healthErr       error
+}
+
+func (f *fakeClient) UploadArtifact(_ context.Context, input uploadInput) (*platform.UploadResult, error) {
+	f.uploadInput = input
+	return &platform.UploadResult{
+		ProviderRef: datastoreReference(input.Datastore, input.DatastorePath),
+		Metadata: map[string]string{
+			"datacenter":    input.Datacenter,
+			"datastore":     input.Datastore,
+			"datastorePath": input.DatastorePath,
+			"format":        string(input.Format),
+			"checksum":      input.Checksum,
+			"imageName":     input.ImageName,
+		},
+	}, nil
+}
+
+func (f *fakeClient) RegisterImage(_ context.Context, input registerInput) (*platform.ImageRef, error) {
+	f.registerInput = input
+	return &platform.ImageRef{
+		ID:       input.ProviderRef,
+		Name:     input.ImageName,
+		Location: input.Datacenter,
+		Tags:     input.Tags,
+	}, nil
+}
+
+func (f *fakeClient) Cleanup(_ context.Context, metadata map[string]string) error {
+	f.cleanupMetadata = metadata
+	return nil
+}
+
+func (f *fakeClient) HealthCheck(_ context.Context) error {
+	return f.healthErr
+}
+
+func newInitializedPlugin(t *testing.T) (*Plugin, *fakeClient) {
+	t.Helper()
+	client := &fakeClient{}
+	p := &Plugin{client: client}
+	if err := p.Init(context.Background(), validPluginConfig()); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	return p, client
+}
+
+func TestPluginCapabilities(t *testing.T) {
+	p := &Plugin{}
+	if p.Name() != "vsphere" {
+		t.Fatalf("Name() = %q, want vsphere", p.Name())
+	}
+	formats := map[platform.ImageFormat]bool{}
+	for _, format := range p.SupportedFormats() {
+		formats[format] = true
+	}
+	for _, want := range []platform.ImageFormat{platform.FormatOVA, platform.FormatOVF, platform.FormatVMDK} {
+		if !formats[want] {
+			t.Errorf("SupportedFormats() missing %q", want)
+		}
+	}
+	families := map[platform.OSFamily]bool{}
+	for _, family := range p.SupportedOS() {
+		families[family] = true
+	}
+	for _, want := range []platform.OSFamily{platform.OSFamilyLinux, platform.OSFamilyWindows} {
+		if !families[want] {
+			t.Errorf("SupportedOS() missing %q", want)
+		}
+	}
+	modes := p.SupportedBuildModes()
+	if len(modes) != 1 || modes[0] != v1alpha1.BuildModeLocal {
+		t.Fatalf("SupportedBuildModes() = %v, want local only", modes)
+	}
+}
+
+func TestPluginInitValidatesRequiredFields(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*platform.PluginConfig)
+	}{
+		{name: "endpoint", mutate: func(cfg *platform.PluginConfig) { cfg.Endpoint = "" }},
+		{name: "username", mutate: func(cfg *platform.PluginConfig) { delete(cfg.SecretData, "username") }},
+		{name: "password", mutate: func(cfg *platform.PluginConfig) { delete(cfg.SecretData, "password") }},
+		{name: "datacenter", mutate: func(cfg *platform.PluginConfig) { delete(cfg.Extra, "datacenter") }},
+		{name: "datastore", mutate: func(cfg *platform.PluginConfig) { delete(cfg.Extra, "datastore") }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validPluginConfig()
+			tt.mutate(&cfg)
+			p := &Plugin{client: &fakeClient{}}
+			if err := p.Init(context.Background(), cfg); err == nil {
+				t.Fatalf("Init should reject missing %s", tt.name)
+			}
+		})
+	}
+}
+
+func TestPluginValidateFormats(t *testing.T) {
+	p, _ := newInitializedPlugin(t)
+	for _, format := range []string{"ova", "ovf", "vmdk"} {
+		if err := p.Validate(context.Background(), v1alpha1.TargetSpec{Format: format}); err != nil {
+			t.Errorf("Validate(%q) returned error: %v", format, err)
+		}
+	}
+	if err := p.Validate(context.Background(), v1alpha1.TargetSpec{Format: "ami"}); err == nil {
+		t.Fatal("Validate should reject unsupported format")
+	}
+}
+
+func TestPluginUploadBuildsDatastoreReference(t *testing.T) {
+	p, client := newInitializedPlugin(t)
+	result, err := p.Upload(context.Background(), &platform.BuildArtifact{
+		Path:      "/workspace/out/ubuntu.vmdk",
+		Format:    platform.FormatVMDK,
+		Checksum:  "sha256:abc123",
+		SizeBytes: 42,
+		OS:        platform.OSFamilyLinux,
+		Metadata: map[string]string{
+			"buildID":   "build/01",
+			"imageName": "ubuntu-template",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Upload returned error: %v", err)
+	}
+	wantPath := "imagebuilder/build-01/ubuntu.vmdk"
+	if client.uploadInput.DatastorePath != wantPath {
+		t.Fatalf("DatastorePath = %q, want %q", client.uploadInput.DatastorePath, wantPath)
+	}
+	if result.ProviderRef != "[vsanDatastore] "+wantPath {
+		t.Fatalf("ProviderRef = %q", result.ProviderRef)
+	}
+}
+
+func TestPluginUploadRequiresBuildID(t *testing.T) {
+	p, _ := newInitializedPlugin(t)
+	_, err := p.Upload(context.Background(), &platform.BuildArtifact{
+		Path:   "/workspace/out/ubuntu.vmdk",
+		Format: platform.FormatVMDK,
+	})
+	if err == nil {
+		t.Fatal("Upload should require buildID metadata")
+	}
+}
+
+func TestPluginRegisterReturnsProviderRef(t *testing.T) {
+	p, client := newInitializedPlugin(t)
+	ref, err := p.Register(context.Background(), &platform.UploadResult{
+		ProviderRef: "[vsanDatastore] imagebuilder/build-01/ubuntu.vmdk",
+		Metadata: map[string]string{
+			"imageName":  "ubuntu-template",
+			"datacenter": "dc01",
+			"datastore":  "vsanDatastore",
+			"format":     "vmdk",
+			"checksum":   "sha256:abc123",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	if ref.ID != "[vsanDatastore] imagebuilder/build-01/ubuntu.vmdk" {
+		t.Fatalf("ImageRef.ID = %q", ref.ID)
+	}
+	if client.registerInput.Format != platform.FormatVMDK {
+		t.Fatalf("register format = %q", client.registerInput.Format)
+	}
+}
+
+func TestPluginCleanupIsIdempotent(t *testing.T) {
+	p, client := newInitializedPlugin(t)
+	if err := p.Cleanup(context.Background(), &platform.BuildArtifact{Metadata: map[string]string{
+		"vsphere.providerRef": "[vsanDatastore] imagebuilder/build-01/ubuntu.vmdk",
+	}}); err != nil {
+		t.Fatalf("Cleanup returned error: %v", err)
+	}
+	if client.cleanupMetadata["providerRef"] == "" {
+		t.Fatal("cleanup providerRef was not passed")
+	}
+}
+
+func TestPluginHealthCheckDelegates(t *testing.T) {
+	p, client := newInitializedPlugin(t)
+	client.healthErr = errors.New("not healthy")
+	if err := p.HealthCheck(context.Background()); err == nil {
+		t.Fatal("HealthCheck should return client error")
+	}
+}

@@ -137,6 +137,7 @@ spec:
     datastore: vsanDatastore
     network: "VM Network"
     folder: /dc01/vm/templates
+    uploadPathPrefix: imagebuilder
 
 ---
 # PlatformProvider: install the AWS provider pod
@@ -160,10 +161,10 @@ kind: PlatformProvider
 metadata:
   name: vsphere
 spec:
-  package: ghcr.io/yourorg/imagebuilder-provider-vsphere@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  package: ghcr.io/anwendt/imagebuilder-provider-vsphere@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
   packagePullPolicy: IfNotPresent
   security:
     allowedRegistries:
-      - ghcr.io/yourorg
+      - ghcr.io/anwendt
     requireDigest: true
     verifySignature: true
