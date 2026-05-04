@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"encoding/xml"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,7 +19,7 @@ import (
 )
 
 const (
-	guestCredentialsDirName = "guest-credentials"
+	guestCredentialsDirName = "guest-credentials" // #nosec G101 -- Directory name for generated credentials, not credential material.
 	guestSSHPrivateKeyName  = "id_ed25519"
 	guestSSHPublicKeyName   = "id_ed25519.pub"
 	guestPasswordName       = "password"
@@ -117,7 +118,7 @@ func writeEphemeralSSHKey(path string) (string, error) {
 		return "", fmt.Errorf("write ephemeral ssh key: %w", err)
 	}
 	authorizedKey := authorizedKeysEd25519(publicKey)
-	if err := os.WriteFile(path+".pub", []byte(authorizedKey+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(path+".pub", []byte(authorizedKey+"\n"), 0o600); err != nil {
 		return "", fmt.Errorf("write ephemeral ssh public key: %w", err)
 	}
 	return authorizedKey, nil
@@ -132,8 +133,11 @@ func authorizedKeysEd25519(publicKey ed25519.PublicKey) string {
 }
 
 func appendSSHString(buf []byte, value string) []byte {
+	if len(value) > math.MaxUint32 {
+		panic("ssh wire string exceeds uint32 length")
+	}
 	var length [4]byte
-	binary.BigEndian.PutUint32(length[:], uint32(len(value)))
+	binary.BigEndian.PutUint32(length[:], uint32(len(value))) // #nosec G115 -- Length is bounded above before conversion to the SSH wire uint32 length field.
 	buf = append(buf, length[:]...)
 	return append(buf, value...)
 }

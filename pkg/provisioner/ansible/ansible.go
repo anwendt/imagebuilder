@@ -142,7 +142,7 @@ func readSecretFile(path string) (string, error) {
 	if info.Mode().Perm()&0o077 != 0 {
 		return "", fmt.Errorf("secret file permissions must not grant group or other access")
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- Path was validated as a private regular secret file just above.
 	if err != nil {
 		return "", fmt.Errorf("read secret file: %w", err)
 	}

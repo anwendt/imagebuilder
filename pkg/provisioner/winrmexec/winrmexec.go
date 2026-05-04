@@ -52,7 +52,7 @@ func (c Client) ExecutePowerShell(ctx context.Context, access Access, script str
 		if access.HTTPS {
 			transport.TLSClientConfig = &tls.Config{
 				MinVersion:         tls.VersionTLS12,
-				InsecureSkipVerify: access.InsecureSkipVerify, //nolint:gosec // User-selected for isolated self-signed WinRM builders.
+				InsecureSkipVerify: access.InsecureSkipVerify, // #nosec G402 -- User-selected escape hatch for isolated self-signed WinRM builders.
 			}
 		}
 		client = &http.Client{Timeout: 30 * time.Second, Transport: transport}
@@ -178,7 +178,7 @@ func readPassword(path string) (string, error) {
 	if info.Mode().Perm()&0o077 != 0 {
 		return "", fmt.Errorf("winrm password file permissions must not grant group or other access")
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- Path was validated as a private regular password file just above.
 	if err != nil {
 		return "", fmt.Errorf("read winrm password: %w", err)
 	}

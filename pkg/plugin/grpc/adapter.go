@@ -99,11 +99,11 @@ func (a *Adapter) Connect(ctx context.Context) error {
 
 	caps, err := a.client.GetCapabilities(ctx, &providerv1.Empty{})
 	if err != nil {
-		conn.Close() //nolint:errcheck
+		_ = conn.Close()
 		return fmt.Errorf("GetCapabilities from %s: %w", a.address, err)
 	}
 	if caps.ProtocolVersion != "v1" {
-		conn.Close() //nolint:errcheck
+		_ = conn.Close()
 		return fmt.Errorf("provider at %s uses protocol %q, operator requires v1", a.address, caps.ProtocolVersion)
 	}
 

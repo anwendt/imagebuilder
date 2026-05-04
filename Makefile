@@ -112,6 +112,7 @@ proto: ## Generate Go code from proto files (requires protoc + protoc-gen-go + p
 		--go_out=api/provider/v1 --go_opt=paths=source_relative \
 		--go-grpc_out=api/provider/v1 --go-grpc_opt=paths=source_relative \
 		api/provider/v1/provider.proto
+	perl -0pi -e 's/(\/\/ \tprotoc\s+)v[0-9.]+/$${1}normalized/g; s/(\/\/ - protoc\s+)v[0-9.]+/$${1}normalized/g' api/provider/v1/provider.pb.go api/provider/v1/provider_grpc.pb.go
 
 ## Testing
 
@@ -141,7 +142,7 @@ vet: ## Run go vet (OSSF-Q-04, CERT-CON-04)
 
 gosec: ## Run gosec SAST scanner (AS-060, CERT-MSC-04, REQ-010)
 	@which gosec > /dev/null 2>&1 || $(GO) install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
-	gosec ./...
+	gosec -exclude-generated $$($(GO) list -f '{{.Dir}}' ./... | grep -v '/templates/')
 
 govulncheck: ## Scan for known CVEs in Go module graph (AS-033, OSSF-S-06)
 	@which govulncheck > /dev/null 2>&1 || $(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)

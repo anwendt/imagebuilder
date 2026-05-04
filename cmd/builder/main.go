@@ -110,7 +110,7 @@ func main() {
 }
 
 func readProvisionerStatuses(path string) []builder.ProvisionerStepStatus {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- Path points at the provisioner status file in the controller-owned workspace.
 	if err != nil {
 		return nil
 	}

@@ -39,7 +39,7 @@ func (r ExecRunner) Run(ctx context.Context, cmd Command) error {
 	if cmd.Name == "" {
 		return fmt.Errorf("command name is required")
 	}
-	execCmd := exec.CommandContext(ctx, cmd.Name, cmd.Args...)
+	execCmd := exec.CommandContext(ctx, cmd.Name, cmd.Args...) // #nosec G204 -- Builder executes allowlisted internal tool commands assembled by typed backends.
 	execCmd.Dir = cmd.Dir
 	if len(cmd.Env) > 0 {
 		execCmd.Env = cmd.Env
@@ -55,7 +55,7 @@ func (r ExecRunner) Start(ctx context.Context, cmd Command) (CommandProcess, err
 	if cmd.Name == "" {
 		return nil, fmt.Errorf("command name is required")
 	}
-	execCmd := exec.CommandContext(ctx, cmd.Name, cmd.Args...)
+	execCmd := exec.CommandContext(ctx, cmd.Name, cmd.Args...) // #nosec G204 -- Builder executes allowlisted internal tool commands assembled by typed backends.
 	execCmd.Dir = cmd.Dir
 	if len(cmd.Env) > 0 {
 		execCmd.Env = cmd.Env

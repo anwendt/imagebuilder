@@ -178,7 +178,7 @@ func (p NetworkGuestReadinessProbe) probeWinRM(ctx context.Context, access Guest
 		if access.WinRMHTTPS {
 			transport.TLSClientConfig = &tls.Config{
 				MinVersion:         tls.VersionTLS12,
-				InsecureSkipVerify: access.InsecureSkipVerify, //nolint:gosec // Explicit escape hatch for ephemeral self-signed WinRM.
+				InsecureSkipVerify: access.InsecureSkipVerify, // #nosec G402 -- Explicit escape hatch for ephemeral self-signed WinRM builders.
 			}
 		}
 		client = &http.Client{

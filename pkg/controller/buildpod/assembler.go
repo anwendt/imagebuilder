@@ -38,7 +38,7 @@ const (
 	cacheMount          = "/cache"
 	cacheVol            = "build-cache"
 	guestCredsMount     = "/credentials/guest"
-	guestCredsVol       = "guest-credentials"
+	guestCredsVol       = "guest-credentials" // #nosec G101 -- Kubernetes volume name, not credential material.
 	generatedCredsMount = "/credentials/generated"
 	generatedCredsVol   = "generated-credentials"
 	tmpMount            = "/tmp"

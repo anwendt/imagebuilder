@@ -315,7 +315,7 @@ func fallbackUploadOperations(workspace string, targets []uploadpod.TargetConfig
 }
 
 func readArtifact(path string) (*platform.BuildArtifact, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- Path points at the build result file in the controller-owned workspace.
 	if err != nil {
 		return nil, fmt.Errorf("read build result: %w", err)
 	}
@@ -357,7 +357,7 @@ func readSecretData(dir string) (map[string][]byte, error) {
 		if entry.IsDir() {
 			continue
 		}
-		value, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		value, err := os.ReadFile(filepath.Join(dir, entry.Name())) // #nosec G304 -- Directory is a Kubernetes Secret mount controlled by the pod spec.
 		if err != nil {
 			return nil, err
 		}
@@ -438,7 +438,7 @@ func recordUploadOperation(workspace string, op uploadOperationRecord) error {
 }
 
 func readUploadOperations(path string) ([]uploadOperationRecord, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- Path points at the upload operations file in the controller-owned workspace.
 	if err != nil {
 		return nil, err
 	}

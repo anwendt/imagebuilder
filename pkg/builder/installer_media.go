@@ -50,6 +50,7 @@ func prepareCloudInitInstallerMedia(installer *v1alpha1.InstallerMediaSpec, work
 	}
 	userDataPath := filepath.Join(dir, cloudInitUserDataName)
 	userData := installer.UserData
+	// #nosec G304 -- Path is scoped to the controller-owned installer seed directory.
 	if existing, err := os.ReadFile(userDataPath); err == nil && len(strings.TrimSpace(string(existing))) > 0 {
 		userData = mergeCloudInit(userData, string(existing))
 	} else if err != nil && !os.IsNotExist(err) {

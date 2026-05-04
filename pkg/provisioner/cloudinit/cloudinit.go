@@ -42,6 +42,7 @@ func (p Provisioner) Run(_ context.Context, req *provisioner.RunRequest) (*provi
 	}
 	userDataPath := filepath.Join(seedDir, userDataName)
 	userData := req.Spec.Inline
+	// #nosec G304 -- Path is scoped to the controller-owned cloud-init seed directory.
 	if existing, err := os.ReadFile(userDataPath); err == nil && strings.TrimSpace(string(existing)) != "" {
 		userData = mergeCloudInit(string(existing), req.Spec.Inline)
 	} else if err != nil && !os.IsNotExist(err) {

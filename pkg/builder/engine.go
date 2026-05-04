@@ -382,7 +382,7 @@ func normalizeCacheRetainPolicy(policy string) string {
 
 func writeVerifiedSource(dstPath string, body io.Reader, source v1alpha1.SourceSpec, algo, expected string) (*SourceArtifact, error) {
 	hasher := newHash(algo)
-	dst, err := os.OpenFile(dstPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	dst, err := os.OpenFile(dstPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600) // #nosec G304 -- Destination is the controller-owned workspace/cache path.
 	if err != nil {
 		return nil, fmt.Errorf("create source file: %w", err)
 	}
@@ -418,7 +418,7 @@ func cacheFileName(algo, expected string) string {
 }
 
 func verifyFileChecksum(path, algo, expected string) (int64, bool, error) {
-	file, err := os.Open(path)
+	file, err := os.Open(path) // #nosec G304 -- Path is a controller-owned cached source artifact path.
 	if err != nil {
 		return 0, false, err
 	}
@@ -434,7 +434,7 @@ func verifyFileChecksum(path, algo, expected string) (int64, bool, error) {
 }
 
 func fileChecksum(path, algo string) (string, error) {
-	file, err := os.Open(path)
+	file, err := os.Open(path) // #nosec G304 -- Path is a controller-owned artifact path used only for checksum calculation.
 	if err != nil {
 		return "", fmt.Errorf("open file for checksum: %w", err)
 	}
@@ -553,13 +553,13 @@ func copyFile(ctx context.Context, srcPath, dstPath string) error {
 	default:
 	}
 
-	src, err := os.Open(srcPath)
+	src, err := os.Open(srcPath) // #nosec G304 -- Source path is the controller-owned build artifact path.
 	if err != nil {
 		return fmt.Errorf("open source artifact: %w", err)
 	}
 	defer src.Close()
 
-	dst, err := os.OpenFile(dstPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	dst, err := os.OpenFile(dstPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600) // #nosec G304 -- Destination is the controller-owned output artifact path.
 	if err != nil {
 		return fmt.Errorf("create build artifact: %w", err)
 	}

@@ -508,7 +508,7 @@ func newAWSLocalImageClient(ctx context.Context, cfg awsConfig) (awsLocalImageCl
 }
 
 func (c *awsSDKLocalImageClient) UploadObject(ctx context.Context, bucket, key, filePath string) error {
-	file, err := os.Open(filePath)
+	file, err := os.Open(filePath) // #nosec G304 -- Artifact path is supplied by the controller-owned build result.
 	if err != nil {
 		return fmt.Errorf("open artifact: %w", err)
 	}

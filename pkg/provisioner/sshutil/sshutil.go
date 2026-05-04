@@ -22,7 +22,7 @@ type Runner interface {
 type ExecRunner struct{}
 
 func (r ExecRunner) Run(ctx context.Context, cmd Command) error {
-	execCmd := exec.CommandContext(ctx, cmd.Name, cmd.Args...)
+	execCmd := exec.CommandContext(ctx, cmd.Name, cmd.Args...) // #nosec G204 -- SSH/SCP command lines are built by provisioner code from validated guest access settings.
 	execCmd.Dir = cmd.Dir
 	output, err := execCmd.CombinedOutput()
 	if err != nil {
