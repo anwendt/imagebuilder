@@ -7,11 +7,16 @@ import (
 	"net/url"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/vmware/govmomi"
 	"github.com/vmware/govmomi/find"
 	"github.com/vmware/govmomi/object"
+	"github.com/vmware/govmomi/ovf/importer"
+	"github.com/vmware/govmomi/vapi/library"
+	"github.com/vmware/govmomi/vapi/rest"
 	"github.com/vmware/govmomi/vim25/soap"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
@@ -42,6 +47,20 @@ type config struct {
 	datacenter         string
 	datastore          string
 	folder             string
+	cluster            string
+	resourcePool       string
+	host               string
+	network            string
+	ovfNetworkName     string
+	diskProvisioning   string
+	deployment         string
+	ipAllocationPolicy string
+	ipProtocol         string
+	annotation         string
+	markAsTemplate     bool
+	contentLibrary     string
+	contentLibraryID   string
+	requireManifest    bool
 	uploadPathPrefix   string
 	extraConfig        map[string]string
 }
@@ -66,14 +85,15 @@ type uploadInput struct {
 }
 
 type registerInput struct {
-	ProviderRef string
-	ImageName   string
-	Datacenter  string
-	Datastore   string
-	Format      platform.ImageFormat
-	Checksum    string
-	Tags        map[string]string
-	Metadata    map[string]string
+	ProviderRef  string
+	ArtifactPath string
+	ImageName    string
+	Datacenter   string
+	Datastore    string
+	Format       platform.ImageFormat
+	Checksum     string
+	Tags         map[string]string
+	Metadata     map[string]string
 }
 
 func (p *Plugin) Name() string    { return "vsphere" }
@@ -109,6 +129,20 @@ func (p *Plugin) Init(ctx context.Context, cfg platform.PluginConfig) error {
 		datacenter:         strings.TrimSpace(cfg.Extra["datacenter"]),
 		datastore:          strings.TrimSpace(cfg.Extra["datastore"]),
 		folder:             strings.TrimSpace(cfg.Extra["folder"]),
+		cluster:            strings.TrimSpace(cfg.Extra["cluster"]),
+		resourcePool:       strings.TrimSpace(cfg.Extra["resourcePool"]),
+		host:               strings.TrimSpace(cfg.Extra["host"]),
+		network:            strings.TrimSpace(cfg.Extra["network"]),
+		ovfNetworkName:     strings.TrimSpace(cfg.Extra["ovfNetworkName"]),
+		diskProvisioning:   strings.TrimSpace(firstNonEmpty(cfg.Extra["diskProvisioning"], "thin")),
+		deployment:         strings.TrimSpace(cfg.Extra["deployment"]),
+		ipAllocationPolicy: strings.TrimSpace(cfg.Extra["ipAllocationPolicy"]),
+		ipProtocol:         strings.TrimSpace(cfg.Extra["ipProtocol"]),
+		annotation:         strings.TrimSpace(cfg.Extra["annotation"]),
+		markAsTemplate:     boolFromExtra(cfg.Extra, "markAsTemplate", true),
+		contentLibrary:     strings.TrimSpace(cfg.Extra["contentLibrary"]),
+		contentLibraryID:   strings.TrimSpace(cfg.Extra["contentLibraryID"]),
+		requireManifest:    boolFromExtra(cfg.Extra, "requireManifest", false),
 		uploadPathPrefix:   strings.TrimSpace(firstNonEmpty(cfg.Extra["uploadPathPrefix"], cfg.Extra["uploadPath"], "imagebuilder")),
 		extraConfig:        cloneStringMap(cfg.Extra),
 	}
@@ -209,6 +243,7 @@ func (p *Plugin) Upload(ctx context.Context, artifact *platform.BuildArtifact) (
 	result.Metadata["datacenter"] = p.config.datacenter
 	result.Metadata["datastore"] = p.config.datastore
 	result.Metadata["datastorePath"] = datastorePath
+	result.Metadata["artifactPath"] = artifact.Path
 
 	if artifact.Metadata == nil {
 		artifact.Metadata = map[string]string{}
@@ -228,13 +263,14 @@ func (p *Plugin) Register(ctx context.Context, result *platform.UploadResult) (*
 		return nil, fmt.Errorf("vsphere plugin: client is not initialised")
 	}
 	input := registerInput{
-		ProviderRef: result.ProviderRef,
-		ImageName:   firstNonEmpty(result.Metadata["imageName"], p.config.extraConfig["imageName"]),
-		Datacenter:  firstNonEmpty(result.Metadata["datacenter"], p.config.datacenter),
-		Datastore:   firstNonEmpty(result.Metadata["datastore"], p.config.datastore),
-		Format:      platform.ImageFormat(result.Metadata["format"]),
-		Checksum:    result.Metadata["checksum"],
-		Metadata:    cloneStringMap(result.Metadata),
+		ProviderRef:  result.ProviderRef,
+		ArtifactPath: firstNonEmpty(result.Metadata["artifactPath"], result.Metadata["localPath"]),
+		ImageName:    firstNonEmpty(result.Metadata["imageName"], p.config.extraConfig["imageName"]),
+		Datacenter:   firstNonEmpty(result.Metadata["datacenter"], p.config.datacenter),
+		Datastore:    firstNonEmpty(result.Metadata["datastore"], p.config.datastore),
+		Format:       platform.ImageFormat(result.Metadata["format"]),
+		Checksum:     result.Metadata["checksum"],
+		Metadata:     cloneStringMap(result.Metadata),
 	}
 	ref, err := client.RegisterImage(ctx, input)
 	if err != nil {
@@ -322,6 +358,7 @@ func (c *govmomiClient) UploadArtifact(ctx context.Context, input uploadInput) (
 			"datacenter":    input.Datacenter,
 			"datastore":     input.Datastore,
 			"datastorePath": input.DatastorePath,
+			"artifactPath":  input.ArtifactPath,
 			"format":        string(input.Format),
 			"checksum":      input.Checksum,
 			"buildID":       input.BuildID,
@@ -330,14 +367,18 @@ func (c *govmomiClient) UploadArtifact(ctx context.Context, input uploadInput) (
 	}, nil
 }
 
-func (c *govmomiClient) RegisterImage(_ context.Context, input registerInput) (*platform.ImageRef, error) {
+func (c *govmomiClient) RegisterImage(ctx context.Context, input registerInput) (*platform.ImageRef, error) {
 	if input.ProviderRef == "" {
 		return nil, fmt.Errorf("provider reference is required")
+	}
+	if input.Format == platform.FormatOVA || input.Format == platform.FormatOVF {
+		return c.importOVF(ctx, input)
 	}
 	name := firstNonEmpty(input.ImageName, path.Base(input.ProviderRef))
 	tags := cloneStringMap(input.Tags)
 	tags["imagebuilder.io/provider"] = "vsphere"
 	tags["imagebuilder.io/format"] = string(input.Format)
+	tags["imagebuilder.io/registration-mode"] = "datastore-artifact"
 	if input.Checksum != "" {
 		tags["imagebuilder.io/checksum"] = input.Checksum
 	}
@@ -347,6 +388,271 @@ func (c *govmomiClient) RegisterImage(_ context.Context, input registerInput) (*
 		Location: input.Datacenter,
 		Tags:     tags,
 	}, nil
+}
+
+func (c *govmomiClient) importOVF(ctx context.Context, input registerInput) (*platform.ImageRef, error) {
+	if input.ArtifactPath == "" {
+		return nil, fmt.Errorf("artifact path is required to import %s as a vSphere template", input.Format)
+	}
+	if c.cfg.contentLibrary != "" || c.cfg.contentLibraryID != "" {
+		return c.publishContentLibraryItem(ctx, input)
+	}
+	dc, ds, err := c.resolveDatastore(ctx, input.Datacenter, input.Datastore)
+	if err != nil {
+		return nil, err
+	}
+	finder := find.NewFinder(c.vc.Client, true)
+	finder.SetDatacenter(dc)
+	rp, err := c.resolveResourcePool(ctx, finder)
+	if err != nil {
+		return nil, err
+	}
+	host, err := c.resolveHost(ctx, finder)
+	if err != nil {
+		return nil, err
+	}
+	folder, err := finder.FolderOrDefault(ctx, firstNonEmpty(c.cfg.folder, "vm"))
+	if err != nil {
+		return nil, fmt.Errorf("find VM folder %q: %w", firstNonEmpty(c.cfg.folder, "vm"), err)
+	}
+	opts := importer.Options{
+		DiskProvisioning:   c.cfg.diskProvisioning,
+		Deployment:         c.cfg.deployment,
+		IPAllocationPolicy: c.cfg.ipAllocationPolicy,
+		IPProtocol:         c.cfg.ipProtocol,
+		Annotation:         c.cfg.annotation,
+		Name:               &input.ImageName,
+		MarkAsTemplate:     c.cfg.markAsTemplate,
+	}
+	if opts.Name == nil || *opts.Name == "" {
+		name := strings.TrimSuffix(filepath.Base(input.ArtifactPath), filepath.Ext(input.ArtifactPath))
+		opts.Name = &name
+	}
+	archive, fpath := artifactArchive(input.ArtifactPath, input.Format)
+	imp := importer.Importer{
+		Log:          func(msg string) (int, error) { c.logImportWarning(msg); return len(msg), nil },
+		Name:         *opts.Name,
+		Client:       c.vc.Client,
+		Finder:       finder,
+		Datacenter:   dc,
+		Datastore:    ds,
+		ResourcePool: rp,
+		Host:         host,
+		Folder:       folder,
+		Archive:      archive,
+	}
+	if c.cfg.network != "" {
+		networks, err := importer.Spec(fpath, archive, false, false)
+		if err != nil {
+			return nil, fmt.Errorf("read OVF network spec: %w", err)
+		}
+		opts.NetworkMapping = networks.NetworkMapping
+		if len(opts.NetworkMapping) == 0 && c.cfg.ovfNetworkName != "" {
+			opts.NetworkMapping = []importer.Network{{Name: c.cfg.ovfNetworkName}}
+		}
+		if len(opts.NetworkMapping) == 0 {
+			return nil, fmt.Errorf("ProviderConfig extra network requires OVF network mapping; set ovfNetworkName when the descriptor has no network section")
+		}
+		for i := range opts.NetworkMapping {
+			opts.NetworkMapping[i].Network = c.cfg.network
+		}
+	}
+	moref, err := imp.Import(ctx, fpath, opts)
+	if err != nil {
+		return nil, fmt.Errorf("import OVF/OVA: %w", err)
+	}
+	vm := object.NewVirtualMachine(c.vc.Client, *moref)
+	if c.cfg.markAsTemplate {
+		if err := vm.MarkAsTemplate(ctx); err != nil {
+			return nil, fmt.Errorf("mark imported VM as template: %w", err)
+		}
+	}
+	tags := cloneStringMap(input.Tags)
+	tags["imagebuilder.io/provider"] = "vsphere"
+	tags["imagebuilder.io/format"] = string(input.Format)
+	tags["imagebuilder.io/registration-mode"] = "template"
+	if input.Checksum != "" {
+		tags["imagebuilder.io/checksum"] = input.Checksum
+	}
+	return &platform.ImageRef{
+		ID:       moref.String(),
+		Name:     *opts.Name,
+		Location: input.Datacenter,
+		Tags:     tags,
+	}, nil
+}
+
+func (c *govmomiClient) publishContentLibraryItem(ctx context.Context, input registerInput) (*platform.ImageRef, error) {
+	archive, fpath := artifactArchive(input.ArtifactPath, input.Format)
+	itemName := firstNonEmpty(input.ImageName, strings.TrimSuffix(filepath.Base(input.ArtifactPath), filepath.Ext(input.ArtifactPath)))
+	manifest := map[string]*library.Checksum{}
+	mf := strings.Replace(filepath.Base(input.ArtifactPath), filepath.Ext(input.ArtifactPath), ".mf", 1)
+	if input.Format == platform.FormatOVA {
+		mf = "*.mf"
+	}
+	if f, _, err := archive.Open(mf); err == nil {
+		sums, readErr := library.ReadManifest(f)
+		_ = f.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("read OVA/OVF manifest: %w", readErr)
+		}
+		manifest = sums
+	} else if c.cfg.requireManifest {
+		return nil, fmt.Errorf("required OVA/OVF manifest %q is missing: %w", mf, err)
+	}
+
+	restClient := rest.NewClient(c.vc.Client)
+	if err := restClient.Login(ctx, url.UserPassword(c.cfg.username, c.cfg.password)); err != nil {
+		return nil, fmt.Errorf("login to vSphere REST API: %w", err)
+	}
+	manager := library.NewManager(restClient)
+	libraryID := c.cfg.contentLibraryID
+	if libraryID == "" {
+		lib, err := manager.GetLibraryByName(ctx, c.cfg.contentLibrary)
+		if err != nil {
+			return nil, fmt.Errorf("find content library %q: %w", c.cfg.contentLibrary, err)
+		}
+		libraryID = lib.ID
+	}
+	itemID, err := manager.CreateLibraryItem(ctx, library.Item{
+		Name:      itemName,
+		LibraryID: libraryID,
+		Type:      library.ItemTypeOVF,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create content library item: %w", err)
+	}
+	session, err := manager.CreateLibraryItemUpdateSession(ctx, library.Session{LibraryItemID: itemID})
+	if err != nil {
+		return nil, fmt.Errorf("create content library update session: %w", err)
+	}
+	complete := false
+	defer func() {
+		if !complete {
+			_ = manager.CancelLibraryItemUpdateSession(context.Background(), session)
+		}
+	}()
+	if err := c.uploadLibraryArchiveFile(ctx, restClient, manager, session, archive, fpath, manifest); err != nil {
+		return nil, err
+	}
+	o, err := importer.ReadOvf(fpath, archive)
+	if err != nil {
+		return nil, fmt.Errorf("read OVF descriptor: %w", err)
+	}
+	envelope, err := importer.ReadEnvelope(o)
+	if err != nil {
+		return nil, fmt.Errorf("parse OVF descriptor: %w", err)
+	}
+	for i := range envelope.References {
+		if err := c.uploadLibraryArchiveFile(ctx, restClient, manager, session, archive, envelope.References[i].Href, manifest); err != nil {
+			return nil, err
+		}
+	}
+	if err := manager.CompleteLibraryItemUpdateSession(ctx, session); err != nil {
+		return nil, fmt.Errorf("complete content library update session: %w", err)
+	}
+	if err := manager.WaitOnLibraryItemUpdateSession(ctx, session, 3*time.Second, nil); err != nil {
+		return nil, fmt.Errorf("wait for content library update session: %w", err)
+	}
+	complete = true
+	tags := cloneStringMap(input.Tags)
+	tags["imagebuilder.io/provider"] = "vsphere"
+	tags["imagebuilder.io/format"] = string(input.Format)
+	tags["imagebuilder.io/registration-mode"] = "content-library"
+	if input.Checksum != "" {
+		tags["imagebuilder.io/checksum"] = input.Checksum
+	}
+	return &platform.ImageRef{
+		ID:       itemID,
+		Name:     itemName,
+		Location: firstNonEmpty(c.cfg.contentLibrary, c.cfg.contentLibraryID),
+		Tags:     tags,
+	}, nil
+}
+
+func (c *govmomiClient) uploadLibraryArchiveFile(ctx context.Context, restClient *rest.Client, manager *library.Manager, session string, archive importer.Archive, name string, manifest map[string]*library.Checksum) error {
+	file, size, err := archive.Open(name)
+	if err != nil {
+		return fmt.Errorf("open library file %q: %w", name, err)
+	}
+	defer file.Close()
+	if entry, ok := file.(*importer.TapeArchiveEntry); ok {
+		name = entry.Name
+	}
+	update, err := manager.AddLibraryItemFile(ctx, session, library.UpdateFile{
+		Name:       name,
+		SourceType: "PUSH",
+		Checksum:   manifest[name],
+		Size:       size,
+	})
+	if err != nil {
+		return fmt.Errorf("add content library file %q: %w", name, err)
+	}
+	uploadURL, err := url.Parse(update.UploadEndpoint.URI)
+	if err != nil {
+		return fmt.Errorf("parse content library upload endpoint: %w", err)
+	}
+	params := soap.DefaultUpload
+	params.ContentLength = size
+	if err := restClient.Upload(ctx, file, uploadURL, &params); err != nil {
+		return fmt.Errorf("upload content library file %q: %w", name, err)
+	}
+	return nil
+}
+
+func (c *govmomiClient) resolveResourcePool(ctx context.Context, finder *find.Finder) (*object.ResourcePool, error) {
+	if c.cfg.resourcePool != "" {
+		rp, err := finder.ResourcePool(ctx, c.cfg.resourcePool)
+		if err != nil {
+			return nil, fmt.Errorf("find resource pool %q: %w", c.cfg.resourcePool, err)
+		}
+		return rp, nil
+	}
+	if c.cfg.host != "" {
+		host, err := finder.HostSystem(ctx, c.cfg.host)
+		if err != nil {
+			return nil, fmt.Errorf("find host %q: %w", c.cfg.host, err)
+		}
+		rp, err := host.ResourcePool(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("resolve host resource pool: %w", err)
+		}
+		return rp, nil
+	}
+	if c.cfg.cluster != "" {
+		cluster, err := finder.ClusterComputeResource(ctx, c.cfg.cluster)
+		if err != nil {
+			return nil, fmt.Errorf("find cluster %q: %w", c.cfg.cluster, err)
+		}
+		rp, err := cluster.ResourcePool(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("resolve cluster resource pool: %w", err)
+		}
+		return rp, nil
+	}
+	rp, err := finder.DefaultResourcePool(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("find default resource pool: %w", err)
+	}
+	return rp, nil
+}
+
+func (c *govmomiClient) resolveHost(ctx context.Context, finder *find.Finder) (*object.HostSystem, error) {
+	if c.cfg.host == "" {
+		return nil, nil
+	}
+	host, err := finder.HostSystem(ctx, c.cfg.host)
+	if err != nil {
+		return nil, fmt.Errorf("find host %q: %w", c.cfg.host, err)
+	}
+	return host, nil
+}
+
+func (c *govmomiClient) logImportWarning(msg string) {
+	if c == nil {
+		return
+	}
+	slog.Default().With(slog.String("plugin", "vsphere")).Warn("vsphere import warning", slog.String("message", strings.TrimSpace(msg)))
 }
 
 func (c *govmomiClient) Cleanup(ctx context.Context, metadata map[string]string) error {
@@ -422,6 +728,13 @@ func artifactDatastorePath(prefix, buildID, artifactPath string, format platform
 	return path.Join(strings.Trim(prefix, "/"), sanitizeName(buildID), name)
 }
 
+func artifactArchive(artifactPath string, format platform.ImageFormat) (importer.Archive, string) {
+	if format == platform.FormatOVA {
+		return &importer.TapeArchive{Path: artifactPath}, "*.ovf"
+	}
+	return &importer.FileArchive{Path: artifactPath}, artifactPath
+}
+
 func datastoreDirectory(datastore, dir string) string {
 	return datastoreReference(datastore, strings.Trim(dir, "/"))
 }
@@ -463,6 +776,18 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func boolFromExtra(extra map[string]string, key string, defaultValue bool) bool {
+	value := strings.TrimSpace(extra[key])
+	if value == "" {
+		return defaultValue
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return defaultValue
+	}
+	return parsed
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

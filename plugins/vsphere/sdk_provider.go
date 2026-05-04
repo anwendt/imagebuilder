@@ -88,7 +88,6 @@ func (p *SDKProvider) UploadArtifact(ctx context.Context, artifact sdk.ArtifactI
 		return sdk.UploadResult{}, fmt.Errorf("create temporary artifact file: %w", err)
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
 
 	written, err := io.Copy(tmp, body)
 	if err != nil {
@@ -132,6 +131,7 @@ func (p *SDKProvider) UploadArtifact(ctx context.Context, artifact sdk.ArtifactI
 	}
 	result.Metadata["providerConfigName"] = artifact.ProviderConfigName
 	result.Metadata["format"] = artifact.Format
+	result.Metadata["artifactPath"] = tmpPath
 
 	p.mu.Lock()
 	p.uploads[result.ProviderRef] = result
@@ -149,6 +149,7 @@ func (p *SDKProvider) RegisterImage(ctx context.Context, input sdk.RegisterInput
 	if err != nil {
 		return sdk.ImageRef{}, err
 	}
+	p.cleanupUpload(input.ProviderRef)
 	return sdk.ImageRef{
 		ID:       ref.ID,
 		Name:     ref.Name,
@@ -169,6 +170,7 @@ func (p *SDKProvider) DeleteArtifact(ctx context.Context, input sdk.DeleteInput)
 	if err := plugin.Cleanup(ctx, &platform.BuildArtifact{Metadata: cloneStringMap(result.Metadata)}); err != nil {
 		return false, "", err
 	}
+	p.cleanupUpload(input.ProviderRef)
 	return true, "deleted", nil
 }
 
@@ -218,6 +220,23 @@ func (p *SDKProvider) uploadResult(input sdk.RegisterInput) *platform.UploadResu
 	}
 	mergeRegisterMetadata(metadata, input)
 	return &platform.UploadResult{ProviderRef: input.ProviderRef, Metadata: metadata}
+}
+
+func (p *SDKProvider) cleanupUpload(providerRef string) {
+	p.mu.Lock()
+	result := p.uploads[providerRef]
+	delete(p.uploads, providerRef)
+	p.mu.Unlock()
+	if result == nil || result.Metadata == nil {
+		return
+	}
+	artifactPath := result.Metadata["artifactPath"]
+	if artifactPath == "" {
+		return
+	}
+	if err := os.Remove(artifactPath); err != nil && !os.IsNotExist(err) {
+		p.log.Warn("remove temporary vSphere artifact", slog.String("path", artifactPath), slog.Any("error", err))
+	}
 }
 
 func mergeRegisterMetadata(metadata map[string]string, input sdk.RegisterInput) {
