@@ -14,7 +14,7 @@
 # ---------------------------------------------------------------------------
 # Stage 1 — Builder
 # ---------------------------------------------------------------------------
-FROM golang:1.26.2-alpine AS builder
+FROM golang:1.26.3-alpine@sha256:91eda9776261207ea25fd06b5b7fed8d397dd2c0a283e77f2ab6e91bfa71079d AS builder
 
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
@@ -50,7 +50,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 #   - tzdata
 #   - no shell, no package manager, no libc  (AS-056)
 #   - USER=nonroot (UID 65532)               (AS-057, AS-059)
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:a9329520abc449e3b14d5bc3a6ffae065bdde0f02667fa10880c49b35c109fd1
 
 # Copy the compiled binary from the builder stage.
 COPY --from=builder /workspace/manager /manager

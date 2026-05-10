@@ -106,10 +106,12 @@ spec:
 CI now treats the following as required gates:
 
 - full Go tests, deterministic core E2E tests, and manifest invariants;
+- Go module integrity verification with `go mod verify`;
 - generated API, CRD, RBAC, webhook, and protobuf artifacts;
 - `go vet`, `staticcheck`, `gosec`, `govulncheck`, and license checks;
 - gitleaks secret scanning;
 - Helm lint/render;
+- digest-pinned Dockerfile base images and commit-SHA-pinned GitHub Actions;
 - Trivy scans for operator, builder, uploader, AWS provider, Azure provider,
   vSphere provider, and OpenStack provider.
   The blocking gate fails on fixable `HIGH` and `CRITICAL` findings; the SARIF
@@ -122,6 +124,18 @@ CI now treats the following as required gates:
 Before approving a production rollout, also run one real provider smoke test per
 target environment. The simulator validates code paths, not vCenter inventory,
 networking, datastore capacity, IAM policy, or organizational admission policy.
+
+For a local production-install smoke test, render the production Helm defaults
+and roll out the operator into kind with:
+
+```bash
+make test-e2e-production
+```
+
+The production render keeps webhook, NetworkPolicy, namespace guardrail, provider
+mTLS, digest, signature, and image policy invariants enabled. The kind install
+path disables only cert-manager and Kyverno resources because those external CRDs
+are not present in a default kind cluster.
 
 ## Residual Operational Tasks
 

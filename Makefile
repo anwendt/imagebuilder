@@ -44,7 +44,7 @@ GOVULNCHECK_VERSION     := v1.1.4
 STATICCHECK_VERSION     := 2026.1
 GO_LICENSES_VERSION     := v1.6.0
 
-.PHONY: all build build-builder build-uploader build-provider-aws build-provider-vsphere build-provider-azure build-provider-openstack test test-race test-core-e2e test-manifests test-vsphere-simulator test-e2e test-e2e-aws test-e2e-azure lint vet gosec govulncheck staticcheck security-check generate manifests patch-webhook-manifest run docker-build docker-build-builder docker-build-uploader docker-build-provider-aws docker-build-provider-vsphere docker-build-provider-azure docker-build-provider-openstack docker-build-core-multiarch docker-build-provider-aws-multiarch docker-build-provider-vsphere-multiarch docker-build-provider-azure-multiarch docker-build-provider-openstack-multiarch docker-push-core docker-push-builder docker-push-uploader docker-push-provider-aws docker-push-provider-vsphere docker-push-provider-azure docker-push-provider-openstack docker-digest-core docker-digest-builder docker-digest-uploader docker-digest-provider-aws docker-digest-provider-vsphere docker-digest-provider-azure docker-digest-provider-openstack sign-core sign-builder sign-uploader sign-provider-aws sign-provider-vsphere sign-provider-azure sign-provider-openstack update-provider-samples update-aws-provider-samples update-vsphere-provider-samples update-azure-provider-samples update-openstack-provider-samples license-check help deploy-production deploy-observability deploy-policies helm-lint helm-template
+.PHONY: all build build-builder build-uploader build-provider-aws build-provider-vsphere build-provider-azure build-provider-openstack test test-race test-core-e2e test-manifests test-vsphere-simulator test-e2e test-e2e-production test-e2e-aws test-e2e-azure lint vet verify-deps gosec govulncheck staticcheck security-check generate manifests patch-webhook-manifest run docker-build docker-build-builder docker-build-uploader docker-build-provider-aws docker-build-provider-vsphere docker-build-provider-azure docker-build-provider-openstack docker-build-core-multiarch docker-build-provider-aws-multiarch docker-build-provider-vsphere-multiarch docker-build-provider-azure-multiarch docker-build-provider-openstack-multiarch docker-push-core docker-push-builder docker-push-uploader docker-push-provider-aws docker-push-provider-vsphere docker-push-provider-azure docker-push-provider-openstack docker-digest-core docker-digest-builder docker-digest-uploader docker-digest-provider-aws docker-digest-provider-vsphere docker-digest-provider-azure docker-digest-provider-openstack sign-core sign-builder sign-uploader sign-provider-aws sign-provider-vsphere sign-provider-azure sign-provider-openstack update-provider-samples update-aws-provider-samples update-vsphere-provider-samples update-azure-provider-samples update-openstack-provider-samples license-check help deploy-production deploy-observability deploy-policies helm-lint helm-template
 
 all: generate manifests build
 
@@ -298,6 +298,9 @@ test-manifests: ## Validate deployment and Helm chart invariants
 test-e2e: ## Run kind-based smoke test (requires kind + kubectl)
 	test/e2e/kind-smoke.sh
 
+test-e2e-production: ## Run kind-based Helm production smoke test (requires kind + kubectl + helm)
+	SMOKE_INSTALL_MODE=helm test/e2e/kind-smoke.sh
+
 test-e2e-aws: ## Run opt-in real AWS remote build E2E test (requires AWS_E2E=1 and AWS_E2E_* env)
 	AWS_E2E=1 $(GO) test ./plugins/aws -run TestAWSRemoteBuild_E2E -count=1 -v
 
@@ -322,6 +325,9 @@ lint: ## Run golangci-lint
 vet: ## Run go vet (OSSF-Q-04, CERT-CON-04)
 	$(GO) vet ./...
 
+verify-deps: ## Verify downloaded Go modules against go.sum (SC-018)
+	$(GO) mod verify
+
 gosec: ## Run gosec SAST scanner (AS-060, CERT-MSC-04, REQ-010)
 	GOBIN=$(LOCALBIN) $(GO) install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
 	$(LOCALBIN)/gosec -exclude-generated $$($(GO) list -f '{{.Dir}}' ./... | grep -v '/templates/')
@@ -334,7 +340,7 @@ staticcheck: ## Run staticcheck static analyser (CERT-ERR-01, SAMM-I-SB-03)
 	GOBIN=$(LOCALBIN) $(GO) install honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION)
 	$(LOCALBIN)/staticcheck ./...
 
-security-check: vet gosec staticcheck govulncheck license-check ## Run all security gates (REQ-008, REQ-010)
+security-check: vet verify-deps gosec staticcheck govulncheck license-check ## Run all security gates (REQ-008, REQ-010)
 
 ## Compliance
 
