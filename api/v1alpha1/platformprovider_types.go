@@ -275,8 +275,8 @@ type ProviderConfigList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(
+	SchemeBuilder.Register(addKnownTypes(
 		&PlatformProvider{}, &PlatformProviderList{},
 		&ProviderConfig{}, &ProviderConfigList{},
-	)
+	))
 }

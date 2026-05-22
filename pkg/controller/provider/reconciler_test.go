@@ -167,7 +167,7 @@ func TestProviderReconcile_NotFound_ReturnsNil(t *testing.T) {
 	if err != nil {
 		t.Errorf("expected nil error for not-found, got: %v", err)
 	}
-	if result.Requeue {
+	if result.RequeueAfter != 0 {
 		t.Error("expected no requeue for not-found")
 	}
 }
@@ -188,8 +188,8 @@ func TestProviderReconcile_AddsFinalizer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.Requeue {
-		t.Error("expected Requeue=true after adding finalizer")
+	if result.RequeueAfter == 0 {
+		t.Error("expected RequeueAfter set after adding finalizer")
 	}
 
 	updated := &v1alpha1.PlatformProvider{}

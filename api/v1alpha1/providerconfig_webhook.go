@@ -14,19 +14,33 @@
 package v1alpha1
 
 import (
+	"context"
+
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
 // SetupWebhookWithManager registers the ProviderConfig validating webhook.
 func (r *ProviderConfig) SetupWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(r).Complete()
+	return ctrl.NewWebhookManagedBy(mgr, r).WithValidator(providerConfigValidator{}).Complete()
 }
 
-// Ensure ProviderConfig implements the (deprecated-but-supported) webhook.Validator interface.
-var _ webhook.Validator = &ProviderConfig{}
+var _ admission.Validator[*ProviderConfig] = providerConfigValidator{}
+
+type providerConfigValidator struct{}
+
+func (providerConfigValidator) ValidateCreate(_ context.Context, obj *ProviderConfig) (admission.Warnings, error) {
+	return obj.validateProviderConfig()
+}
+
+func (providerConfigValidator) ValidateUpdate(_ context.Context, _ *ProviderConfig, newObj *ProviderConfig) (admission.Warnings, error) {
+	return newObj.validateProviderConfig()
+}
+
+func (providerConfigValidator) ValidateDelete(_ context.Context, _ *ProviderConfig) (admission.Warnings, error) {
+	return nil, nil
+}
 
 func (r *ProviderConfig) ValidateCreate() (admission.Warnings, error) {
 	return r.validateProviderConfig()

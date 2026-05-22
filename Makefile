@@ -37,10 +37,10 @@ API_PATHS      := ./api/...
 GEN_PATHS      := ./api/...;./pkg/controller/...
 
 # Tool versions
-CONTROLLER_GEN_VERSION := v0.19.0
+CONTROLLER_GEN_VERSION := v0.21.0
 KUBEBUILDER_VERSION     := 3.15.0
-GOSEC_VERSION           := v2.22.10
-GOVULNCHECK_VERSION     := v1.1.4
+GOSEC_VERSION           := v2.26.1
+GOVULNCHECK_VERSION     := v1.3.0
 STATICCHECK_VERSION     := 2026.1
 GO_LICENSES_VERSION     := v1.6.0
 

@@ -7,13 +7,13 @@
 package v1alpha1
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
@@ -49,10 +49,24 @@ func currentPlatformProviderAdmissionPolicy() PlatformProviderAdmissionPolicy {
 
 // SetupWebhookWithManager registers the PlatformProvider validating webhook.
 func (r *PlatformProvider) SetupWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(r).Complete()
+	return ctrl.NewWebhookManagedBy(mgr, r).WithValidator(platformProviderValidator{}).Complete()
 }
 
-var _ webhook.Validator = &PlatformProvider{}
+var _ admission.Validator[*PlatformProvider] = platformProviderValidator{}
+
+type platformProviderValidator struct{}
+
+func (platformProviderValidator) ValidateCreate(_ context.Context, obj *PlatformProvider) (admission.Warnings, error) {
+	return obj.validatePlatformProvider()
+}
+
+func (platformProviderValidator) ValidateUpdate(_ context.Context, _ *PlatformProvider, newObj *PlatformProvider) (admission.Warnings, error) {
+	return newObj.validatePlatformProvider()
+}
+
+func (platformProviderValidator) ValidateDelete(_ context.Context, _ *PlatformProvider) (admission.Warnings, error) {
+	return nil, nil
+}
 
 func (r *PlatformProvider) ValidateCreate() (admission.Warnings, error) {
 	return r.validatePlatformProvider()

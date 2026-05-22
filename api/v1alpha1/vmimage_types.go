@@ -913,5 +913,5 @@ type VMImageList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&VMImage{}, &VMImageList{})
+	SchemeBuilder.Register(addKnownTypes(&VMImage{}, &VMImageList{}))
 }

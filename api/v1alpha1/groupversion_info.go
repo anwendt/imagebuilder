@@ -4,12 +4,21 @@
 package v1alpha1
 
 import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"sigs.k8s.io/controller-runtime/pkg/scheme"
 )
 
 var (
 	GroupVersion  = schema.GroupVersion{Group: "imagebuilder.io", Version: "v1alpha1"}
-	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}
+	SchemeBuilder = runtime.NewSchemeBuilder()
 	AddToScheme   = SchemeBuilder.AddToScheme
 )
+
+func addKnownTypes(objects ...runtime.Object) func(*runtime.Scheme) error {
+	return func(scheme *runtime.Scheme) error {
+		scheme.AddKnownTypes(GroupVersion, objects...)
+		metav1.AddToGroupVersion(scheme, GroupVersion)
+		return nil
+	}
+}

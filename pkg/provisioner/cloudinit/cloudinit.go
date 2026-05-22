@@ -48,6 +48,7 @@ func (p Provisioner) Run(_ context.Context, req *provisioner.RunRequest) (*provi
 	} else if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("read existing cloud-init user-data: %w", err)
 	}
+	// #nosec G703 -- Path is scoped to the controller-owned cloud-init seed directory.
 	if err := os.WriteFile(userDataPath, []byte(userData), 0o600); err != nil {
 		return nil, fmt.Errorf("write cloud-init user-data: %w", err)
 	}

@@ -56,6 +56,7 @@ func prepareCloudInitInstallerMedia(installer *v1alpha1.InstallerMediaSpec, work
 	} else if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read existing cloud-init user-data: %w", err)
 	}
+	// #nosec G703 -- Path is scoped to the controller-owned installer seed directory.
 	if err := os.WriteFile(userDataPath, []byte(userData), 0o600); err != nil {
 		return fmt.Errorf("write cloud-init installer user-data: %w", err)
 	}

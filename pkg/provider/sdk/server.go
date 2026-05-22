@@ -67,7 +67,7 @@ func ServerOptionsFromEnv() ([]grpc.ServerOption, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load provider server certificate: %w", err)
 	}
-	caPEM, err := os.ReadFile(clientCAFile) // #nosec G304 -- Path is supplied by trusted provider deployment environment.
+	caPEM, err := os.ReadFile(clientCAFile) // #nosec G304 G703 -- Path is supplied by trusted provider deployment environment.
 	if err != nil {
 		return nil, fmt.Errorf("read provider client CA: %w", err)
 	}

@@ -15,23 +15,36 @@
 package v1alpha1
 
 import (
+	"context"
 	"fmt"
 	"path"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
 // SetupWebhookWithManager registers the VMImage validating webhook.
 func (r *VMImage) SetupWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(r).Complete()
+	return ctrl.NewWebhookManagedBy(mgr, r).WithValidator(vmImageValidator{}).Complete()
 }
 
-// Ensure VMImage implements the (deprecated-but-supported) webhook.Validator interface.
-var _ webhook.Validator = &VMImage{}
+var _ admission.Validator[*VMImage] = vmImageValidator{}
+
+type vmImageValidator struct{}
+
+func (vmImageValidator) ValidateCreate(_ context.Context, obj *VMImage) (admission.Warnings, error) {
+	return obj.validate()
+}
+
+func (vmImageValidator) ValidateUpdate(_ context.Context, _ *VMImage, newObj *VMImage) (admission.Warnings, error) {
+	return newObj.validate()
+}
+
+func (vmImageValidator) ValidateDelete(_ context.Context, _ *VMImage) (admission.Warnings, error) {
+	return nil, nil
+}
 
 // ValidateCreate validates a new VMImage.
 func (r *VMImage) ValidateCreate() (admission.Warnings, error) {

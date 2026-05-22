@@ -74,6 +74,7 @@ type VMImageReconciler struct {
 
 func (r *VMImageReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.log = slog.Default().With(slog.String("controller", "vmimage"))
+	//lint:ignore SA1019 record.EventRecorder is still used by the controller tests and event helper.
 	r.Recorder = mgr.GetEventRecorderFor("vmimage-controller")
 	if err := coordinationv1.AddToScheme(mgr.GetScheme()); err != nil {
 		return fmt.Errorf("add coordination scheme: %w", err)
@@ -113,7 +114,7 @@ func (r *VMImageReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if err := r.Update(ctx, img); err != nil {
 			return ctrl.Result{}, fmt.Errorf("add finalizer: %w", err)
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 	}
 
 	// 4. Dispatch by current phase.
@@ -295,7 +296,7 @@ func (r *VMImageReconciler) reconcileBuilding(ctx context.Context, img *v1alpha1
 			return ctrl.Result{}, fmt.Errorf("update status to Uploading: %w", err)
 		}
 		r.recordEvent(img, corev1.EventTypeNormal, "BuildComplete", "Build Job %q completed successfully", job.Name)
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 	}
 
 	if isJobFailed(job) {
@@ -386,7 +387,7 @@ func (r *VMImageReconciler) reconcileRemoteBuild(ctx context.Context, img *v1alp
 			return ctrl.Result{}, fmt.Errorf("update status to remote building: %w", err)
 		}
 		r.recordEvent(img, corev1.EventTypeNormal, "RemoteBuildStarted", "Remote build requested from provider %q", providerName)
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 	}
 
 	timeout := defaultBuildTimeout

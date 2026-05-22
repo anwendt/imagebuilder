@@ -3,6 +3,7 @@ package powershell
 import (
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"unicode/utf16"
 
@@ -85,7 +86,9 @@ func EncodedCommand(script string) string {
 	encoded := utf16.Encode([]rune(script))
 	raw := make([]byte, 0, len(encoded)*2)
 	for _, value := range encoded {
-		raw = append(raw, byte(value), byte(value>>8))
+		offset := len(raw)
+		raw = append(raw, 0, 0)
+		binary.LittleEndian.PutUint16(raw[offset:], value)
 	}
 	return "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand " + base64.StdEncoding.EncodeToString(raw)
 }

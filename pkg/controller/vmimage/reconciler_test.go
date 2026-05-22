@@ -299,8 +299,8 @@ func TestReconcile_AddsFinalizer_OnFirstReconcile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.Requeue {
-		t.Error("expected Requeue=true after adding finalizer")
+	if result.RequeueAfter == 0 {
+		t.Error("expected RequeueAfter set after adding finalizer")
 	}
 
 	updated := &v1alpha1.VMImage{}
@@ -572,8 +572,8 @@ func TestReconcile_Building_JobSucceeded_MovesToUploading(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.Requeue {
-		t.Error("expected Requeue=true to immediately enter Uploading phase")
+	if result.RequeueAfter == 0 {
+		t.Error("expected RequeueAfter set to immediately enter Uploading phase")
 	}
 
 	updated := &v1alpha1.VMImage{}
@@ -876,7 +876,7 @@ func TestReconcile_Uploading_JobSucceeded_MovesToReady(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Requeue || result.RequeueAfter != 0 {
+	if result.RequeueAfter != 0 {
 		t.Errorf("expected empty result for terminal Ready state, got %+v", result)
 	}
 
@@ -940,7 +940,7 @@ func TestReconcile_Uploading_JobSucceeded_StoresReportedUploadOperationRefs(t *t
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Requeue || result.RequeueAfter != 0 {
+	if result.RequeueAfter != 0 {
 		t.Errorf("expected empty result for terminal Ready state, got %+v", result)
 	}
 
@@ -982,7 +982,7 @@ func TestReconcile_Ready_IsTerminal_NoRequeue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Requeue || result.RequeueAfter != 0 {
+	if result.RequeueAfter != 0 {
 		t.Errorf("Ready is terminal: expected empty result, got %+v", result)
 	}
 }
@@ -1001,7 +1001,7 @@ func TestReconcile_Failed_IsTerminal_NoRequeue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Requeue || result.RequeueAfter != 0 {
+	if result.RequeueAfter != 0 {
 		t.Errorf("Failed is terminal: expected empty result, got %+v", result)
 	}
 }
@@ -1212,7 +1212,7 @@ func TestReconcile_DeletionDuringUpload_RemovesFinalizerAfterCleanupJobSucceeded
 	r := &vmimage.VMImageReconciler{Client: c, Scheme: s, Registry: plugin.Default(), Recorder: recorder}
 
 	result := reconcileOnce(t, r, "cleanup-done", "default")
-	if result.Requeue || result.RequeueAfter != 0 {
+	if result.RequeueAfter != 0 {
 		t.Fatalf("expected deletion cleanup to finish without requeue, got %+v", result)
 	}
 
@@ -1297,7 +1297,7 @@ func TestReconcile_NotFound_ReturnsNil(t *testing.T) {
 	if err != nil {
 		t.Errorf("expected nil error for not-found resource, got: %v", err)
 	}
-	if result.Requeue {
+	if result.RequeueAfter != 0 {
 		t.Error("expected no requeue for not-found resource")
 	}
 }
