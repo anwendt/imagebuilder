@@ -19,6 +19,13 @@ jobs:
       AZURE_E2E_CLIENT_SECRET: ${{ secrets.AZURE_E2E_CLIENT_SECRET }}
       AZURE_E2E_RESOURCE_GROUP: ${{ vars.AZURE_E2E_RESOURCE_GROUP }}
       AZURE_E2E_LOCATION: ${{ vars.AZURE_E2E_LOCATION }}
+      AZURE_E2E_STORAGE_ACCOUNT: ${{ vars.AZURE_E2E_STORAGE_ACCOUNT }}
+      AZURE_E2E_STORAGE_CONTAINER: ${{ vars.AZURE_E2E_STORAGE_CONTAINER }}
+      AZURE_E2E_SOURCE_TYPE: ${{ vars.AZURE_E2E_SOURCE_TYPE }}
+      AZURE_E2E_VM_SIZE: ${{ vars.AZURE_E2E_VM_SIZE }}
+      AZURE_E2E_STORAGE_ACCOUNT_KEY: ${{ secrets.AZURE_E2E_STORAGE_ACCOUNT_KEY }}
+      AZURE_E2E_SOURCE_ID: ${{ secrets.AZURE_E2E_SOURCE_ID }}
+      AZURE_E2E_NETWORK_INTERFACE_ID: ${{ secrets.AZURE_E2E_NETWORK_INTERFACE_ID }}
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -31,12 +38,5 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Prepare Azure E2E resources
-        run: make test-e2e-azure-tomcat-prep
-
-      - name: Run Azure Tomcat E2E and cleanup
-        run: make test-e2e-azure-tomcat-run-clean
-
-      - name: Cleanup Azure E2E resources
-        if: always()
-        run: make test-e2e-azure-tomcat-cleanup
+      - name: Run Azure Tomcat E2E
+        run: make test-e2e-azure-tomcat
