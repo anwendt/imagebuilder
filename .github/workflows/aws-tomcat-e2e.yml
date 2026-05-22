@@ -1,0 +1,78 @@
+name: AWS Tomcat E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+        description: AWS region
+        required: true
+      source_ami:
+        description: Linux source AMI ID with SSH access
+        required: true
+      subnet_id:
+        description: Subnet ID
+        required: true
+      security_group_ids:
+        description: Comma-separated security group IDs
+        required: true
+      instance_profile:
+        description: Build instance profile name
+        required: true
+      kms_key_id:
+        description: KMS key ID or alias
+        required: true
+      role_arn:
+        description: Role ARN for GitHub OIDC and provider AWS calls
+        required: true
+      instance_type:
+        description: Optional EC2 instance type
+        required: false
+        default: t3.micro
+      root_volume_size_gib:
+        description: Optional root volume size in GiB
+        required: false
+        default: "16"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  aws-tomcat-e2e:
+    name: AWS Tomcat Remote Build E2E
+    runs-on: ubuntu-latest
+    environment: aws-e2e
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@ec61189d14ec14c8efccab744f656cffd0e33f37
+        with:
+          role-to-assume: ${{ inputs.role_arn }}
+          aws-region: ${{ inputs.region }}
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run AWS Tomcat E2E
+        env:
+          AWS_E2E: "1"
+          AWS_E2E_WORKLOAD: tomcat
+          AWS_E2E_REGION: ${{ inputs.region }}
+          AWS_E2E_SOURCE_AMI: ${{ inputs.source_ami }}
+          AWS_E2E_OS_FAMILY: linux
+          AWS_E2E_SUBNET_ID: ${{ inputs.subnet_id }}
+          AWS_E2E_SECURITY_GROUP_IDS: ${{ inputs.security_group_ids }}
+          AWS_E2E_INSTANCE_PROFILE: ${{ inputs.instance_profile }}
+          AWS_E2E_KMS_KEY_ID: ${{ inputs.kms_key_id }}
+          AWS_E2E_ROLE_ARN: ${{ inputs.role_arn }}
+          AWS_E2E_INSTANCE_TYPE: ${{ inputs.instance_type }}
+          AWS_E2E_ROOT_VOLUME_SIZE_GIB: ${{ inputs.root_volume_size_gib }}
+        run: make test-e2e-aws-tomcat
