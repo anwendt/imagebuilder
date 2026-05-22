@@ -35,6 +35,7 @@ Optional prep settings:
   AZURE_E2E_PREP_PREFIX=imagebuilder-e2e
   AZURE_E2E_PREP_ADMIN_USER=azureuser
   AZURE_E2E_VM_SIZE=Standard_B2s
+  AZURE_E2E_CREATE_RESOURCE_GROUP=false
 
 Required for run/check:
   AZURE_E2E_SUBSCRIPTION_ID
@@ -107,8 +108,11 @@ azure_login() {
     --username "${AZURE_E2E_CLIENT_ID}" \
     --password "${AZURE_E2E_CLIENT_SECRET}" \
     --tenant "${AZURE_E2E_TENANT_ID}" \
+    --allow-no-subscriptions \
     --output none
-  az account set --subscription "${AZURE_E2E_SUBSCRIPTION_ID}"
+  if ! az account set --subscription "${AZURE_E2E_SUBSCRIPTION_ID}" >/dev/null 2>&1; then
+    echo "Azure subscription is not visible to this service principal; using explicit --subscription arguments."
+  fi
 }
 
 random_suffix() {
@@ -142,7 +146,7 @@ prep() {
   local container="${AZURE_E2E_STORAGE_CONTAINER:-imagebuilder-e2e}"
 
   local existing_rg_location
-  existing_rg_location="$(az group show --name "${rg}" --query location --output tsv 2>/dev/null || true)"
+  existing_rg_location="$(az group show --subscription "${AZURE_E2E_SUBSCRIPTION_ID}" --name "${rg}" --query location --output tsv 2>/dev/null || true)"
   if [[ -n "${existing_rg_location}" ]]; then
     if [[ "${existing_rg_location}" != "${location}" ]]; then
       echo "Resource group ${rg} already exists in ${existing_rg_location}; using that location instead of ${location}."
@@ -152,8 +156,13 @@ prep() {
       echo "Using existing resource group ${rg} in ${location}."
     fi
   else
-    echo "Creating resource group ${rg} in ${location}..."
-    az group create --name "${rg}" --location "${location}" --output none
+    if [[ "${AZURE_E2E_CREATE_RESOURCE_GROUP:-false}" == "true" ]]; then
+      echo "Creating resource group ${rg} in ${location}..."
+      az group create --subscription "${AZURE_E2E_SUBSCRIPTION_ID}" --name "${rg}" --location "${location}" --output none
+    else
+      echo "Resource group ${rg} could not be read; assuming it already exists in ${location}."
+      echo "Set AZURE_E2E_CREATE_RESOURCE_GROUP=true if this script should create missing resource groups."
+    fi
   fi
 
   local storage="${AZURE_E2E_STORAGE_ACCOUNT:-}"
@@ -165,9 +174,10 @@ prep() {
     write_export AZURE_E2E_STORAGE_ACCOUNT "${storage}"
   fi
 
-  if ! az storage account show --resource-group "${rg}" --name "${storage}" >/dev/null 2>&1; then
+  if ! az storage account show --subscription "${AZURE_E2E_SUBSCRIPTION_ID}" --resource-group "${rg}" --name "${storage}" >/dev/null 2>&1; then
     echo "Creating storage account ${storage}..."
     az storage account create \
+      --subscription "${AZURE_E2E_SUBSCRIPTION_ID}" \
       --resource-group "${rg}" \
       --name "${storage}" \
       --location "${location}" \
@@ -182,6 +192,7 @@ prep() {
 
   local storage_key
   storage_key="$(az storage account keys list \
+    --subscription "${AZURE_E2E_SUBSCRIPTION_ID}" \
     --resource-group "${rg}" \
     --account-name "${storage}" \
     --query '[0].value' \
@@ -197,6 +208,7 @@ prep() {
 
   echo "Creating Ubuntu source VM ${vm_name} from ${image}..."
   az vm create \
+    --subscription "${AZURE_E2E_SUBSCRIPTION_ID}" \
     --resource-group "${rg}" \
     --name "${vm_name}" \
     --location "${location}" \
@@ -209,6 +221,7 @@ prep() {
 
   local source_disk_id
   source_disk_id="$(az vm show \
+    --subscription "${AZURE_E2E_SUBSCRIPTION_ID}" \
     --resource-group "${rg}" \
     --name "${vm_name}" \
     --query 'storageProfile.osDisk.managedDisk.id' \
@@ -216,6 +229,7 @@ prep() {
 
   local source_nic_id
   source_nic_id="$(az vm nic list \
+    --subscription "${AZURE_E2E_SUBSCRIPTION_ID}" \
     --resource-group "${rg}" \
     --vm-name "${vm_name}" \
     --query '[0].id' \
@@ -223,12 +237,14 @@ prep() {
 
   local source_nsg_id
   source_nsg_id="$(az network nic show \
+    --subscription "${AZURE_E2E_SUBSCRIPTION_ID}" \
     --ids "${source_nic_id}" \
     --query 'networkSecurityGroup.id' \
     --output tsv 2>/dev/null || true)"
 
   local subnet_id
   subnet_id="$(az network nic show \
+    --subscription "${AZURE_E2E_SUBSCRIPTION_ID}" \
     --ids "${source_nic_id}" \
     --query 'ipConfigurations[0].subnet.id' \
     --output tsv)"
@@ -236,6 +252,7 @@ prep() {
 
   echo "Creating source snapshot ${snapshot_name}..."
   az snapshot create \
+    --subscription "${AZURE_E2E_SUBSCRIPTION_ID}" \
     --resource-group "${rg}" \
     --name "${snapshot_name}" \
     --location "${location}" \
@@ -245,6 +262,7 @@ prep() {
 
   local snapshot_id
   snapshot_id="$(az snapshot show \
+    --subscription "${AZURE_E2E_SUBSCRIPTION_ID}" \
     --resource-group "${rg}" \
     --name "${snapshot_name}" \
     --query id \
@@ -252,6 +270,7 @@ prep() {
 
   echo "Creating unattached build NIC ${nic_name}..."
   az network nic create \
+    --subscription "${AZURE_E2E_SUBSCRIPTION_ID}" \
     --resource-group "${rg}" \
     --name "${nic_name}" \
     --location "${location}" \
@@ -260,13 +279,14 @@ prep() {
 
   local build_nic_id
   build_nic_id="$(az network nic show \
+    --subscription "${AZURE_E2E_SUBSCRIPTION_ID}" \
     --resource-group "${rg}" \
     --name "${nic_name}" \
     --query id \
     --output tsv)"
 
   echo "Deallocating source VM ${vm_name}..."
-  az vm deallocate --resource-group "${rg}" --name "${vm_name}" --output none
+  az vm deallocate --subscription "${AZURE_E2E_SUBSCRIPTION_ID}" --resource-group "${rg}" --name "${vm_name}" --output none
 
   write_export AZURE_E2E_SOURCE_TYPE snapshot
   write_export AZURE_E2E_SOURCE_ID "${snapshot_id}"
@@ -306,7 +326,7 @@ delete_resource_id() {
   fi
 
   echo "Deleting ${label}..."
-  if ! az resource delete --ids "${id}" --only-show-errors >/dev/null 2>&1; then
+  if ! az resource delete --subscription "${AZURE_E2E_SUBSCRIPTION_ID}" --ids "${id}" --only-show-errors >/dev/null 2>&1; then
     echo "Warning: could not delete ${label}; it may already be gone or still be in use." >&2
   fi
 }
@@ -326,6 +346,7 @@ cleanup_resources() {
   if [[ -n "${AZURE_E2E_PREP_VM_NAME:-}" ]]; then
     echo "Deleting prep source VM ${AZURE_E2E_PREP_VM_NAME}..."
     if ! az vm delete \
+      --subscription "${AZURE_E2E_SUBSCRIPTION_ID}" \
       --resource-group "${AZURE_E2E_RESOURCE_GROUP}" \
       --name "${AZURE_E2E_PREP_VM_NAME}" \
       --yes \
@@ -345,6 +366,7 @@ cleanup_resources() {
   if [[ -n "${AZURE_E2E_STORAGE_ACCOUNT:-}" ]]; then
     echo "Deleting storage account ${AZURE_E2E_STORAGE_ACCOUNT}..."
     if ! az storage account delete \
+      --subscription "${AZURE_E2E_SUBSCRIPTION_ID}" \
       --resource-group "${AZURE_E2E_RESOURCE_GROUP}" \
       --name "${AZURE_E2E_STORAGE_ACCOUNT}" \
       --yes \
