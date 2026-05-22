@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
+	"github.com/anwendt/imagebuilder/test/e2e/workloads"
 )
 
 func TestVSphereProviderLive_E2E(t *testing.T) {
@@ -75,6 +77,102 @@ func TestVSphereProviderLive_E2E(t *testing.T) {
 	}
 	if ref.ID == "" {
 		t.Fatal("Register returned empty image ID")
+	}
+}
+
+func TestVSphereRemoteBuildTomcat_E2E(t *testing.T) {
+	if os.Getenv("VSPHERE_E2E") != "1" || !strings.EqualFold(os.Getenv("VSPHERE_E2E_WORKLOAD"), "tomcat") {
+		t.Skip("set VSPHERE_E2E=1 and VSPHERE_E2E_WORKLOAD=tomcat to run live vSphere Tomcat remote build E2E")
+	}
+
+	timeout := durationFromEnv(t, "VSPHERE_E2E_TIMEOUT", 75*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	buildID := "vsphere-tomcat-e2e-" + strconv.FormatInt(time.Now().Unix(), 10)
+	cfg := platform.PluginConfig{
+		ProviderConfigName: "vsphere-e2e",
+		Endpoint:           os.Getenv("VSPHERE_E2E_ENDPOINT"),
+		Insecure:           boolFromEnv("VSPHERE_E2E_INSECURE", true),
+		SecretData: map[string][]byte{
+			"username":      []byte(os.Getenv("VSPHERE_E2E_USERNAME")),
+			"password":      []byte(os.Getenv("VSPHERE_E2E_PASSWORD")),
+			"guestUsername": []byte(os.Getenv("VSPHERE_E2E_GUEST_USERNAME")),
+			"guestPassword": []byte(os.Getenv("VSPHERE_E2E_GUEST_PASSWORD")),
+		},
+		Extra: liveExtraConfig(firstNonEmpty(os.Getenv("VSPHERE_E2E_SOURCE_VM"), buildID)),
+	}
+	cfg.Extra["imageName"] = firstNonEmpty(os.Getenv("VSPHERE_E2E_IMAGE_NAME"), buildID)
+	requireVSphereE2EEnv(t, cfg)
+	for key, value := range map[string]string{
+		"VSPHERE_E2E_SOURCE_VM":      os.Getenv("VSPHERE_E2E_SOURCE_VM"),
+		"VSPHERE_E2E_GUEST_USERNAME": string(cfg.SecretData["guestUsername"]),
+		"VSPHERE_E2E_GUEST_PASSWORD": string(cfg.SecretData["guestPassword"]),
+	} {
+		if strings.TrimSpace(value) == "" {
+			t.Fatalf("%s is required", key)
+		}
+	}
+
+	plugin := &Plugin{}
+	if err := plugin.Init(ctx, cfg); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := plugin.HealthCheck(ctx); err != nil {
+		t.Fatalf("HealthCheck: %v", err)
+	}
+
+	req := &platform.RemoteBuildRequest{
+		BuildID:           buildID,
+		ImageName:         cfg.Extra["imageName"],
+		Namespace:         firstNonEmpty(os.Getenv("VSPHERE_E2E_NAMESPACE"), "imagebuilder-e2e"),
+		OSFamily:          platform.OSFamily(firstNonEmpty(os.Getenv("VSPHERE_E2E_OS_FAMILY"), string(platform.OSFamilyLinux))),
+		OSDistribution:    firstNonEmpty(os.Getenv("VSPHERE_E2E_OS_DISTRIBUTION"), "ubuntu"),
+		OSVersion:         firstNonEmpty(os.Getenv("VSPHERE_E2E_OS_VERSION"), "24.04"),
+		OSArch:            firstNonEmpty(os.Getenv("VSPHERE_E2E_OS_ARCH"), "amd64"),
+		SourceType:        firstNonEmpty(os.Getenv("VSPHERE_E2E_SOURCE_TYPE"), "template"),
+		SourceProviderRef: os.Getenv("VSPHERE_E2E_SOURCE_VM"),
+		Target: v1alpha1.TargetSpec{
+			ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "vsphere-e2e"},
+			Format:            firstNonEmpty(os.Getenv("VSPHERE_E2E_FORMAT"), string(platform.FormatVMDK)),
+			Tags:              map[string]string{"imagebuilder.io/e2e": "true", "imagebuilder.io/workload": "tomcat"},
+		},
+		Provisioners: []v1alpha1.ProvisionerSpec{{Type: "shell", Inline: workloads.TomcatTarShellProvisioner()}},
+		Timeout:      durationFromEnv(t, "VSPHERE_E2E_BUILD_TIMEOUT", 65*time.Minute),
+	}
+
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cleanupCancel()
+		if err := plugin.CleanupRemoteBuild(cleanupCtx, req); err != nil {
+			t.Logf("remote cleanup failed: %v", err)
+		}
+	}()
+
+	pollInterval := durationFromEnv(t, "VSPHERE_E2E_POLL_INTERVAL", 20*time.Second)
+	for {
+		result, err := plugin.ReconcileRemoteBuild(ctx, req)
+		if err != nil {
+			t.Fatalf("ReconcileRemoteBuild: %v", err)
+		}
+		if result.OperationRef != "" {
+			req.OperationRef = result.OperationRef
+		}
+		t.Logf("phase=%s done=%t ref=%s message=%s", result.Phase, result.Done, result.OperationRef, result.Message)
+		if result.Done {
+			if len(result.Images) != 1 || result.Images[0].ImageRef.ID == "" {
+				t.Fatalf("remote build completed without vSphere image ID: %#v", result.Images)
+			}
+			if result.Hygiene == nil || result.Hygiene.Status != "passed" {
+				t.Fatalf("remote build completed without passed hygiene result: %#v", result.Hygiene)
+			}
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for vSphere Tomcat remote build: %v", ctx.Err())
+		case <-time.After(pollInterval):
+		}
 	}
 }
 

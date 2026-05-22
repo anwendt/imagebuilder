@@ -44,7 +44,7 @@ GOVULNCHECK_VERSION     := v1.3.0
 STATICCHECK_VERSION     := 2026.1
 GO_LICENSES_VERSION     := v1.6.0
 
-.PHONY: all build build-builder build-uploader build-provider-aws build-provider-vsphere build-provider-azure build-provider-openstack test test-race test-core-e2e test-manifests test-vsphere-simulator test-e2e test-e2e-production test-e2e-aws test-e2e-azure lint vet verify-deps gosec govulncheck staticcheck security-check generate manifests patch-webhook-manifest run docker-build docker-build-builder docker-build-uploader docker-build-provider-aws docker-build-provider-vsphere docker-build-provider-azure docker-build-provider-openstack docker-build-core-multiarch docker-build-provider-aws-multiarch docker-build-provider-vsphere-multiarch docker-build-provider-azure-multiarch docker-build-provider-openstack-multiarch docker-push-core docker-push-builder docker-push-uploader docker-push-provider-aws docker-push-provider-vsphere docker-push-provider-azure docker-push-provider-openstack docker-digest-core docker-digest-builder docker-digest-uploader docker-digest-provider-aws docker-digest-provider-vsphere docker-digest-provider-azure docker-digest-provider-openstack sign-core sign-builder sign-uploader sign-provider-aws sign-provider-vsphere sign-provider-azure sign-provider-openstack update-provider-samples update-aws-provider-samples update-vsphere-provider-samples update-azure-provider-samples update-openstack-provider-samples license-check help deploy-production deploy-observability deploy-policies helm-lint helm-template
+.PHONY: all build build-builder build-uploader build-provider-aws build-provider-vsphere build-provider-azure build-provider-openstack test test-race test-core-e2e test-manifests test-vsphere-simulator test-e2e test-e2e-production test-e2e-aws test-e2e-aws-tomcat test-e2e-azure test-e2e-azure-tomcat test-e2e-azure-tomcat-prep test-e2e-azure-tomcat-run-clean test-e2e-azure-tomcat-cleanup test-e2e-vsphere test-e2e-vsphere-tomcat test-e2e-openstack test-e2e-openstack-tomcat test-e2e-windows-cloudbase lint vet verify-deps gosec govulncheck staticcheck security-check generate manifests patch-webhook-manifest run docker-build docker-build-builder docker-build-uploader docker-build-provider-aws docker-build-provider-vsphere docker-build-provider-azure docker-build-provider-openstack docker-build-core-multiarch docker-build-provider-aws-multiarch docker-build-provider-vsphere-multiarch docker-build-provider-azure-multiarch docker-build-provider-openstack-multiarch docker-push-core docker-push-builder docker-push-uploader docker-push-provider-aws docker-push-provider-vsphere docker-push-provider-azure docker-push-provider-openstack docker-digest-core docker-digest-builder docker-digest-uploader docker-digest-provider-aws docker-digest-provider-vsphere docker-digest-provider-azure docker-digest-provider-openstack sign-core sign-builder sign-uploader sign-provider-aws sign-provider-vsphere sign-provider-azure sign-provider-openstack update-provider-samples update-aws-provider-samples update-vsphere-provider-samples update-azure-provider-samples update-openstack-provider-samples license-check help deploy-production deploy-observability deploy-policies helm-lint helm-template
 
 all: generate manifests build
 
@@ -304,14 +304,35 @@ test-e2e-production: ## Run kind-based Helm production smoke test (requires kind
 test-e2e-aws: ## Run opt-in real AWS remote build E2E test (requires AWS_E2E=1 and AWS_E2E_* env)
 	AWS_E2E=1 $(GO) test ./plugins/aws -run TestAWSRemoteBuild_E2E -count=1 -v
 
+test-e2e-aws-tomcat: ## Run opt-in real AWS remote build E2E with a tar-based Apache Tomcat workload
+	AWS_E2E=1 AWS_E2E_WORKLOAD=tomcat $(GO) test ./plugins/aws -run TestAWSRemoteBuild_E2E -count=1 -v -timeout=75m
+
 test-e2e-azure: ## Run opt-in real Azure provider E2E test (requires AZURE_E2E=1 and AZURE_E2E_* env)
 	AZURE_E2E=1 $(GO) test ./plugins/azure -run TestAzureProviderLive_E2E -count=1 -v -timeout=60m
+
+test-e2e-azure-tomcat: ## Run opt-in real Azure remote build E2E with a tar-based Apache Tomcat workload
+	AZURE_E2E=1 AZURE_E2E_WORKLOAD=tomcat $(GO) test ./plugins/azure -run TestAzureRemoteBuildTomcat_E2E -count=1 -v -timeout=90m
+
+test-e2e-azure-tomcat-prep: ## Prepare Azure resources for the Tomcat E2E helper
+	test/e2e/azure-tomcat-e2e.sh prep
+
+test-e2e-azure-tomcat-run-clean: ## Run Azure Tomcat E2E and clean test resources without deleting the resource group
+	test/e2e/azure-tomcat-e2e.sh run-clean
+
+test-e2e-azure-tomcat-cleanup: ## Clean Azure Tomcat E2E resources without deleting the resource group
+	test/e2e/azure-tomcat-e2e.sh cleanup
 
 test-e2e-vsphere: ## Run opt-in real vSphere provider E2E test (requires VSPHERE_E2E=1 and VSPHERE_E2E_* env)
 	VSPHERE_E2E=1 $(GO) test ./plugins/vsphere -run TestVSphereProviderLive_E2E -count=1 -v -timeout=60m
 
+test-e2e-vsphere-tomcat: ## Run opt-in real vSphere remote build E2E with a tar-based Apache Tomcat workload
+	VSPHERE_E2E=1 VSPHERE_E2E_WORKLOAD=tomcat $(GO) test ./plugins/vsphere -run TestVSphereRemoteBuildTomcat_E2E -count=1 -v -timeout=90m
+
 test-e2e-openstack: ## Run opt-in real OpenStack remote build E2E test (requires OPENSTACK_E2E=1 and OPENSTACK_E2E_* env)
 	OPENSTACK_E2E=1 $(GO) test ./plugins/openstack -run TestOpenStackRemoteBuild_E2E -count=1 -v -timeout=60m
+
+test-e2e-openstack-tomcat: ## Run opt-in real OpenStack remote build E2E with a tar-based Apache Tomcat workload
+	OPENSTACK_E2E=1 OPENSTACK_E2E_WORKLOAD=tomcat $(GO) test ./plugins/openstack -run TestOpenStackRemoteBuild_E2E -count=1 -v -timeout=75m
 
 test-e2e-windows-cloudbase: ## Run opt-in live Windows ISO Cloudbase-Init/Sysprep E2E test (requires IMAGEBUILDER_WINDOWS_E2E=1 and local QEMU)
 	IMAGEBUILDER_WINDOWS_E2E=1 $(GO) test ./pkg/builder -run TestQEMUISOBackend_WindowsCloudbaseInitSysprep_E2E -count=1 -v -timeout=4h

@@ -11,6 +11,7 @@ import (
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
+	"github.com/anwendt/imagebuilder/test/e2e/workloads"
 )
 
 func TestAWSRemoteBuild_E2E(t *testing.T) {
@@ -154,7 +155,16 @@ func e2eProvisioners() []v1alpha1.ProvisionerSpec {
 		}
 	}
 	return []v1alpha1.ProvisionerSpec{
-		{Type: "shell", Inline: "set -eu\necho imagebuilder-aws-e2e >/tmp/imagebuilder-e2e.txt"},
+		{Type: "shell", Inline: e2eLinuxProvisionerScript()},
+	}
+}
+
+func e2eLinuxProvisionerScript() string {
+	switch strings.ToLower(envDefault("AWS_E2E_WORKLOAD", "marker")) {
+	case "tomcat":
+		return workloads.TomcatTarShellProvisioner()
+	default:
+		return "set -eu\necho imagebuilder-aws-e2e >/tmp/imagebuilder-e2e.txt"
 	}
 }
 

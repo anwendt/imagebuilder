@@ -1,0 +1,99 @@
+package workloads
+
+import "strings"
+
+const defaultTomcatVersion = "10.1.55"
+
+// TomcatTarShellProvisioner installs Tomcat from the upstream Apache tarball,
+// deploys a small app, enables a systemd service, and verifies localhost HTTP.
+func TomcatTarShellProvisioner() string {
+	return strings.TrimSpace(`
+set -euo pipefail
+
+TOMCAT_VERSION="${IMAGEBUILDER_TOMCAT_VERSION:-`+defaultTomcatVersion+`}"
+TOMCAT_BASE_URL="${IMAGEBUILDER_TOMCAT_BASE_URL:-https://downloads.apache.org/tomcat/tomcat-10/v${TOMCAT_VERSION}/bin}"
+TOMCAT_ARCHIVE="apache-tomcat-${TOMCAT_VERSION}.tar.gz"
+TOMCAT_URL="${TOMCAT_BASE_URL}/${TOMCAT_ARCHIVE}"
+TOMCAT_SHA512_URL="${TOMCAT_URL}.sha512"
+
+if [ "$(id -u)" -eq 0 ]; then
+  SUDO=""
+else
+  SUDO="sudo"
+fi
+
+export DEBIAN_FRONTEND=noninteractive
+${SUDO} apt-get update
+${SUDO} apt-get install -y --no-install-recommends ca-certificates curl openjdk-17-jre-headless
+
+workdir="$(mktemp -d)"
+trap 'rm -rf "${workdir}"' EXIT
+cd "${workdir}"
+curl -fsSLO "${TOMCAT_URL}"
+curl -fsSLO "${TOMCAT_SHA512_URL}"
+sha512sum -c "${TOMCAT_ARCHIVE}.sha512"
+
+${SUDO} install -d -m 0755 /opt/tomcat
+if ! id tomcat >/dev/null 2>&1; then
+  ${SUDO} useradd --system --home-dir /opt/tomcat --shell /usr/sbin/nologin tomcat
+fi
+${SUDO} tar -xzf "${TOMCAT_ARCHIVE}" -C /opt/tomcat
+${SUDO} ln -sfn "/opt/tomcat/apache-tomcat-${TOMCAT_VERSION}" /opt/tomcat/current
+${SUDO} rm -rf /opt/tomcat/current/webapps/*
+${SUDO} install -d -m 0755 /opt/tomcat/current/webapps/ROOT
+cat >index.html <<'HTML'
+imagebuilder-tomcat-e2e
+HTML
+cat >health <<'HTML'
+ok
+HTML
+${SUDO} install -m 0644 index.html /opt/tomcat/current/webapps/ROOT/index.html
+${SUDO} install -m 0644 health /opt/tomcat/current/webapps/ROOT/health
+${SUDO} chown -R tomcat:tomcat "/opt/tomcat/apache-tomcat-${TOMCAT_VERSION}"
+${SUDO} chmod +x /opt/tomcat/current/bin/*.sh
+
+JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
+cat >tomcat.service <<'UNIT'
+[Unit]
+Description=Apache Tomcat imagebuilder E2E service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=tomcat
+Group=tomcat
+Environment=JAVA_HOME=__JAVA_HOME__
+Environment=CATALINA_PID=/opt/tomcat/current/temp/tomcat.pid
+Environment=CATALINA_HOME=/opt/tomcat/current
+Environment=CATALINA_BASE=/opt/tomcat/current
+Environment='CATALINA_OPTS=-Xms128m -Xmx256m -Djava.security.egd=file:/dev/./urandom'
+ExecStart=/opt/tomcat/current/bin/startup.sh
+ExecStop=/opt/tomcat/current/bin/shutdown.sh
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+sed -i "s#__JAVA_HOME__#${JAVA_HOME}#g" tomcat.service
+${SUDO} install -m 0644 tomcat.service /etc/systemd/system/tomcat.service
+${SUDO} systemctl daemon-reload
+${SUDO} systemctl enable --now tomcat
+
+for _ in $(seq 1 30); do
+  if curl -fsS http://127.0.0.1:8080/health | grep -qx ok; then
+    ${SUDO} install -d -m 0755 /etc/imagebuilder
+    printf 'tomcat.version=%s\ninstall.mode=tar\nhealth=ok\n' "${TOMCAT_VERSION}" | ${SUDO} tee /etc/imagebuilder/tomcat-e2e >/dev/null
+    exit 0
+  fi
+  sleep 2
+done
+
+${SUDO} systemctl status tomcat --no-pager || true
+${SUDO} journalctl -u tomcat --no-pager -n 80 || true
+exit 1
+`) + "\n"
+}

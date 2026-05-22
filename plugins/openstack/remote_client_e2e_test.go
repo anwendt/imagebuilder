@@ -9,6 +9,7 @@ import (
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
+	"github.com/anwendt/imagebuilder/test/e2e/workloads"
 )
 
 func TestOpenStackRemoteBuild_E2E(t *testing.T) {
@@ -169,8 +170,20 @@ func openStackE2EProvisioners() []v1alpha1.ProvisionerSpec {
 	}
 	return []v1alpha1.ProvisionerSpec{{
 		Type:   "shell",
-		Inline: openStackE2EDefault("OPENSTACK_E2E_SHELL", "set -eu\necho imagebuilder-openstack-e2e >/tmp/imagebuilder-e2e.txt"),
+		Inline: openStackE2ELinuxProvisionerScript(),
 	}}
+}
+
+func openStackE2ELinuxProvisionerScript() string {
+	if script := strings.TrimSpace(os.Getenv("OPENSTACK_E2E_SHELL")); script != "" {
+		return script
+	}
+	switch strings.ToLower(openStackE2EDefault("OPENSTACK_E2E_WORKLOAD", "marker")) {
+	case "tomcat":
+		return workloads.TomcatTarShellProvisioner()
+	default:
+		return "set -eu\necho imagebuilder-openstack-e2e >/tmp/imagebuilder-e2e.txt"
+	}
 }
 
 func openStackE2EDefault(key, fallback string) string {
