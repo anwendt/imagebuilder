@@ -1,0 +1,9 @@
+Azure Tomcat VMImage example rendered.
+
+This chart expects imagebuilder CRDs and the imagebuilder operator to be
+installed already. Keep Azure credentials outside Git and provide the
+{{ .Values.providerConfig.credentials.existingSecret }} Secret via External
+Secrets, Sealed Secrets, or a protected manual bootstrap process.
+
+Check the VMImage status:
+  kubectl -n {{ include "azureTomcat.namespace" . }} get vmimage {{ .Values.vmImage.name }} -o yaml

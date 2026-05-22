@@ -1,0 +1,19 @@
+{{- if .Values.platformProvider.create }}
+apiVersion: imagebuilder.io/v1alpha1
+kind: PlatformProvider
+metadata:
+  name: {{ .Values.platformProvider.name }}
+  namespace: {{ include "azureTomcat.namespace" . }}
+  labels:
+    {{- include "azureTomcat.labels" . | nindent 4 }}
+spec:
+  package: {{ .Values.platformProvider.package | quote }}
+  packagePullPolicy: {{ .Values.platformProvider.packagePullPolicy }}
+  security:
+    allowedRegistries:
+      {{- range .Values.platformProvider.security.allowedRegistries }}
+      - {{ . | quote }}
+      {{- end }}
+    requireDigest: {{ .Values.platformProvider.security.requireDigest }}
+    verifySignature: {{ .Values.platformProvider.security.verifySignature }}
+{{- end }}

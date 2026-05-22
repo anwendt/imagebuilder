@@ -1,0 +1,16 @@
+apiVersion: imagebuilder.io/v1alpha1
+kind: PlatformProvider
+metadata:
+  name: azure
+  namespace: imagebuilder-system
+  labels:
+    app.kubernetes.io/name: imagebuilder-azure-tomcat
+    app.kubernetes.io/part-of: imagebuilder
+spec:
+  package: ghcr.io/anwendt/imagebuilder-provider-azure@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+  packagePullPolicy: IfNotPresent
+  security:
+    allowedRegistries:
+      - ghcr.io/anwendt
+    requireDigest: true
+    verifySignature: true

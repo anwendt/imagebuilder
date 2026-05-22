@@ -1,0 +1,26 @@
+apiVersion: imagebuilder.io/v1alpha1
+kind: ProviderConfig
+metadata:
+  name: azure-tomcat
+  namespace: imagebuilder-system
+  labels:
+    app.kubernetes.io/name: imagebuilder-azure-tomcat
+    app.kubernetes.io/part-of: imagebuilder
+spec:
+  provider: azure
+  credentials:
+    secretRef:
+      name: azure-credentials
+      key: credentials
+  region: germanywestcentral
+  extra:
+    authMode: clientSecret
+    resourceGroup: imagebuilder-test
+    storageAccount: imagebuilderstaging
+    storageContainer: imagebuilder-e2e
+    blobPrefix: tomcat
+    hyperVGeneration: V2
+    osState: generalized
+    storageAccountType: Standard_LRS
+    remote.vmSize: Standard_B2s
+    remote.networkInterfaceId: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/imagebuilder-test/providers/Microsoft.Network/networkInterfaces/imagebuilder-e2e-build-nic

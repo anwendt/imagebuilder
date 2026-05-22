@@ -1,0 +1,16 @@
+apiVersion: imagebuilder.io/v1alpha1
+kind: PlatformProvider
+metadata:
+  name: vsphere
+  namespace: imagebuilder-system
+  labels:
+    app.kubernetes.io/name: imagebuilder-vsphere-tomcat
+    app.kubernetes.io/part-of: imagebuilder
+spec:
+  package: ghcr.io/anwendt/imagebuilder-provider-vsphere@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  packagePullPolicy: IfNotPresent
+  security:
+    allowedRegistries:
+      - ghcr.io/anwendt
+    requireDigest: true
+    verifySignature: true

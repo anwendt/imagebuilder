@@ -1,0 +1,16 @@
+apiVersion: imagebuilder.io/v1alpha1
+kind: PlatformProvider
+metadata:
+  name: openstack
+  namespace: imagebuilder-system
+  labels:
+    app.kubernetes.io/name: imagebuilder-openstack-tomcat
+    app.kubernetes.io/part-of: imagebuilder
+spec:
+  package: ghcr.io/anwendt/imagebuilder-provider-openstack@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+  packagePullPolicy: IfNotPresent
+  security:
+    allowedRegistries:
+      - ghcr.io/anwendt
+    requireDigest: true
+    verifySignature: true

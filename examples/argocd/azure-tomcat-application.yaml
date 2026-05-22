@@ -1,0 +1,37 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: imagebuilder-azure-tomcat
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/anwendt/imagebuilder.git
+    targetRevision: main
+    path: examples/argocd/azure-tomcat-chart
+    helm:
+      releaseName: azure-tomcat
+      values: |
+        namespace:
+          name: imagebuilder-system
+        providerConfig:
+          region: germanywestcentral
+          extra:
+            resourceGroup: imagebuilder-test
+            storageAccount: imagebuilderstaging
+            storageContainer: imagebuilder-e2e
+            remote:
+              vmSize: Standard_B2s
+              networkInterfaceId: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/imagebuilder-test/providers/Microsoft.Network/networkInterfaces/imagebuilder-e2e-build-nic
+        vmImage:
+          source:
+            providerRef: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/imagebuilder-test/providers/Microsoft.Compute/snapshots/imagebuilder-e2e-ubuntu-snapshot
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: imagebuilder-system
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -1,0 +1,14 @@
+apiVersion: v2
+name: imagebuilder-azure-tomcat
+description: ArgoCD-ready Azure Tomcat VMImage example for imagebuilder
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/anwendt/imagebuilder
+sources:
+  - https://github.com/anwendt/imagebuilder
+keywords:
+  - imagebuilder
+  - azure
+  - tomcat
+  - argocd

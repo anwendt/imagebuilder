@@ -1,0 +1,27 @@
+{{- if .Values.providerConfig.create }}
+apiVersion: imagebuilder.io/v1alpha1
+kind: ProviderConfig
+metadata:
+  name: {{ .Values.providerConfig.name }}
+  namespace: {{ include "azureTomcat.namespace" . }}
+  labels:
+    {{- include "azureTomcat.labels" . | nindent 4 }}
+spec:
+  provider: {{ .Values.providerConfig.provider }}
+  credentials:
+    secretRef:
+      name: {{ .Values.providerConfig.credentials.existingSecret }}
+      key: {{ .Values.providerConfig.credentials.key }}
+  region: {{ .Values.providerConfig.region }}
+  extra:
+    authMode: {{ .Values.providerConfig.extra.authMode | quote }}
+    resourceGroup: {{ .Values.providerConfig.extra.resourceGroup | quote }}
+    storageAccount: {{ .Values.providerConfig.extra.storageAccount | quote }}
+    storageContainer: {{ .Values.providerConfig.extra.storageContainer | quote }}
+    blobPrefix: {{ .Values.providerConfig.extra.blobPrefix | quote }}
+    hyperVGeneration: {{ .Values.providerConfig.extra.hyperVGeneration | quote }}
+    osState: {{ .Values.providerConfig.extra.osState | quote }}
+    storageAccountType: {{ .Values.providerConfig.extra.storageAccountType | quote }}
+    remote.vmSize: {{ .Values.providerConfig.extra.remote.vmSize | quote }}
+    remote.networkInterfaceId: {{ .Values.providerConfig.extra.remote.networkInterfaceId | quote }}
+{{- end }}

@@ -1,0 +1,65 @@
+namespace:
+  create: true
+  name: imagebuilder-system
+
+platformProvider:
+  create: true
+  name: azure
+  package: ghcr.io/anwendt/imagebuilder-provider-azure@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+  packagePullPolicy: IfNotPresent
+  security:
+    allowedRegistries:
+      - ghcr.io/anwendt
+    requireDigest: true
+    verifySignature: true
+
+providerConfig:
+  create: true
+  name: azure-tomcat
+  provider: azure
+  region: germanywestcentral
+  credentials:
+    existingSecret: azure-credentials
+    key: credentials
+    createSecret: false
+    values:
+      subscriptionId: ""
+      tenantId: ""
+      clientId: ""
+      clientSecret: ""
+      storageAccountKey: ""
+  extra:
+    authMode: clientSecret
+    resourceGroup: imagebuilder-test
+    storageAccount: imagebuilderstaging
+    storageContainer: imagebuilder-e2e
+    blobPrefix: tomcat
+    hyperVGeneration: V2
+    osState: generalized
+    storageAccountType: Standard_LRS
+    remote:
+      vmSize: Standard_B2s
+      networkInterfaceId: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/imagebuilder-test/providers/Microsoft.Network/networkInterfaces/imagebuilder-e2e-build-nic
+
+vmImage:
+  create: true
+  name: azure-tomcat-ubuntu
+  os:
+    family: linux
+    distribution: ubuntu
+    version: "24.04"
+    arch: amd64
+  source:
+    type: snapshot
+    providerRef: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/imagebuilder-test/providers/Microsoft.Compute/snapshots/imagebuilder-e2e-ubuntu-snapshot
+  target:
+    format: vhd
+    tags:
+      imagebuilder-e2e: "true"
+      imagebuilder-workload: tomcat
+  build:
+    mode: remote
+    timeout: 90m
+  tomcat:
+    version: 10.1.55
+    baseUrl: ""

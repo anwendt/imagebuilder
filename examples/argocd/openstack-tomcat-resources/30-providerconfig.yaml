@@ -1,0 +1,23 @@
+apiVersion: imagebuilder.io/v1alpha1
+kind: ProviderConfig
+metadata:
+  name: openstack-tomcat
+  namespace: imagebuilder-system
+  labels:
+    app.kubernetes.io/name: imagebuilder-openstack-tomcat
+    app.kubernetes.io/part-of: imagebuilder
+spec:
+  provider: openstack
+  endpoint: https://openstack.example.com:5000/v3
+  region: RegionOne
+  credentials:
+    secretRef:
+      name: openstack-credentials
+      key: credentials
+  extra:
+    remote.flavorRef: m1.small
+    remote.networkID: 11111111-1111-1111-1111-111111111111
+    remote.securityGroups: imagebuilder-build
+    remote.keyName: imagebuilder-builder
+    remote.sshUser: ubuntu
+    image.visibility: private
