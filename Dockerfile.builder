@@ -3,7 +3,7 @@
 # The builder runs as a Kubernetes Job main container and writes only to the
 # mounted /workspace volume. It does not need Kubernetes API credentials.
 
-FROM golang:1.26.3-alpine@sha256:91eda9776261207ea25fd06b5b7fed8d397dd2c0a283e77f2ab6e91bfa71079d AS builder
+FROM golang:1.26.4-alpine@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648 AS builder
 
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
