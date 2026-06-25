@@ -22,7 +22,8 @@ Before using the example, replace:
 - Azure provider image digest in `20-platformprovider.yaml`
 - storage account and resource group in `30-providerconfig.yaml`
 - build NIC resource ID in `30-providerconfig.yaml`
-- source snapshot resource ID in `40-vmimage.yaml`
+- marketplace image reference in `40-vmimage.yaml` if you do not want the
+  default Ubuntu 24.04 LTS source
 
-The VMImage performs a remote Azure build from an existing Snapshot and installs
-Apache Tomcat from the upstream tar archive.
+The VMImage performs a remote Azure build from an Ubuntu Marketplace image and
+installs Apache Tomcat from the upstream tar archive.

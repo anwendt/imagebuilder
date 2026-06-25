@@ -93,6 +93,20 @@ func (r *VMImage) validate() (admission.Warnings, error) {
 			errs = append(errs, fmt.Errorf("spec.source.url must be empty when spec.source.type is snapshot"))
 		}
 	}
+	if r.Spec.Source.Type == "marketplace" {
+		if r.Spec.Source.MarketplaceRef == nil && strings.TrimSpace(r.Spec.Source.ProviderRef) == "" {
+			errs = append(errs, fmt.Errorf("spec.source.marketplaceRef or spec.source.providerRef is required when spec.source.type is marketplace"))
+		}
+		if r.Spec.Source.MarketplaceRef != nil && (strings.TrimSpace(r.Spec.Source.MarketplaceRef.Publisher) == "" ||
+			strings.TrimSpace(r.Spec.Source.MarketplaceRef.Offer) == "" ||
+			strings.TrimSpace(r.Spec.Source.MarketplaceRef.SKU) == "" ||
+			strings.TrimSpace(r.Spec.Source.MarketplaceRef.Version) == "") {
+			errs = append(errs, fmt.Errorf("spec.source.marketplaceRef publisher, offer, sku, and version are required when spec.source.type is marketplace"))
+		}
+		if r.Spec.Source.URL != "" {
+			errs = append(errs, fmt.Errorf("spec.source.url must be empty when spec.source.type is marketplace"))
+		}
+	}
 
 	if strings.HasPrefix(r.Spec.Source.URL, "https://") {
 		// AS-047: SSRF check — source URL must not resolve to a private IP.

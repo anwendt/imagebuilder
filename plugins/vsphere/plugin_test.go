@@ -267,6 +267,36 @@ func TestPluginReconcileRemoteBuildDelegates(t *testing.T) {
 	}
 }
 
+func TestPluginReconcileRemoteBuildAcceptsMarketplaceRef(t *testing.T) {
+	p, client := newInitializedPlugin(t)
+	_, err := p.ReconcileRemoteBuild(context.Background(), &platform.RemoteBuildRequest{
+		BuildID:    "build-123",
+		ImageName:  "ubuntu-template",
+		OSFamily:   platform.OSFamilyLinux,
+		OSArch:     "amd64",
+		SourceType: "marketplace",
+		SourceMarketplace: &v1alpha1.MarketplaceRef{
+			Publisher: "Canonical",
+			Offer:     "ubuntu",
+			SKU:       "24.04",
+			Version:   "latest",
+		},
+		Target: v1alpha1.TargetSpec{
+			ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "vsphere-prod"},
+			Format:            "ova",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ReconcileRemoteBuild returned error: %v", err)
+	}
+	if client.remoteInput.SourceMarketplace == nil || client.remoteInput.SourceMarketplace.Offer != "ubuntu" {
+		t.Fatalf("remote marketplace = %#v, want Ubuntu marketplace ref", client.remoteInput.SourceMarketplace)
+	}
+	if client.remoteInput.SourceRef != "" {
+		t.Fatalf("remote source ref = %q, want resolver to fill it later", client.remoteInput.SourceRef)
+	}
+}
+
 func TestPluginReconcileRemoteBuildReturnsImage(t *testing.T) {
 	p, client := newInitializedPlugin(t)
 	client.remoteState = &vsphereRemoteBuildState{

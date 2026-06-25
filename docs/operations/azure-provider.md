@@ -120,12 +120,17 @@ Remote mode supports direct registration from an existing Azure source:
 
 - `source.type: snapshot` with `source.providerRef` set to an Azure Snapshot resource ID
 - `source.type: managed-disk` with `source.providerRef` set to a Managed Disk resource ID
+- `source.type: marketplace` with `source.marketplaceRef` set to a cloud image
+  reference containing `publisher`, `offer`, `sku`, and `version`
 
 When no provisioners are configured, the provider registers the source directly.
-When provisioners are configured, the provider copies the source into a
-temporary managed OS disk, starts a temporary VM, runs supported provisioners
-through Azure VM Run Command, deallocates/generalizes the VM, creates the
-Managed Image from the VM, and deletes the temporary VM and disk.
+For Snapshot and Managed Disk sources with provisioners, the provider copies
+the source into a temporary managed OS disk, starts a temporary VM, runs
+supported provisioners through Azure VM Run Command, deallocates/generalizes
+the VM, creates the Managed Image from the VM, and deletes the temporary VM and
+disk. Marketplace sources always use the temporary VM flow because Azure
+requires a VM capture to turn a marketplace image plus provisioners into a
+custom Managed Image.
 
 Supported remote provisioners:
 

@@ -25,7 +25,12 @@ spec:
               networkInterfaceId: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/imagebuilder-test/providers/Microsoft.Network/networkInterfaces/imagebuilder-e2e-build-nic
         vmImage:
           source:
-            providerRef: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/imagebuilder-test/providers/Microsoft.Compute/snapshots/imagebuilder-e2e-ubuntu-snapshot
+            type: marketplace
+            marketplaceRef:
+              publisher: Canonical
+              offer: ubuntu-24_04-lts
+              sku: server
+              version: latest
   destination:
     server: https://kubernetes.default.svc
     namespace: imagebuilder-system

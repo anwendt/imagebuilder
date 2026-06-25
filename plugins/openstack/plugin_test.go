@@ -136,6 +136,37 @@ func TestPluginReconcileRemoteBuildReturnsImage(t *testing.T) {
 	}
 }
 
+func TestPluginReconcileRemoteBuildAcceptsMarketplaceRef(t *testing.T) {
+	client := &fakeOpenStackClient{}
+	plugin := &Plugin{
+		config: openStackConfig{providerConfigName: "otc-prod"},
+		client: client,
+	}
+
+	_, err := plugin.ReconcileRemoteBuild(context.Background(), &platform.RemoteBuildRequest{
+		BuildID:    "build-123",
+		ImageName:  "ubuntu-final",
+		SourceType: "marketplace",
+		SourceMarketplace: &v1alpha1.MarketplaceRef{
+			Publisher: "Open Telekom Cloud",
+			Offer:     "ubuntu",
+			SKU:       "24.04",
+			Version:   "latest",
+		},
+		OSFamily: platform.OSFamilyLinux,
+		Target:   v1alpha1.TargetSpec{Format: string(platform.FormatQCOW2)},
+	})
+	if err != nil {
+		t.Fatalf("ReconcileRemoteBuild returned error: %v", err)
+	}
+	if client.remoteInput.SourceMarketplace == nil || client.remoteInput.SourceMarketplace.Publisher != "Open Telekom Cloud" {
+		t.Fatalf("remote marketplace = %#v, want OTC marketplace ref", client.remoteInput.SourceMarketplace)
+	}
+	if client.remoteInput.SourceRef != "" {
+		t.Fatalf("remote source ref = %q, want resolver to fill it later", client.remoteInput.SourceRef)
+	}
+}
+
 func TestPluginReconcileRemoteBuildRequiresProviderRef(t *testing.T) {
 	plugin := &Plugin{client: &fakeOpenStackClient{}}
 	_, err := plugin.ReconcileRemoteBuild(context.Background(), &platform.RemoteBuildRequest{

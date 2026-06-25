@@ -10,8 +10,8 @@ The standalone vSphere PlatformProvider image is built from
 
 ```bash
 make build-provider-vsphere
-make docker-build-provider-vsphere REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.1.0
-make docker-push-provider-vsphere REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.1.0
+make docker-build-provider-vsphere REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.2.0
+make docker-push-provider-vsphere REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.2.0
 VSPHERE_PROVIDER_DIGEST=sha256:<digest> make sign-provider-vsphere REGISTRY=ghcr.io/anwendt
 VSPHERE_PROVIDER_DIGEST=sha256:<digest> make update-vsphere-provider-samples REGISTRY=ghcr.io/anwendt
 ```
@@ -138,6 +138,44 @@ IMAGEBUILDER_VSPHERE_SIMULATOR_TESTS=1 go test ./plugins/vsphere
 vSphere remote mode starts from an existing vSphere VM or template reference in
 `spec.source.providerRef`. The reference may be a managed object ID such as
 `vm-123` or an inventory path resolvable by the configured datacenter.
+
+The provider also accepts the provider-neutral marketplace form. vSphere does
+not expose a cloud marketplace image API, so the provider resolves
+`spec.source.marketplaceRef` through ProviderConfig mapping keys and then clones
+the mapped VM/template:
+
+```yaml
+apiVersion: imagebuilder.io/v1alpha1
+kind: ProviderConfig
+spec:
+  provider: vsphere
+  extra:
+    marketplace.canonical.ubuntu.24.04.latest: content-library:/Golden Images/ubuntu-24-template
+---
+apiVersion: imagebuilder.io/v1alpha1
+kind: VMImage
+spec:
+  source:
+    type: marketplace
+    marketplaceRef:
+      publisher: Canonical
+      offer: ubuntu
+      sku: "24.04"
+      version: latest
+```
+
+Mapping values may be:
+
+- `content-library:/Library Name/Item Name` for Content Library OVF or VM Template items.
+- `library-item:<item-id>` for a concrete Content Library item ID.
+- VM/template names or inventory paths.
+- Managed object IDs such as `vm-123`.
+
+Content Library OVF and VM Template items are deployed as the temporary remote
+build VM, then the normal provisioner and template finalization flow continues.
+If no mapping is present, the provider tries conservative fallback names such as
+`ubuntu-24-template` and `ubuntu-24.04-template`. Use a concrete
+`source.providerRef` when the source template must be pinned exactly.
 
 When `spec.provisioners` is empty, the provider clones the source and marks the
 clone as a template when `markAsTemplate=true`. When provisioners are present,

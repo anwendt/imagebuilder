@@ -25,6 +25,7 @@ type azureRemoteBuildInput struct {
 	ImageName          string
 	SourceType         string
 	SourceRef          string
+	SourceMarketplace  *v1alpha1.MarketplaceRef
 	SourceChecksum     string
 	OSFamily           platform.OSFamily
 	Format             platform.ImageFormat
@@ -50,10 +51,16 @@ func (c *sdkClient) ReconcileRemoteBuild(ctx context.Context, input azureRemoteB
 	}
 	defer cleanup()
 	input = expandedInput
-	if input.SourceType != "snapshot" && input.SourceType != "managed-disk" && input.SourceType != "manageddisk" && input.SourceType != "disk" {
-		return nil, fmt.Errorf("azure remote build supports source type snapshot or managed-disk, got %q", input.SourceType)
+	sourceType := strings.ToLower(strings.TrimSpace(input.SourceType))
+	input.SourceType = sourceType
+	if sourceType != "snapshot" && sourceType != "managed-disk" && sourceType != "manageddisk" && sourceType != "disk" && sourceType != "marketplace" {
+		return nil, fmt.Errorf("azure remote build supports source type snapshot, managed-disk, or marketplace, got %q", input.SourceType)
 	}
-	if input.SourceRef == "" {
+	if sourceType == "marketplace" {
+		if err := validateMarketplaceRef(input.SourceMarketplace); err != nil {
+			return nil, err
+		}
+	} else if input.SourceRef == "" {
 		return nil, fmt.Errorf("azure remote build source providerRef is required")
 	}
 	if input.Format != platform.FormatVHD {
@@ -138,18 +145,46 @@ func (c *sdkClient) CleanupRemoteBuild(ctx context.Context, input azureRemoteBui
 
 func (c *sdkClient) startRemoteBuildVM(ctx context.Context, input azureRemoteBuildInput, settings azureRemoteSettings) (*azureRemoteBuildState, error) {
 	ref := azureRemoteOperationRef{
-		BuildID:  input.BuildID,
-		VMName:   azureRemoteVMName(input.BuildID),
-		DiskName: azureRemoteDiskName(input.BuildID),
+		BuildID: input.BuildID,
+		VMName:  azureRemoteVMName(input.BuildID),
 	}
 	sourceType := strings.ToLower(strings.TrimSpace(input.SourceType))
-	disk, err := c.createRemoteOSDisk(ctx, input, ref.DiskName, sourceType)
-	if err != nil {
-		return nil, err
-	}
-	diskID := value(disk.ID)
-	if diskID == "" {
-		diskID = managedDiskID(c.cfg.subscriptionID, c.cfg.resourceGroup, ref.DiskName)
+	storageProfile := &armcompute.StorageProfile{}
+	if sourceType == "marketplace" {
+		storageProfile.ImageReference = azureMarketplaceImageReference(input.SourceMarketplace)
+		storageProfile.OSDisk = &armcompute.OSDisk{
+			Name:         to.Ptr(azureRemoteDiskName(input.BuildID)),
+			CreateOption: to.Ptr(armcompute.DiskCreateOptionTypesFromImage),
+			OSType:       to.Ptr(azureOSType(input.OSFamily)),
+			Caching:      to.Ptr(armcompute.CachingTypesReadWrite),
+			DeleteOption: to.Ptr(armcompute.DiskDeleteOptionTypesDelete),
+		}
+		if c.cfg.storageAccountType != "" {
+			storageProfile.OSDisk.ManagedDisk = &armcompute.ManagedDiskParameters{
+				StorageAccountType: to.Ptr(c.cfg.storageAccountType),
+			}
+		}
+		if c.cfg.diskSizeGiB > 0 {
+			storageProfile.OSDisk.DiskSizeGB = to.Ptr(c.cfg.diskSizeGiB)
+		}
+	} else {
+		ref.DiskName = azureRemoteDiskName(input.BuildID)
+		disk, err := c.createRemoteOSDisk(ctx, input, ref.DiskName, sourceType)
+		if err != nil {
+			return nil, err
+		}
+		diskID := value(disk.ID)
+		if diskID == "" {
+			diskID = managedDiskID(c.cfg.subscriptionID, c.cfg.resourceGroup, ref.DiskName)
+		}
+		storageProfile.OSDisk = &armcompute.OSDisk{
+			Name:         to.Ptr(ref.DiskName),
+			CreateOption: to.Ptr(armcompute.DiskCreateOptionTypesAttach),
+			ManagedDisk:  &armcompute.ManagedDiskParameters{ID: to.Ptr(diskID)},
+			OSType:       to.Ptr(azureOSType(input.OSFamily)),
+			Caching:      to.Ptr(armcompute.CachingTypesReadWrite),
+			DeleteOption: to.Ptr(armcompute.DiskDeleteOptionTypesDetach),
+		}
 	}
 	vm := armcompute.VirtualMachine{
 		Location: to.Ptr(c.cfg.location),
@@ -167,16 +202,7 @@ func (c *sdkClient) startRemoteBuildVM(ctx context.Context, input azureRemoteBui
 					},
 				}},
 			},
-			StorageProfile: &armcompute.StorageProfile{
-				OSDisk: &armcompute.OSDisk{
-					Name:         to.Ptr(ref.DiskName),
-					CreateOption: to.Ptr(armcompute.DiskCreateOptionTypesAttach),
-					ManagedDisk:  &armcompute.ManagedDiskParameters{ID: to.Ptr(diskID)},
-					OSType:       to.Ptr(azureOSType(input.OSFamily)),
-					Caching:      to.Ptr(armcompute.CachingTypesReadWrite),
-					DeleteOption: to.Ptr(armcompute.DiskDeleteOptionTypesDetach),
-				},
-			},
+			StorageProfile: storageProfile,
 		},
 	}
 	poller, err := c.vms.BeginCreateOrUpdate(ctx, c.cfg.resourceGroup, ref.VMName, vm, nil)
@@ -351,10 +377,35 @@ func (s azureRemoteSettings) validate(input azureRemoteBuildInput) error {
 }
 
 func azureRemoteRequiresNetwork(input azureRemoteBuildInput) bool {
+	if strings.EqualFold(strings.TrimSpace(input.SourceType), "marketplace") {
+		return true
+	}
 	if len(input.Provisioners) > 0 {
 		return true
 	}
 	return input.GuestAccess != nil && strings.EqualFold(strings.TrimSpace(input.GuestAccess.Protocol), "ssh")
+}
+
+func validateMarketplaceRef(ref *v1alpha1.MarketplaceRef) error {
+	if ref == nil {
+		return fmt.Errorf("azure remote marketplace source requires source.marketplaceRef")
+	}
+	if strings.TrimSpace(ref.Publisher) == "" || strings.TrimSpace(ref.Offer) == "" || strings.TrimSpace(ref.SKU) == "" || strings.TrimSpace(ref.Version) == "" {
+		return fmt.Errorf("azure remote marketplace source requires source.marketplaceRef publisher, offer, sku, and version")
+	}
+	return nil
+}
+
+func azureMarketplaceImageReference(ref *v1alpha1.MarketplaceRef) *armcompute.ImageReference {
+	if ref == nil {
+		return nil
+	}
+	return &armcompute.ImageReference{
+		Publisher: to.Ptr(ref.Publisher),
+		Offer:     to.Ptr(ref.Offer),
+		SKU:       to.Ptr(ref.SKU),
+		Version:   to.Ptr(ref.Version),
+	}
 }
 
 func validateAzureRemoteProvisioners(input azureRemoteBuildInput) error {

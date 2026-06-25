@@ -32,6 +32,7 @@ type streamingFakeServer struct {
 	uploadRef        string // provider_ref to return in final UploadProgress
 	registerID       string // image ID to return in RegisterImage
 	deleteOK         bool
+	remoteReq        *providerv1.RemoteBuildRequest
 	remoteCleanupReq *providerv1.RemoteBuildRequest
 }
 
@@ -101,7 +102,8 @@ func (s *streamingFakeServer) CleanupRemoteBuild(_ context.Context, req *provide
 	return &providerv1.RemoteBuildCleanupResponse{Cleaned: true, Message: "cleaned"}, nil
 }
 
-func (s *streamingFakeServer) ReconcileRemoteBuild(_ context.Context, _ *providerv1.RemoteBuildRequest) (*providerv1.RemoteBuildResponse, error) {
+func (s *streamingFakeServer) ReconcileRemoteBuild(_ context.Context, req *providerv1.RemoteBuildRequest) (*providerv1.RemoteBuildResponse, error) {
+	s.remoteReq = req
 	return &providerv1.RemoteBuildResponse{
 		OperationRef: "provider://operation/123",
 		Phase:        string(platform.RemoteBuildPhaseReady),
@@ -318,6 +320,36 @@ func TestAdapter_CleanupRemoteBuild_ForwardsOperationRef(t *testing.T) {
 	}
 	if server.remoteCleanupReq.GetSourceProviderRef() != "ami-0123456789abcdef0" {
 		t.Fatalf("source provider ref = %q", server.remoteCleanupReq.GetSourceProviderRef())
+	}
+}
+
+func TestAdapter_ReconcileRemoteBuild_MapsMarketplaceRef(t *testing.T) {
+	server := &streamingFakeServer{}
+	adapter := startStreamingServer(t, server)
+
+	_, err := adapter.ReconcileRemoteBuild(context.Background(), &platform.RemoteBuildRequest{
+		BuildID:    "build-123",
+		SourceType: "marketplace",
+		SourceMarketplace: &v1alpha1.MarketplaceRef{
+			Publisher: "Canonical",
+			Offer:     "ubuntu-24_04-lts",
+			SKU:       "server",
+			Version:   "latest",
+		},
+		Target: v1alpha1.TargetSpec{
+			ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "azure-prod"},
+			Format:            "vhd",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ReconcileRemoteBuild returned error: %v", err)
+	}
+	if server.remoteReq == nil || server.remoteReq.GetSourceMarketplace() == nil {
+		t.Fatalf("remote request marketplace = %#v, want set", server.remoteReq)
+	}
+	got := server.remoteReq.GetSourceMarketplace()
+	if got.GetPublisher() != "Canonical" || got.GetOffer() != "ubuntu-24_04-lts" || got.GetSku() != "server" || got.GetVersion() != "latest" {
+		t.Fatalf("source marketplace = %#v, want Ubuntu marketplace ref", got)
 	}
 }
 

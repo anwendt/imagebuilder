@@ -296,6 +296,7 @@ func vspherePlatformRemoteBuildRequest(input sdk.RemoteBuildInput) *platform.Rem
 		SourceType:        input.SourceType,
 		SourceURL:         input.SourceURL,
 		SourceProviderRef: input.SourceProviderRef,
+		SourceMarketplace: v1alpha1MarketplaceRef(input.SourceMarketplace),
 		SourceChecksum:    input.SourceChecksum,
 		Target: v1alpha1.TargetSpec{
 			ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: input.ProviderConfigName},
@@ -323,6 +324,18 @@ func vspherePlatformRemoteBuildRequest(input sdk.RemoteBuildInput) *platform.Rem
 		}
 	}
 	return req
+}
+
+func v1alpha1MarketplaceRef(ref *sdk.MarketplaceRef) *v1alpha1.MarketplaceRef {
+	if ref == nil {
+		return nil
+	}
+	return &v1alpha1.MarketplaceRef{
+		Publisher: ref.Publisher,
+		Offer:     ref.Offer,
+		SKU:       ref.SKU,
+		Version:   ref.Version,
+	}
 }
 
 func vsphereSDKProvisionerSource(source *sdk.RemoteProvisionerSource) *v1alpha1.ProvisionerSourceSpec {

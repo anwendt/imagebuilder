@@ -94,6 +94,37 @@ func TestAWSPlugin_ReconcileRemoteBuild_ReturnsInProgressState(t *testing.T) {
 	}
 }
 
+func TestAWSPlugin_ReconcileRemoteBuild_AcceptsMarketplaceRef(t *testing.T) {
+	client := &fakeAWSRemoteBuildClient{
+		out: &awsRemoteBuildState{
+			OperationRef: "aws:imagebuilder/build-123",
+			Phase:        platform.RemoteBuildPhaseBooting,
+			Message:      "booting instance",
+		},
+	}
+	p := initializedRemoteAWSPlugin(t, client)
+	req := remoteBuildRequest()
+	req.SourceType = "marketplace"
+	req.SourceProviderRef = ""
+	req.SourceMarketplace = &v1alpha1.MarketplaceRef{
+		Publisher: "Canonical",
+		Offer:     "ubuntu-24_04-lts",
+		SKU:       "server",
+		Version:   "latest",
+	}
+
+	_, err := p.ReconcileRemoteBuild(context.Background(), req)
+	if err != nil {
+		t.Fatalf("ReconcileRemoteBuild returned error: %v", err)
+	}
+	if client.got.SourceMarketplace == nil || client.got.SourceMarketplace.Publisher != "Canonical" {
+		t.Fatalf("client source marketplace = %#v, want Canonical marketplace ref", client.got.SourceMarketplace)
+	}
+	if client.got.SourceProviderRef != "" {
+		t.Fatalf("client source providerRef = %q, want empty before resolver", client.got.SourceProviderRef)
+	}
+}
+
 func TestAWSPlugin_ReconcileRemoteBuild_ReturnsAMIWhenDone(t *testing.T) {
 	client := &fakeAWSRemoteBuildClient{
 		out: &awsRemoteBuildState{

@@ -271,6 +271,7 @@ func openStackPlatformRemoteBuildRequest(input sdk.RemoteBuildInput) *platform.R
 		SourceType:        input.SourceType,
 		SourceURL:         input.SourceURL,
 		SourceProviderRef: input.SourceProviderRef,
+		SourceMarketplace: v1alpha1MarketplaceRef(input.SourceMarketplace),
 		SourceChecksum:    input.SourceChecksum,
 		Target: v1alpha1.TargetSpec{
 			ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: input.ProviderConfigName},
@@ -298,6 +299,18 @@ func openStackPlatformRemoteBuildRequest(input sdk.RemoteBuildInput) *platform.R
 		}
 	}
 	return req
+}
+
+func v1alpha1MarketplaceRef(ref *sdk.MarketplaceRef) *v1alpha1.MarketplaceRef {
+	if ref == nil {
+		return nil
+	}
+	return &v1alpha1.MarketplaceRef{
+		Publisher: ref.Publisher,
+		Offer:     ref.Offer,
+		SKU:       ref.SKU,
+		Version:   ref.Version,
+	}
 }
 
 func openStackSDKProvisionerSource(source *sdk.RemoteProvisionerSource) *v1alpha1.ProvisionerSourceSpec {

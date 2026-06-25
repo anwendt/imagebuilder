@@ -319,6 +319,12 @@ func TestReconcile_RemoteBuild_CompletesWithProviderImage(t *testing.T) {
 	img.Spec.Build.Mode = v1alpha1.BuildModeRemote
 	img.Spec.Source.URL = ""
 	img.Spec.Source.ProviderRef = "ami-0123456789abcdef0"
+	img.Spec.Source.MarketplaceRef = &v1alpha1.MarketplaceRef{
+		Publisher: "Canonical",
+		Offer:     "ubuntu-24_04-lts",
+		SKU:       "server",
+		Version:   "latest",
+	}
 	img.Spec.Targets = []v1alpha1.TargetSpec{
 		{ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "aws-cfg"}, Format: "ami"},
 	}
@@ -377,6 +383,13 @@ func TestReconcile_RemoteBuild_CompletesWithProviderImage(t *testing.T) {
 	}
 	if providerPlugin.lastRequest == nil || providerPlugin.lastRequest.SourceProviderRef != "ami-0123456789abcdef0" {
 		t.Fatalf("remote source providerRef = %#v, want ami-0123456789abcdef0", providerPlugin.lastRequest)
+	}
+	if providerPlugin.lastRequest.SourceMarketplace == nil ||
+		providerPlugin.lastRequest.SourceMarketplace.Publisher != "Canonical" ||
+		providerPlugin.lastRequest.SourceMarketplace.Offer != "ubuntu-24_04-lts" ||
+		providerPlugin.lastRequest.SourceMarketplace.SKU != "server" ||
+		providerPlugin.lastRequest.SourceMarketplace.Version != "latest" {
+		t.Fatalf("remote marketplace = %#v, want Ubuntu marketplace ref", providerPlugin.lastRequest.SourceMarketplace)
 	}
 	if updated.Status.HygieneResult == nil || updated.Status.HygieneResult.Status != "passed" {
 		t.Fatalf("hygieneResult = %#v, want passed", updated.Status.HygieneResult)

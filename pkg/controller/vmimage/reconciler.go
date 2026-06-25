@@ -1266,6 +1266,7 @@ func remoteBuildRequest(img *v1alpha1.VMImage, target v1alpha1.TargetSpec) *plat
 		SourceType:        img.Spec.Source.Type,
 		SourceURL:         img.Spec.Source.URL,
 		SourceProviderRef: img.Spec.Source.ProviderRef,
+		SourceMarketplace: img.Spec.Source.MarketplaceRef,
 		SourceChecksum:    img.Spec.Source.Checksum,
 		Target:            target,
 		Provisioners:      img.Spec.Provisioners,

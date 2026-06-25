@@ -101,7 +101,7 @@ type registerInput struct {
 }
 
 func (p *Plugin) Name() string    { return "vsphere" }
-func (p *Plugin) Version() string { return "v0.1.0" }
+func (p *Plugin) Version() string { return "v0.2.0" }
 
 func (p *Plugin) SupportedFormats() []platform.ImageFormat {
 	return []platform.ImageFormat{
@@ -319,7 +319,7 @@ func (p *Plugin) ReconcileRemoteBuild(ctx context.Context, req *platform.RemoteB
 		return nil, fmt.Errorf("vsphere plugin: unsupported remote target format %q; use ova, ovf, or vmdk", req.Target.Format)
 	}
 	sourceRef := strings.TrimSpace(firstNonEmpty(req.SourceProviderRef, req.SourceURL))
-	if sourceRef == "" {
+	if sourceRef == "" && req.SourceMarketplace == nil {
 		return nil, fmt.Errorf("vsphere plugin: remote source requires source providerRef")
 	}
 	if p.client == nil {
@@ -331,8 +331,10 @@ func (p *Plugin) ReconcileRemoteBuild(ctx context.Context, req *platform.RemoteB
 		ImageName:          firstNonEmpty(req.ImageName, "imagebuilder-"+sanitizeName(req.BuildID)),
 		SourceType:         strings.ToLower(strings.TrimSpace(req.SourceType)),
 		SourceRef:          sourceRef,
+		SourceMarketplace:  req.SourceMarketplace,
 		SourceChecksum:     req.SourceChecksum,
 		OSFamily:           req.OSFamily,
+		OSArch:             req.OSArch,
 		Format:             platform.ImageFormat(req.Target.Format),
 		Tags:               req.Target.Tags,
 		ProviderConfigName: req.Target.ProviderConfigRef.Name,
@@ -370,16 +372,18 @@ func (p *Plugin) CleanupRemoteBuild(ctx context.Context, req *platform.RemoteBui
 	}
 	sourceRef := strings.TrimSpace(firstNonEmpty(req.SourceProviderRef, req.SourceURL))
 	return p.client.CleanupRemoteBuild(ctx, vsphereRemoteBuildInput{
-		BuildID:      req.BuildID,
-		OperationRef: req.OperationRef,
-		ImageName:    firstNonEmpty(req.ImageName, "imagebuilder-"+sanitizeName(req.BuildID)),
-		SourceType:   strings.ToLower(strings.TrimSpace(req.SourceType)),
-		SourceRef:    sourceRef,
-		OSFamily:     req.OSFamily,
-		Format:       platform.ImageFormat(req.Target.Format),
-		Tags:         req.Target.Tags,
-		Provisioners: req.Provisioners,
-		GuestAccess:  req.GuestAccess,
+		BuildID:           req.BuildID,
+		OperationRef:      req.OperationRef,
+		ImageName:         firstNonEmpty(req.ImageName, "imagebuilder-"+sanitizeName(req.BuildID)),
+		SourceType:        strings.ToLower(strings.TrimSpace(req.SourceType)),
+		SourceRef:         sourceRef,
+		SourceMarketplace: req.SourceMarketplace,
+		OSFamily:          req.OSFamily,
+		OSArch:            req.OSArch,
+		Format:            platform.ImageFormat(req.Target.Format),
+		Tags:              req.Target.Tags,
+		Provisioners:      req.Provisioners,
+		GuestAccess:       req.GuestAccess,
 	})
 }
 

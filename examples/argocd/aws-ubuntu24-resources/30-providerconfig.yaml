@@ -1,0 +1,23 @@
+apiVersion: imagebuilder.io/v1alpha1
+kind: ProviderConfig
+metadata:
+  name: aws-ubuntu24
+  namespace: imagebuilder-system
+  labels:
+    app.kubernetes.io/name: imagebuilder-aws-ubuntu24
+    app.kubernetes.io/part-of: imagebuilder
+spec:
+  provider: aws
+  credentials:
+    secretRef:
+      name: aws-credentials
+      key: credentials
+  region: eu-west-1
+  extra:
+    roleArn: arn:aws:iam::123456789012:role/ImageBuilderProviderRole
+    remote.instanceType: t3.small
+    remote.subnetId: subnet-0123456789abcdef0
+    remote.securityGroupIds: sg-0123456789abcdef0
+    remote.iamInstanceProfile: ImageBuilderInstanceProfile
+    remote.kmsKeyId: alias/imagebuilder
+    remote.rootVolumeSizeGiB: "32"

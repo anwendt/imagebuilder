@@ -13,8 +13,12 @@ spec:
     version: "24.04"
     arch: amd64
   source:
-    type: cloud-image
-    providerRef: ami-0123456789abcdef0
+    type: marketplace
+    marketplaceRef:
+      publisher: Canonical
+      offer: ubuntu-24_04-lts
+      sku: server
+      version: latest
   provisioners:
     - type: shell
       inline: |

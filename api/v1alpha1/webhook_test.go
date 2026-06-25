@@ -17,7 +17,36 @@ import (
 // VMImage webhook tests
 // ---------------------------------------------------------------------------
 
+func validMarketplaceSource() SourceSpec {
+	return SourceSpec{
+		Type: "marketplace",
+		MarketplaceRef: &MarketplaceRef{
+			Publisher: "Canonical",
+			Offer:     "ubuntu-24_04-lts",
+			SKU:       "server",
+			Version:   "latest",
+		},
+	}
+}
+
 func TestVMImageWebhook_ValidCreate_NoURL(t *testing.T) {
+	img := &VMImage{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+		Spec: VMImageSpec{
+			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
+			Source: validMarketplaceSource(),
+			Targets: []TargetSpec{
+				{ProviderConfigRef: ProviderConfigRef{Name: "aws-cfg"}, Format: "vmdk"},
+			},
+		},
+	}
+	_, err := img.ValidateCreate()
+	if err != nil {
+		t.Errorf("ValidateCreate with marketplace source (no URL) returned error: %v", err)
+	}
+}
+
+func TestVMImageWebhook_MarketplaceSource_RequiresReference(t *testing.T) {
 	img := &VMImage{
 		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 		Spec: VMImageSpec{
@@ -29,8 +58,24 @@ func TestVMImageWebhook_ValidCreate_NoURL(t *testing.T) {
 		},
 	}
 	_, err := img.ValidateCreate()
-	if err != nil {
-		t.Errorf("ValidateCreate with marketplace source (no URL) returned error: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "marketplaceRef or spec.source.providerRef") {
+		t.Fatalf("ValidateCreate error = %v, want missing marketplace reference", err)
+	}
+}
+
+func TestVMImageWebhook_MarketplaceSource_AllowsProviderRef(t *testing.T) {
+	img := &VMImage{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+		Spec: VMImageSpec{
+			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
+			Source: SourceSpec{Type: "marketplace", ProviderRef: "ami-0123456789abcdef0"},
+			Targets: []TargetSpec{
+				{ProviderConfigRef: ProviderConfigRef{Name: "aws-cfg"}, Format: "ami"},
+			},
+		},
+	}
+	if _, err := img.ValidateCreate(); err != nil {
+		t.Fatalf("ValidateCreate with providerRef marketplace source returned error: %v", err)
 	}
 }
 
@@ -139,7 +184,7 @@ func TestVMImageWebhook_OSArch_AllowsARM64(t *testing.T) {
 	img := &VMImage{
 		Spec: VMImageSpec{
 			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04", Arch: "arm64"},
-			Source: SourceSpec{Type: "marketplace"},
+			Source: validMarketplaceSource(),
 			Targets: []TargetSpec{
 				{ProviderConfigRef: ProviderConfigRef{Name: "aws-cfg"}, Format: "vmdk"},
 			},
@@ -154,7 +199,7 @@ func TestVMImageWebhook_OSArch_RejectsUnsupportedArch(t *testing.T) {
 	img := &VMImage{
 		Spec: VMImageSpec{
 			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04", Arch: "s390x"},
-			Source: SourceSpec{Type: "marketplace"},
+			Source: validMarketplaceSource(),
 			Targets: []TargetSpec{
 				{ProviderConfigRef: ProviderConfigRef{Name: "aws-cfg"}, Format: "vmdk"},
 			},
@@ -168,7 +213,7 @@ func TestVMImageWebhook_OSArch_RejectsUnsupportedArch(t *testing.T) {
 func TestVMImageWebhook_EmptyTargets_ReturnsError(t *testing.T) {
 	img := &VMImage{
 		Spec: VMImageSpec{
-			Source:  SourceSpec{Type: "marketplace"},
+			Source:  validMarketplaceSource(),
 			Targets: []TargetSpec{}, // empty
 		},
 	}
@@ -201,7 +246,7 @@ func TestVMImageWebhook_SourceCacheSpec_Valid(t *testing.T) {
 	img := &VMImage{
 		Spec: VMImageSpec{
 			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
-			Source: SourceSpec{Type: "marketplace"},
+			Source: validMarketplaceSource(),
 			Build: BuildSpec{
 				Cache: &SourceCacheSpec{
 					Ref:          "source-cache",
@@ -223,7 +268,7 @@ func TestVMImageWebhook_SourceCacheSpec_RequiresRef(t *testing.T) {
 	img := &VMImage{
 		Spec: VMImageSpec{
 			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
-			Source: SourceSpec{Type: "marketplace"},
+			Source: validMarketplaceSource(),
 			Build:  BuildSpec{Cache: &SourceCacheSpec{TTL: &metav1.Duration{Duration: time.Hour}}},
 			Targets: []TargetSpec{
 				{ProviderConfigRef: ProviderConfigRef{Name: "cfg"}, Format: "vmdk"},
@@ -240,7 +285,7 @@ func TestVMImageWebhook_SourceCacheSpec_RejectsCacheRefMismatch(t *testing.T) {
 	img := &VMImage{
 		Spec: VMImageSpec{
 			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
-			Source: SourceSpec{Type: "marketplace"},
+			Source: validMarketplaceSource(),
 			Build: BuildSpec{
 				CacheRef: &legacy,
 				Cache:    &SourceCacheSpec{Ref: "structured-cache"},
@@ -259,7 +304,7 @@ func TestVMImageWebhook_SourceCacheSpec_RejectsNonPositiveTTL(t *testing.T) {
 	img := &VMImage{
 		Spec: VMImageSpec{
 			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
-			Source: SourceSpec{Type: "marketplace"},
+			Source: validMarketplaceSource(),
 			Build: BuildSpec{
 				Cache: &SourceCacheSpec{
 					Ref: "source-cache",
@@ -551,7 +596,7 @@ func TestVMImageWebhook_ProvisionerImagePolicy_RejectsMutableTag(t *testing.T) {
 	img := &VMImage{
 		Spec: VMImageSpec{
 			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
-			Source: SourceSpec{Type: "marketplace"},
+			Source: validMarketplaceSource(),
 			Provisioners: []ProvisionerSpec{{
 				Type:  "custom",
 				Image: "ghcr.io/yourorg/provisioner-custom:v1",
@@ -574,7 +619,7 @@ func TestVMImageWebhook_KVMRequiresDedicatedBuildNodeSelector(t *testing.T) {
 	img := &VMImage{
 		Spec: VMImageSpec{
 			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
-			Source: SourceSpec{Type: "marketplace"},
+			Source: validMarketplaceSource(),
 			Build: BuildSpec{
 				Security: &BuildSecuritySpec{EnableKVM: true},
 			},
@@ -600,7 +645,7 @@ func TestVMImageWebhook_ProvisionerImagePolicy_AllowsPinnedAllowedImage(t *testi
 	img := &VMImage{
 		Spec: VMImageSpec{
 			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
-			Source: SourceSpec{Type: "marketplace"},
+			Source: validMarketplaceSource(),
 			Provisioners: []ProvisionerSpec{{
 				Type:  "custom",
 				Image: "ghcr.io/yourorg/provisioner-custom@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

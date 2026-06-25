@@ -17,14 +17,15 @@ import (
 )
 
 type fakeEC2RemoteBuildAPI struct {
-	runInput             *ec2.RunInstancesInput
-	stopInput            *ec2.StopInstancesInput
-	terminateInput       *ec2.TerminateInstancesInput
-	createImageInput     *ec2.CreateImageInput
-	describeImagesInput  *ec2.DescribeImagesInput
-	describeSGInput      *ec2.DescribeSecurityGroupsInput
-	deregisterInput      *ec2.DeregisterImageInput
-	deleteSnapshotInputs []*ec2.DeleteSnapshotInput
+	runInput               *ec2.RunInstancesInput
+	stopInput              *ec2.StopInstancesInput
+	terminateInput         *ec2.TerminateInstancesInput
+	createImageInput       *ec2.CreateImageInput
+	describeImagesInput    *ec2.DescribeImagesInput
+	marketplaceImagesInput *ec2.DescribeImagesInput
+	describeSGInput        *ec2.DescribeSecurityGroupsInput
+	deregisterInput        *ec2.DeregisterImageInput
+	deleteSnapshotInputs   []*ec2.DeleteSnapshotInput
 
 	instanceState  ec2types.InstanceStateName
 	imageState     ec2types.ImageState
@@ -107,6 +108,25 @@ func (f *fakeEC2RemoteBuildAPI) DescribeImages(ctx context.Context, params *ec2.
 				Platform:     f.sourcePlatform,
 				Architecture: arch,
 			}},
+		}, nil
+	}
+	if len(params.ImageIds) == 0 && len(params.Filters) > 0 && len(params.Owners) == 1 && params.Owners[0] == "099720109477" {
+		f.marketplaceImagesInput = params
+		return &ec2.DescribeImagesOutput{
+			Images: []ec2types.Image{
+				{
+					ImageId:      awssdk.String("ami-old"),
+					State:        ec2types.ImageStateAvailable,
+					Architecture: ec2types.ArchitectureValuesX8664,
+					CreationDate: awssdk.String("2026-01-01T00:00:00.000Z"),
+				},
+				{
+					ImageId:      awssdk.String("ami-marketplace"),
+					State:        ec2types.ImageStateAvailable,
+					Architecture: ec2types.ArchitectureValuesX8664,
+					CreationDate: awssdk.String("2026-02-01T00:00:00.000Z"),
+				},
+			},
 		}, nil
 	}
 	if len(params.ImageIds) == 0 && !f.existingImage {
@@ -207,6 +227,34 @@ func TestAWSRemoteBuildClient_StartsInstance(t *testing.T) {
 	}
 	if ec2api.describeSGInput == nil {
 		t.Fatal("DescribeSecurityGroups was not called")
+	}
+}
+
+func TestAWSRemoteBuildClient_ResolvesMarketplaceRef(t *testing.T) {
+	ec2api := &fakeEC2RemoteBuildAPI{instanceID: "i-build"}
+	client := testAWSRemoteBuildClient(ec2api)
+	req := remoteBuildRequest()
+	req.SourceType = "marketplace"
+	req.SourceProviderRef = ""
+	req.SourceMarketplace = &v1alpha1.MarketplaceRef{
+		Publisher: "Canonical",
+		Offer:     "ubuntu-24_04-lts",
+		SKU:       "server",
+		Version:   "latest",
+	}
+
+	state, err := client.ReconcileRemoteBuild(context.Background(), awsRemoteRequestFromPlatform(req))
+	if err != nil {
+		t.Fatalf("ReconcileRemoteBuild returned error: %v", err)
+	}
+	if state.Phase != platform.RemoteBuildPhaseBooting {
+		t.Errorf("Phase = %q", state.Phase)
+	}
+	if ec2api.runInput == nil || awssdk.ToString(ec2api.runInput.ImageId) != "ami-marketplace" {
+		t.Fatalf("RunInstances input = %#v, want ami-marketplace", ec2api.runInput)
+	}
+	if ec2api.marketplaceImagesInput == nil || len(ec2api.marketplaceImagesInput.Owners) != 1 || ec2api.marketplaceImagesInput.Owners[0] != "099720109477" {
+		t.Fatalf("Marketplace DescribeImages input = %#v, want Canonical owner", ec2api.marketplaceImagesInput)
 	}
 }
 
@@ -737,6 +785,7 @@ func awsRemoteRequestFromPlatform(req *platform.RemoteBuildRequest) awsRemoteBui
 		SourceType:        req.SourceType,
 		SourceURL:         req.SourceURL,
 		SourceProviderRef: req.SourceProviderRef,
+		SourceMarketplace: req.SourceMarketplace,
 		SourceChecksum:    req.SourceChecksum,
 		OSFamily:          req.OSFamily,
 		OSDistribution:    req.OSDistribution,

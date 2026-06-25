@@ -76,7 +76,7 @@ type openStackUploadInput struct {
 }
 
 func (p *Plugin) Name() string    { return "openstack" }
-func (p *Plugin) Version() string { return "v0.1.0" }
+func (p *Plugin) Version() string { return "v0.2.0" }
 
 func (p *Plugin) SupportedFormats() []platform.ImageFormat {
 	return []platform.ImageFormat{
@@ -249,7 +249,7 @@ func (p *Plugin) ReconcileRemoteBuild(ctx context.Context, req *platform.RemoteB
 	if req.Target.Format != string(platform.FormatQCOW2) && req.Target.Format != string(platform.FormatRaw) {
 		return nil, fmt.Errorf("openstack plugin: remote build requires target format qcow2 or raw, got %q", req.Target.Format)
 	}
-	if req.SourceProviderRef == "" {
+	if req.SourceProviderRef == "" && req.SourceMarketplace == nil {
 		return nil, fmt.Errorf("openstack plugin: remote build source providerRef is required")
 	}
 	if p.client == nil {
@@ -261,8 +261,10 @@ func (p *Plugin) ReconcileRemoteBuild(ctx context.Context, req *platform.RemoteB
 		ImageName:          firstNonEmpty(req.ImageName, "imagebuilder-"+sanitizeOpenStackName(req.BuildID)),
 		SourceType:         req.SourceType,
 		SourceRef:          req.SourceProviderRef,
+		SourceMarketplace:  req.SourceMarketplace,
 		SourceChecksum:     req.SourceChecksum,
 		OSFamily:           req.OSFamily,
+		OSArch:             req.OSArch,
 		Format:             platform.ImageFormat(req.Target.Format),
 		Tags:               map[string]string{"imagebuilder.io/build-id": req.BuildID},
 		ProviderConfigName: p.config.providerConfigName,

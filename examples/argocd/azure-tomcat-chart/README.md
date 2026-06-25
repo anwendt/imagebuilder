@@ -1,7 +1,7 @@
 # Azure Tomcat ArgoCD Helm Example
 
 This chart is a GitOps-ready example for building an Azure Managed Image from
-an existing Azure Snapshot and installing Apache Tomcat from the upstream tar
+an Ubuntu Marketplace image and installing Apache Tomcat from the upstream tar
 archive during a remote build.
 
 ## ArgoCD Path
@@ -17,7 +17,7 @@ examples/argocd/azure-tomcat-chart
 - The imagebuilder operator and CRDs are already installed.
 - The Azure provider image digest in `values.yaml` is replaced with a real
   released digest.
-- The source Azure Snapshot and dedicated build NIC already exist.
+- A dedicated build NIC already exists.
 - The provider credential Secret exists in the target namespace.
 
 ## Credentials
@@ -56,4 +56,5 @@ helm template azure-tomcat examples/argocd/azure-tomcat-chart \
 ## Deploy With ArgoCD
 
 Use `../azure-tomcat-application.yaml` as a starting point and replace
-`repoURL`, `targetRevision`, provider digest, snapshot ID, and build NIC ID.
+`repoURL`, `targetRevision`, provider digest, Marketplace image reference, and
+build NIC ID.

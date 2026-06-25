@@ -128,7 +128,7 @@ type registerInput struct {
 }
 
 func (p *Plugin) Name() string    { return "azure" }
-func (p *Plugin) Version() string { return "v0.1.0" }
+func (p *Plugin) Version() string { return "v0.2.0" }
 
 func (p *Plugin) SupportedFormats() []platform.ImageFormat {
 	return []platform.ImageFormat{platform.FormatVHD}
@@ -390,11 +390,16 @@ func (p *Plugin) ReconcileRemoteBuild(ctx context.Context, req *platform.RemoteB
 	if platform.ImageFormat(req.Target.Format) != platform.FormatVHD {
 		return nil, fmt.Errorf("azure plugin: remote snapshot source requires target format %q, got %q", platform.FormatVHD, req.Target.Format)
 	}
+	sourceType := strings.ToLower(strings.TrimSpace(req.SourceType))
 	sourceRef := strings.TrimSpace(firstNonEmpty(req.SourceProviderRef, req.SourceURL))
-	if sourceRef == "" {
+	if sourceType == "marketplace" {
+		if err := validateMarketplaceRef(req.SourceMarketplace); err != nil {
+			return nil, err
+		}
+	} else if sourceRef == "" {
 		return nil, fmt.Errorf("azure plugin: remote source requires source providerRef")
 	}
-	if len(req.Provisioners) > 0 {
+	if len(req.Provisioners) > 0 || sourceType == "marketplace" {
 		if p.client == nil {
 			return nil, fmt.Errorf("azure plugin: client is not initialised")
 		}
@@ -402,8 +407,9 @@ func (p *Plugin) ReconcileRemoteBuild(ctx context.Context, req *platform.RemoteB
 			BuildID:            req.BuildID,
 			OperationRef:       req.OperationRef,
 			ImageName:          firstNonEmpty(req.ImageName, "imagebuilder-"+sanitizeName(req.BuildID)),
-			SourceType:         strings.ToLower(strings.TrimSpace(req.SourceType)),
+			SourceType:         sourceType,
 			SourceRef:          sourceRef,
+			SourceMarketplace:  req.SourceMarketplace,
 			SourceChecksum:     req.SourceChecksum,
 			OSFamily:           req.OSFamily,
 			Format:             platform.ImageFormat(req.Target.Format),
@@ -453,7 +459,7 @@ func (p *Plugin) ReconcileRemoteBuild(ctx context.Context, req *platform.RemoteB
 		ReplicaCount:       p.config.replicaCount,
 		TargetRegions:      p.config.targetRegions,
 	}
-	switch strings.ToLower(strings.TrimSpace(req.SourceType)) {
+	switch sourceType {
 	case "snapshot":
 		input.SnapshotID = sourceRef
 	case "managed-disk", "manageddisk", "disk":
@@ -469,7 +475,7 @@ func (p *Plugin) ReconcileRemoteBuild(ctx context.Context, req *platform.RemoteB
 		return nil, fmt.Errorf("azure plugin: register remote source image: %w", err)
 	}
 	return &platform.RemoteBuildResult{
-		OperationRef: "azure:" + strings.ToLower(strings.TrimSpace(req.SourceType)) + ":" + sourceRef,
+		OperationRef: "azure:" + sourceType + ":" + sourceRef,
 		Phase:        platform.RemoteBuildPhaseReady,
 		Message:      "Azure image registered from existing source",
 		Done:         true,
@@ -493,19 +499,21 @@ func (p *Plugin) CleanupRemoteBuild(ctx context.Context, req *platform.RemoteBui
 	if req == nil || p.client == nil {
 		return nil
 	}
+	sourceType := strings.ToLower(strings.TrimSpace(req.SourceType))
 	sourceRef := strings.TrimSpace(firstNonEmpty(req.SourceProviderRef, req.SourceURL))
-	if len(req.Provisioners) > 0 || strings.Contains(req.OperationRef, "azure://remote-build/") {
+	if len(req.Provisioners) > 0 || sourceType == "marketplace" || strings.Contains(req.OperationRef, "azure://remote-build/") {
 		return p.client.CleanupRemoteBuild(ctx, azureRemoteBuildInput{
-			BuildID:      req.BuildID,
-			OperationRef: req.OperationRef,
-			ImageName:    firstNonEmpty(req.ImageName, "imagebuilder-"+sanitizeName(req.BuildID)),
-			SourceType:   strings.ToLower(strings.TrimSpace(req.SourceType)),
-			SourceRef:    sourceRef,
-			OSFamily:     req.OSFamily,
-			Format:       platform.ImageFormat(req.Target.Format),
-			Tags:         req.Target.Tags,
-			Provisioners: req.Provisioners,
-			GuestAccess:  req.GuestAccess,
+			BuildID:           req.BuildID,
+			OperationRef:      req.OperationRef,
+			ImageName:         firstNonEmpty(req.ImageName, "imagebuilder-"+sanitizeName(req.BuildID)),
+			SourceType:        sourceType,
+			SourceRef:         sourceRef,
+			SourceMarketplace: req.SourceMarketplace,
+			OSFamily:          req.OSFamily,
+			Format:            platform.ImageFormat(req.Target.Format),
+			Tags:              req.Target.Tags,
+			Provisioners:      req.Provisioners,
+			GuestAccess:       req.GuestAccess,
 		})
 	}
 	imageName := firstNonEmpty(req.ImageName, "imagebuilder-"+sanitizeName(req.BuildID))

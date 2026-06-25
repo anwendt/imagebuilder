@@ -267,6 +267,7 @@ func remoteBuildInputFromProto(req *providerv1.RemoteBuildRequest) RemoteBuildIn
 		SourceType:         req.GetSourceType(),
 		SourceURL:          req.GetSourceUrl(),
 		SourceProviderRef:  req.GetSourceProviderRef(),
+		SourceMarketplace:  sdkMarketplaceRef(req.GetSourceMarketplace()),
 		SourceChecksum:     req.GetSourceChecksum(),
 		ProviderConfigName: req.GetProviderConfigName(),
 		Format:             req.GetFormat(),
@@ -295,6 +296,18 @@ func remoteBuildInputFromProto(req *providerv1.RemoteBuildRequest) RemoteBuildIn
 		}
 	}
 	return out
+}
+
+func sdkMarketplaceRef(ref *providerv1.MarketplaceRef) *MarketplaceRef {
+	if ref == nil {
+		return nil
+	}
+	return &MarketplaceRef{
+		Publisher: ref.GetPublisher(),
+		Offer:     ref.GetOffer(),
+		SKU:       ref.GetSku(),
+		Version:   ref.GetVersion(),
+	}
 }
 
 func sdkRemoteProvisionerSource(source *providerv1.RemoteProvisionerSource) *RemoteProvisionerSource {

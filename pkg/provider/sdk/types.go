@@ -101,6 +101,7 @@ type RemoteBuildInput struct {
 	// an AMI ID, vSphere template ID, Glance UUID, or cloud image resource name.
 	// Prefer this over overloading SourceURL for remote builds.
 	SourceProviderRef  string
+	SourceMarketplace  *MarketplaceRef
 	SourceChecksum     string
 	ProviderConfigName string
 	Format             string
@@ -108,6 +109,13 @@ type RemoteBuildInput struct {
 	Provisioners       []RemoteProvisioner
 	GuestAccess        *RemoteGuestAccess
 	TimeoutSeconds     int64
+}
+
+type MarketplaceRef struct {
+	Publisher string
+	Offer     string
+	SKU       string
+	Version   string
 }
 
 type RemoteProvisioner struct {

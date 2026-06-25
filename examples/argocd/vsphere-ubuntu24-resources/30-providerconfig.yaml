@@ -1,0 +1,24 @@
+apiVersion: imagebuilder.io/v1alpha1
+kind: ProviderConfig
+metadata:
+  name: vsphere-ubuntu24
+  namespace: imagebuilder-system
+  labels:
+    app.kubernetes.io/name: imagebuilder-vsphere-ubuntu24
+    app.kubernetes.io/part-of: imagebuilder
+spec:
+  provider: vsphere
+  endpoint: https://vcenter.example.com
+  insecure: false
+  credentials:
+    secretRef:
+      name: vsphere-credentials
+      key: credentials
+  extra:
+    datacenter: dc01
+    cluster: cluster01
+    datastore: vsanDatastore
+    network: "VM Network"
+    folder: /dc01/vm/templates
+    uploadPathPrefix: imagebuilder
+    marketplace.canonical.ubuntu.24.04.latest: content-library:/Golden Images/ubuntu-24-template

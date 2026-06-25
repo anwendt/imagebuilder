@@ -243,6 +243,41 @@ func TestPlugin_ReconcileRemoteBuild_WithProvisionersDelegatesRemoteBuild(t *tes
 	}
 }
 
+func TestPlugin_ReconcileRemoteBuild_MarketplaceDelegatesRemoteBuild(t *testing.T) {
+	p, client := newInitializedPlugin(t)
+	result, err := p.ReconcileRemoteBuild(context.Background(), &platform.RemoteBuildRequest{
+		BuildID:    "build-123",
+		ImageName:  "ubuntu-marketplace",
+		OSFamily:   platform.OSFamilyLinux,
+		SourceType: "marketplace",
+		SourceMarketplace: &v1alpha1.MarketplaceRef{
+			Publisher: "Canonical",
+			Offer:     "ubuntu-24_04-lts",
+			SKU:       "server",
+			Version:   "latest",
+		},
+		Target: v1alpha1.TargetSpec{
+			ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "azure-prod"},
+			Format:            "vhd",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ReconcileRemoteBuild returned error: %v", err)
+	}
+	if result.Done || result.Phase != platform.RemoteBuildPhaseProvisioning {
+		t.Fatalf("remote result = %#v, want provisioning", result)
+	}
+	if client.remoteInput.SourceType != "marketplace" || client.remoteInput.SourceMarketplace == nil {
+		t.Fatalf("remote input = %#v, want marketplace source", client.remoteInput)
+	}
+	if client.remoteInput.SourceMarketplace.Publisher != "Canonical" ||
+		client.remoteInput.SourceMarketplace.Offer != "ubuntu-24_04-lts" ||
+		client.remoteInput.SourceMarketplace.SKU != "server" ||
+		client.remoteInput.SourceMarketplace.Version != "latest" {
+		t.Fatalf("remote marketplace = %#v, want Ubuntu marketplace ref", client.remoteInput.SourceMarketplace)
+	}
+}
+
 func TestPlugin_ReconcileRemoteBuild_WithProvisionersReturnsImage(t *testing.T) {
 	p, client := newInitializedPlugin(t)
 	client.remoteState = &azureRemoteBuildState{

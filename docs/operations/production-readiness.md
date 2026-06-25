@@ -9,8 +9,8 @@ Publish the core runtime images from a release tag or the `Core Images Release`
 workflow:
 
 ```bash
-make docker-push-core REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.1.0
-make docker-digest-core REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.1.0
+make docker-push-core REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.2.0
+make docker-digest-core REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.2.0
 OPERATOR_DIGEST=sha256:<digest> \
 BUILDER_DIGEST=sha256:<digest> \
 UPLOADER_DIGEST=sha256:<digest> \
@@ -20,15 +20,15 @@ make sign-core REGISTRY=ghcr.io/anwendt
 Publish providers independently:
 
 ```bash
-make docker-push-provider-aws REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.1.0
+make docker-push-provider-aws REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.2.0
 AWS_PROVIDER_DIGEST=sha256:<digest> make sign-provider-aws REGISTRY=ghcr.io/anwendt
 AWS_PROVIDER_DIGEST=sha256:<digest> make update-aws-provider-samples REGISTRY=ghcr.io/anwendt
 
-make docker-push-provider-vsphere REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.1.0
+make docker-push-provider-vsphere REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.2.0
 VSPHERE_PROVIDER_DIGEST=sha256:<digest> make sign-provider-vsphere REGISTRY=ghcr.io/anwendt
 VSPHERE_PROVIDER_DIGEST=sha256:<digest> make update-vsphere-provider-samples REGISTRY=ghcr.io/anwendt
 
-make docker-push-provider-openstack REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.1.0
+make docker-push-provider-openstack REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.2.0
 OPENSTACK_PROVIDER_DIGEST=sha256:<digest> make sign-provider-openstack REGISTRY=ghcr.io/anwendt
 OPENSTACK_PROVIDER_DIGEST=sha256:<digest> make update-openstack-provider-samples REGISTRY=ghcr.io/anwendt
 ```
@@ -45,17 +45,17 @@ keep the production policy flags enabled:
 ```yaml
 image:
   repository: ghcr.io/anwendt/imagebuilder-operator
-  tag: v0.1.0
+  tag: v0.2.0
   digest: sha256:<operator-digest>
 
 builderImage:
   repository: ghcr.io/anwendt/imagebuilder-builder
-  tag: v0.1.0
+  tag: v0.2.0
   digest: sha256:<builder-digest>
 
 uploaderImage:
   repository: ghcr.io/anwendt/imagebuilder-uploader
-  tag: v0.1.0
+  tag: v0.2.0
   digest: sha256:<uploader-digest>
 
 providerSecurity:

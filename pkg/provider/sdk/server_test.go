@@ -134,6 +134,12 @@ func TestServer_ImplementsProviderContract(t *testing.T) {
 		OperationRef:       "provider://operation/123",
 		ProviderConfigName: "example-config",
 		SourceProviderRef:  "ami-0123456789abcdef0",
+		SourceMarketplace: &providerv1.MarketplaceRef{
+			Publisher: "Canonical",
+			Offer:     "ubuntu-24_04-lts",
+			Sku:       "server",
+			Version:   "latest",
+		},
 	})
 	if err != nil {
 		t.Fatalf("ReconcileRemoteBuild returned error: %v", err)
@@ -143,6 +149,13 @@ func TestServer_ImplementsProviderContract(t *testing.T) {
 	}
 	if remote.Hygiene.ResultRef != "provider://hygiene/report-1" {
 		t.Fatalf("remote hygiene resultRef = %q", remote.Hygiene.ResultRef)
+	}
+	if provider.remoteInput.SourceMarketplace == nil ||
+		provider.remoteInput.SourceMarketplace.Publisher != "Canonical" ||
+		provider.remoteInput.SourceMarketplace.Offer != "ubuntu-24_04-lts" ||
+		provider.remoteInput.SourceMarketplace.SKU != "server" ||
+		provider.remoteInput.SourceMarketplace.Version != "latest" {
+		t.Fatalf("remote marketplace = %#v, want Ubuntu marketplace ref", provider.remoteInput.SourceMarketplace)
 	}
 }
 
@@ -256,6 +269,7 @@ func testCertificatePEM(t *testing.T) ([]byte, []byte) {
 type fakeProvider struct {
 	config        sdk.Config
 	uploaded      bytes.Buffer
+	remoteInput   sdk.RemoteBuildInput
 	remoteCleanup sdk.RemoteBuildInput
 }
 
@@ -295,7 +309,8 @@ func (p *fakeProvider) HealthCheck(context.Context) (string, error) {
 	return "ok", nil
 }
 
-func (p *fakeProvider) ReconcileRemoteBuild(context.Context, sdk.RemoteBuildInput) (sdk.RemoteBuildResult, error) {
+func (p *fakeProvider) ReconcileRemoteBuild(_ context.Context, input sdk.RemoteBuildInput) (sdk.RemoteBuildResult, error) {
+	p.remoteInput = input
 	return sdk.RemoteBuildResult{
 		OperationRef: "provider://operation/123",
 		Phase:        "Ready",

@@ -11,7 +11,7 @@ import (
 )
 
 func TestArgoCDResourceExamplesAreValidVMImages(t *testing.T) {
-	files, err := filepath.Glob(filepath.Join(repoRoot, "examples", "argocd", "*-tomcat-resources", "*.yaml"))
+	files, err := filepath.Glob(filepath.Join(repoRoot, "examples", "argocd", "*-resources", "*.yaml"))
 	if err != nil {
 		t.Fatalf("glob ArgoCD resource examples: %v", err)
 	}
@@ -41,14 +41,14 @@ func TestArgoCDResourceExamplesAreValidVMImages(t *testing.T) {
 			seenVMImages++
 		}
 	}
-	if seenVMImages != 4 {
-		t.Fatalf("validated VMImage examples = %d, want 4", seenVMImages)
+	if seenVMImages != 7 {
+		t.Fatalf("validated VMImage examples = %d, want 7", seenVMImages)
 	}
 }
 
 func TestArgoCDPlainYAMLExamplesParse(t *testing.T) {
 	patterns := []string{
-		filepath.Join(repoRoot, "examples", "argocd", "*-tomcat-resources", "*.yaml"),
+		filepath.Join(repoRoot, "examples", "argocd", "*-resources", "*.yaml"),
 		filepath.Join(repoRoot, "examples", "argocd", "*-application.yaml"),
 		filepath.Join(repoRoot, "examples", "argocd", "*-tomcat-chart", "Chart.yaml"),
 		filepath.Join(repoRoot, "examples", "argocd", "*-tomcat-chart", "values.yaml"),

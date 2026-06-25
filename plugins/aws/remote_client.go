@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -141,6 +142,13 @@ func (c *awsSDKRemoteBuildClient) ReconcileRemoteBuild(ctx context.Context, req 
 	if req.SourceType != "cloud-image" && req.SourceType != "marketplace" {
 		return nil, fmt.Errorf("AWS remote build supports source type cloud-image or marketplace, got %q", req.SourceType)
 	}
+	if req.SourceType == "marketplace" && req.SourceMarketplace != nil && firstNonEmpty(req.SourceProviderRef, req.SourceURL) == "" {
+		sourceAMI, err := c.resolveMarketplaceAMI(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		req.SourceProviderRef = sourceAMI
+	}
 	sourceAMI := firstNonEmpty(req.SourceProviderRef, req.SourceURL)
 	if !strings.HasPrefix(sourceAMI, "ami-") {
 		return nil, fmt.Errorf("AWS remote build source providerRef must be an AMI ID for source type %q", req.SourceType)
@@ -160,6 +168,78 @@ func (c *awsSDKRemoteBuildClient) ReconcileRemoteBuild(ctx context.Context, req 
 		return c.startInstance(ctx, req)
 	}
 	return c.reconcileInstance(ctx, req, ref)
+}
+
+func (c *awsSDKRemoteBuildClient) resolveMarketplaceAMI(ctx context.Context, req awsRemoteBuildRequest) (string, error) {
+	query, err := awsMarketplaceImageQuery(req)
+	if err != nil {
+		return "", err
+	}
+	out, err := c.ec2.DescribeImages(ctx, query)
+	if err != nil {
+		return "", fmt.Errorf("describe AWS marketplace source image: %w", err)
+	}
+	if len(out.Images) == 0 {
+		return "", fmt.Errorf("AWS marketplace source image was not found for publisher=%q offer=%q sku=%q version=%q", req.SourceMarketplace.Publisher, req.SourceMarketplace.Offer, req.SourceMarketplace.SKU, req.SourceMarketplace.Version)
+	}
+	sort.Slice(out.Images, func(i, j int) bool {
+		return awssdk.ToString(out.Images[i].CreationDate) > awssdk.ToString(out.Images[j].CreationDate)
+	})
+	imageID := awssdk.ToString(out.Images[0].ImageId)
+	if imageID == "" {
+		return "", fmt.Errorf("AWS marketplace source image query returned an image without image ID")
+	}
+	return imageID, nil
+}
+
+func awsMarketplaceImageQuery(req awsRemoteBuildRequest) (*ec2.DescribeImagesInput, error) {
+	ref := req.SourceMarketplace
+	if ref == nil {
+		return nil, fmt.Errorf("AWS marketplace source requires source.marketplaceRef or source.providerRef")
+	}
+	publisher := strings.TrimSpace(ref.Publisher)
+	offer := strings.TrimSpace(ref.Offer)
+	sku := strings.TrimSpace(ref.SKU)
+	version := strings.TrimSpace(ref.Version)
+	if publisher == "" || offer == "" || sku == "" || version == "" {
+		return nil, fmt.Errorf("AWS marketplace source requires source.marketplaceRef publisher, offer, sku, and version")
+	}
+	arch := awsArchitectureFilter(req.OSArch)
+	owner := publisher
+	namePatterns := []string{offer}
+	if strings.EqualFold(publisher, "Canonical") && strings.EqualFold(offer, "ubuntu-24_04-lts") && strings.EqualFold(sku, "server") {
+		owner = "099720109477"
+		namePatterns = []string{
+			"ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-" + arch + "-server-*",
+			"ubuntu/images/hvm-ssd/ubuntu-noble-24.04-" + arch + "-server-*",
+		}
+	}
+	if !strings.EqualFold(version, "latest") {
+		for i, pattern := range namePatterns {
+			if !strings.Contains(pattern, version) {
+				namePatterns[i] = strings.TrimRight(pattern, "*") + "*" + version + "*"
+			}
+		}
+	}
+	return &ec2.DescribeImagesInput{
+		Owners: []string{owner},
+		Filters: []ec2types.Filter{
+			{Name: awssdk.String("name"), Values: namePatterns},
+			{Name: awssdk.String("state"), Values: []string{"available"}},
+			{Name: awssdk.String("architecture"), Values: []string{arch}},
+			{Name: awssdk.String("root-device-type"), Values: []string{"ebs"}},
+			{Name: awssdk.String("virtualization-type"), Values: []string{"hvm"}},
+		},
+	}, nil
+}
+
+func awsArchitectureFilter(arch string) string {
+	switch strings.ToLower(strings.TrimSpace(arch)) {
+	case "arm64", "aarch64":
+		return "arm64"
+	default:
+		return "x86_64"
+	}
 }
 
 func expandAWSRemoteProvisioners(ctx context.Context, req awsRemoteBuildRequest) (awsRemoteBuildRequest, func(), error) {

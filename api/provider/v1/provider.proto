@@ -119,6 +119,14 @@ message RemoteBuildRequest {
   // an AMI ID, vSphere template ID, Glance UUID, or cloud image resource name.
   // Prefer this over overloading source_url for remote builds.
   string source_provider_ref = 18;
+  MarketplaceRef source_marketplace = 19;
+}
+
+message MarketplaceRef {
+  string publisher = 1;
+  string offer = 2;
+  string sku = 3;
+  string version = 4;
 }
 
 message RemoteProvisioner {

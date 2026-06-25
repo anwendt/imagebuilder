@@ -2,6 +2,9 @@ package openstack
 
 import (
 	"testing"
+	"time"
+
+	"github.com/gophercloud/gophercloud/v2/openstack/image/v2/images"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
@@ -62,5 +65,62 @@ func TestOpenStackServerAddressPrefersNamedNetworkIPv4(t *testing.T) {
 	}
 	if got := openStackServerAddress(server, "private"); got != "10.0.0.5" {
 		t.Fatalf("address = %q, want private IPv4", got)
+	}
+}
+
+func TestSelectOpenStackMarketplaceImageChoosesNewestOTCUbuntu24(t *testing.T) {
+	input := openStackRemoteBuildInput{
+		SourceMarketplace: &v1alpha1.MarketplaceRef{
+			Publisher: "Open Telekom Cloud",
+			Offer:     "ubuntu",
+			SKU:       "24.04",
+			Version:   "latest",
+		},
+		OSArch: "amd64",
+	}
+	list := []images.Image{
+		{
+			ID:        "img-old",
+			Name:      "Standard_Ubuntu_24.04_latest",
+			Status:    images.ImageStatusActive,
+			UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			ID:        "img-new",
+			Name:      "Standard_Ubuntu_24.04_latest",
+			Status:    images.ImageStatusActive,
+			UpdatedAt: time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			ID:        "img-arm",
+			Name:      "Standard_Ubuntu_24.04_ARM64_latest",
+			Status:    images.ImageStatusActive,
+			UpdatedAt: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+		},
+	}
+
+	got := selectOpenStackMarketplaceImage(input, list)
+	if got == nil || got.ID != "img-new" {
+		t.Fatalf("selected image = %#v, want img-new", got)
+	}
+}
+
+func TestOpenStackMarketplaceImageMatchesPinnedVersion(t *testing.T) {
+	input := openStackRemoteBuildInput{
+		SourceMarketplace: &v1alpha1.MarketplaceRef{
+			Publisher: "Open Telekom Cloud",
+			Offer:     "ubuntu",
+			SKU:       "24.04",
+			Version:   "20260601",
+		},
+		OSArch: "amd64",
+	}
+	image := images.Image{
+		ID:     "img-pinned",
+		Name:   "Standard_Ubuntu_24.04_20260601",
+		Status: images.ImageStatusActive,
+	}
+	if !openStackMarketplaceImageMatches(input, image) {
+		t.Fatal("expected pinned OTC Ubuntu image to match")
 	}
 }

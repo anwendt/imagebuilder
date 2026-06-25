@@ -114,3 +114,66 @@ func TestVSphereRemoteNetwork_AllowsGuestOperationsWithoutNetwork(t *testing.T) 
 		t.Fatalf("validateVSphereRemoteNetwork should allow Guest Operations without SSH network: %v", err)
 	}
 }
+
+func TestVSphereMarketplaceSourceCandidatesPreferExplicitMapping(t *testing.T) {
+	input := vsphereRemoteBuildInput{
+		SourceMarketplace: &v1alpha1.MarketplaceRef{
+			Publisher: "Canonical",
+			Offer:     "ubuntu",
+			SKU:       "24.04",
+			Version:   "latest",
+		},
+	}
+	candidates := vsphereMarketplaceSourceCandidates(map[string]string{
+		"marketplace.canonical.ubuntu.24.04.latest": "content-library:/Golden Images/ubuntu-24-template",
+	}, input)
+	if len(candidates) == 0 || candidates[0] != "content-library:/Golden Images/ubuntu-24-template" {
+		t.Fatalf("candidates = %v, want explicit mapping first", candidates)
+	}
+	if !containsString(candidates, "ubuntu-24-template") {
+		t.Fatalf("candidates = %v, want Ubuntu fallback", candidates)
+	}
+}
+
+func TestVSphereMarketplaceConfigKeys(t *testing.T) {
+	keys := vsphereMarketplaceConfigKeys(&v1alpha1.MarketplaceRef{
+		Publisher: "Open Telekom Cloud",
+		Offer:     "ubuntu",
+		SKU:       "24.04",
+		Version:   "latest",
+	})
+	want := "marketplace.open.telekom.cloud.ubuntu.24.04.latest"
+	if len(keys) == 0 || keys[0] != want {
+		t.Fatalf("keys = %v, want first %q", keys, want)
+	}
+}
+
+func TestVSphereContentLibraryRefParsing(t *testing.T) {
+	path, ok := contentLibraryPath("content-library:Golden Images/ubuntu-24-template")
+	if !ok || path != "/Golden Images/ubuntu-24-template" {
+		t.Fatalf("content library path = %q, %v", path, ok)
+	}
+	path, ok = contentLibraryPath("library:/Golden Images/ubuntu-24-template")
+	if !ok || path != "/Golden Images/ubuntu-24-template" {
+		t.Fatalf("library path = %q, %v", path, ok)
+	}
+	id, ok := contentLibraryItemID("library-item:1234")
+	if !ok || id != "1234" {
+		t.Fatalf("library item ID = %q, %v", id, ok)
+	}
+	if !isVSphereContentLibraryRef("content-library:/Golden Images/ubuntu-24-template") {
+		t.Fatal("content-library ref should be recognised")
+	}
+	if isVSphereContentLibraryRef("ubuntu-24-template") {
+		t.Fatal("plain template name should not be recognised as content library ref")
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}

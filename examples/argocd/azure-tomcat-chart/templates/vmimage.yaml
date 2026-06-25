@@ -14,7 +14,16 @@ spec:
     arch: {{ .Values.vmImage.os.arch }}
   source:
     type: {{ .Values.vmImage.source.type }}
+    {{- if .Values.vmImage.source.providerRef }}
     providerRef: {{ .Values.vmImage.source.providerRef | quote }}
+    {{- end }}
+    {{- with .Values.vmImage.source.marketplaceRef }}
+    marketplaceRef:
+      publisher: {{ .publisher | quote }}
+      offer: {{ .offer | quote }}
+      sku: {{ .sku | quote }}
+      version: {{ .version | quote }}
+    {{- end }}
   provisioners:
     - type: shell
       inline: |

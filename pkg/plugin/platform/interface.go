@@ -180,6 +180,7 @@ type RemoteBuildRequest struct {
 	SourceType        string
 	SourceURL         string
 	SourceProviderRef string
+	SourceMarketplace *v1alpha1.MarketplaceRef
 	SourceChecksum    string
 	Target            v1alpha1.TargetSpec
 	Provisioners      []v1alpha1.ProvisionerSpec

@@ -1,0 +1,23 @@
+apiVersion: imagebuilder.io/v1alpha1
+kind: ProviderConfig
+metadata:
+  name: otc-ubuntu24
+  namespace: imagebuilder-system
+  labels:
+    app.kubernetes.io/name: imagebuilder-otc-ubuntu24
+    app.kubernetes.io/part-of: imagebuilder
+spec:
+  provider: openstack
+  endpoint: https://iam.eu-de.otc.t-systems.com/v3
+  region: eu-de
+  credentials:
+    secretRef:
+      name: otc-credentials
+      key: credentials
+  extra:
+    remote.flavorRef: s3.medium.1
+    remote.networkID: 11111111-1111-1111-1111-111111111111
+    remote.securityGroups: imagebuilder-build
+    remote.keyName: imagebuilder-builder
+    remote.sshUser: linux
+    image.visibility: private

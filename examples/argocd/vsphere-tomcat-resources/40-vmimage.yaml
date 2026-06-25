@@ -13,9 +13,12 @@ spec:
     version: "24.04"
     arch: amd64
   source:
-    type: cloud-image
-    # Existing vSphere VM/template name or MoID, for example "ubuntu-24-template" or "vm-123".
-    providerRef: ubuntu-24-template
+    type: marketplace
+    marketplaceRef:
+      publisher: Canonical
+      offer: ubuntu
+      sku: "24.04"
+      version: latest
   provisioners:
     - type: shell
       inline: |

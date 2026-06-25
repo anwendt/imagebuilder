@@ -72,7 +72,7 @@ type awsConfig struct {
 // ---------------------------------------------------------------------------
 
 func (p *AWSPlugin) Name() string    { return "aws" }
-func (p *AWSPlugin) Version() string { return "v0.1.0" }
+func (p *AWSPlugin) Version() string { return "v0.2.0" }
 
 // ---------------------------------------------------------------------------
 // Capabilities
@@ -303,7 +303,7 @@ func (p *AWSPlugin) ReconcileRemoteBuild(ctx context.Context, req *platform.Remo
 	if req.SourceType == "" {
 		return nil, fmt.Errorf("aws plugin: remote build source type is required")
 	}
-	if firstNonEmpty(req.SourceProviderRef, req.SourceURL) == "" {
+	if firstNonEmpty(req.SourceProviderRef, req.SourceURL) == "" && req.SourceMarketplace == nil {
 		return nil, fmt.Errorf("aws plugin: remote build source providerRef is required")
 	}
 	if req.SourceType == "snapshot" {
@@ -324,6 +324,7 @@ func (p *AWSPlugin) ReconcileRemoteBuild(ctx context.Context, req *platform.Remo
 		SourceType:        req.SourceType,
 		SourceURL:         req.SourceURL,
 		SourceProviderRef: req.SourceProviderRef,
+		SourceMarketplace: req.SourceMarketplace,
 		SourceChecksum:    req.SourceChecksum,
 		OSFamily:          req.OSFamily,
 		OSDistribution:    req.OSDistribution,
@@ -468,6 +469,7 @@ type awsRemoteBuildRequest struct {
 	SourceType        string
 	SourceURL         string
 	SourceProviderRef string
+	SourceMarketplace *v1alpha1.MarketplaceRef
 	SourceChecksum    string
 	OSFamily          platform.OSFamily
 	OSDistribution    string

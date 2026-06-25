@@ -21,7 +21,7 @@ type Plugin struct{}
 var _ platform.RemoteBuildCleanupPlugin = (*Plugin)(nil)
 
 func (p *Plugin) Name() string                                               { return "gcp" }
-func (p *Plugin) Version() string                                            { return "v0.1.0" }
+func (p *Plugin) Version() string                                            { return "v0.2.0" }
 func (p *Plugin) SupportedFormats() []platform.ImageFormat                   { return nil }
 func (p *Plugin) SupportedOS() []platform.OSFamily                           { return nil }
 func (p *Plugin) SupportedBuildModes() []string                              { return []string{v1alpha1.BuildModeLocal} }

@@ -1,0 +1,42 @@
+apiVersion: imagebuilder.io/v1alpha1
+kind: VMImage
+metadata:
+  name: otc-ubuntu24-base
+  namespace: imagebuilder-system
+  labels:
+    app.kubernetes.io/name: imagebuilder-otc-ubuntu24
+    app.kubernetes.io/part-of: imagebuilder
+spec:
+  os:
+    family: linux
+    distribution: ubuntu
+    version: "24.04"
+    arch: amd64
+  source:
+    type: marketplace
+    marketplaceRef:
+      publisher: Open Telekom Cloud
+      offer: ubuntu
+      sku: "24.04"
+      version: latest
+  provisioners:
+    - type: shell
+      inline: |
+        set -euo pipefail
+        if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
+        export DEBIAN_FRONTEND=noninteractive
+        ${SUDO} apt-get update
+        ${SUDO} apt-get install -y --no-install-recommends ca-certificates curl
+        ${SUDO} apt-get clean
+        ${SUDO} rm -rf /var/lib/apt/lists/*
+        printf 'imagebuilder open telekom cloud ubuntu 24.04 base image\n' | ${SUDO} tee /etc/imagebuilder-release >/dev/null
+  targets:
+    - providerConfigRef:
+        name: otc-ubuntu24
+      format: qcow2
+      tags:
+        imagebuilder-cloud: open-telekom-cloud
+        imagebuilder-workload: ubuntu24-base
+  build:
+    mode: remote
+    timeout: 60m

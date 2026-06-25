@@ -7,10 +7,12 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
+	"github.com/gophercloud/gophercloud/v2/openstack/image/v2/images"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
@@ -25,8 +27,10 @@ type openStackRemoteBuildInput struct {
 	ImageName          string
 	SourceType         string
 	SourceRef          string
+	SourceMarketplace  *v1alpha1.MarketplaceRef
 	SourceChecksum     string
 	OSFamily           platform.OSFamily
+	OSArch             string
 	Format             platform.ImageFormat
 	Tags               map[string]string
 	ProviderConfigName string
@@ -72,6 +76,13 @@ func (c *gophercloudClient) ReconcileRemoteBuild(ctx context.Context, input open
 	input = expanded
 	if input.SourceType != "cloud-image" && input.SourceType != "marketplace" && input.SourceType != "snapshot" {
 		return nil, fmt.Errorf("OpenStack remote build supports source type cloud-image, marketplace, or snapshot, got %q", input.SourceType)
+	}
+	if input.SourceType == "marketplace" && input.SourceRef == "" && input.SourceMarketplace != nil {
+		sourceRef, err := c.resolveMarketplaceImage(ctx, input)
+		if err != nil {
+			return nil, err
+		}
+		input.SourceRef = sourceRef
 	}
 	if input.SourceRef == "" {
 		return nil, fmt.Errorf("OpenStack remote build source providerRef is required")
@@ -120,6 +131,108 @@ func (c *gophercloudClient) ReconcileRemoteBuild(ctx context.Context, input open
 		}, nil
 	}
 	return c.finishOpenStackRemoteServer(ctx, input, ref)
+}
+
+func (c *gophercloudClient) resolveMarketplaceImage(ctx context.Context, input openStackRemoteBuildInput) (string, error) {
+	ref := input.SourceMarketplace
+	if ref == nil {
+		return "", fmt.Errorf("OpenStack marketplace source requires source.marketplaceRef or source.providerRef")
+	}
+	if strings.TrimSpace(ref.Publisher) == "" || strings.TrimSpace(ref.Offer) == "" || strings.TrimSpace(ref.SKU) == "" || strings.TrimSpace(ref.Version) == "" {
+		return "", fmt.Errorf("OpenStack marketplace source requires source.marketplaceRef publisher, offer, sku, and version")
+	}
+	page, err := images.List(c.image, images.ListOpts{
+		Visibility: images.ImageVisibilityPublic,
+		Status:     images.ImageStatusActive,
+		Sort:       "updated_at:desc",
+		Limit:      100,
+	}).AllPages(ctx)
+	if err != nil {
+		return "", fmt.Errorf("list OpenStack marketplace source images: %w", err)
+	}
+	list, err := images.ExtractImages(page)
+	if err != nil {
+		return "", fmt.Errorf("extract OpenStack marketplace source images: %w", err)
+	}
+	image := selectOpenStackMarketplaceImage(input, list)
+	if image == nil {
+		return "", fmt.Errorf("OpenStack marketplace source image was not found for publisher=%q offer=%q sku=%q version=%q", ref.Publisher, ref.Offer, ref.SKU, ref.Version)
+	}
+	return image.ID, nil
+}
+
+func selectOpenStackMarketplaceImage(input openStackRemoteBuildInput, list []images.Image) *images.Image {
+	matches := make([]images.Image, 0, len(list))
+	for _, image := range list {
+		if openStackMarketplaceImageMatches(input, image) {
+			matches = append(matches, image)
+		}
+	}
+	if len(matches) == 0 {
+		return nil
+	}
+	sort.SliceStable(matches, func(i, j int) bool {
+		if !matches[i].UpdatedAt.Equal(matches[j].UpdatedAt) {
+			return matches[i].UpdatedAt.After(matches[j].UpdatedAt)
+		}
+		return matches[i].CreatedAt.After(matches[j].CreatedAt)
+	})
+	return &matches[0]
+}
+
+func openStackMarketplaceImageMatches(input openStackRemoteBuildInput, image images.Image) bool {
+	ref := input.SourceMarketplace
+	if ref == nil || image.ID == "" || image.Status != images.ImageStatusActive {
+		return false
+	}
+	version := strings.TrimSpace(ref.Version)
+	name := normalizeOpenStackMarketplaceText(image.Name)
+	properties := normalizeOpenStackMarketplaceText(openStackImagePropertyText(image.Properties))
+	haystack := strings.TrimSpace(name + " " + properties)
+	if haystack == "" {
+		return false
+	}
+	offer := normalizeOpenStackMarketplaceText(ref.Offer)
+	sku := normalizeOpenStackMarketplaceText(ref.SKU)
+	if !strings.Contains(haystack, offer) || !strings.Contains(haystack, sku) {
+		return false
+	}
+	if input.OSArch != "" && !openStackMarketplaceArchMatches(input.OSArch, haystack) {
+		return false
+	}
+	if strings.EqualFold(version, "latest") {
+		return true
+	}
+	return strings.Contains(haystack, normalizeOpenStackMarketplaceText(version))
+}
+
+func openStackImagePropertyText(properties map[string]any) string {
+	if len(properties) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(properties))
+	for key, value := range properties {
+		parts = append(parts, key, fmt.Sprint(value))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, " ")
+}
+
+func normalizeOpenStackMarketplaceText(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.NewReplacer("_", " ", "-", " ", ".", " ").Replace(value)
+	return strings.Join(strings.Fields(value), " ")
+}
+
+func openStackMarketplaceArchMatches(arch, haystack string) bool {
+	switch strings.ToLower(strings.TrimSpace(arch)) {
+	case "amd64", "x86_64", "x64":
+		return strings.Contains(haystack, "amd64") || strings.Contains(haystack, "x86 64") || strings.Contains(haystack, "x64") || !strings.Contains(haystack, "arm64")
+	case "arm64", "aarch64":
+		return strings.Contains(haystack, "arm64") || strings.Contains(haystack, "aarch64")
+	default:
+		return true
+	}
 }
 
 func expandOpenStackRemoteProvisioners(ctx context.Context, input openStackRemoteBuildInput) (openStackRemoteBuildInput, func(), error) {

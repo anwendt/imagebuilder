@@ -479,6 +479,7 @@ func remoteBuildProtoRequest(req *platform.RemoteBuildRequest) *providerv1.Remot
 		SourceType:         req.SourceType,
 		SourceUrl:          req.SourceURL,
 		SourceProviderRef:  req.SourceProviderRef,
+		SourceMarketplace:  grpcMarketplaceRef(req.SourceMarketplace),
 		SourceChecksum:     req.SourceChecksum,
 		ProviderConfigName: req.Target.ProviderConfigRef.Name,
 		Format:             req.Target.Format,
@@ -513,6 +514,18 @@ func remoteBuildProtoRequest(req *platform.RemoteBuildRequest) *providerv1.Remot
 		}
 	}
 	return out
+}
+
+func grpcMarketplaceRef(ref *v1alpha1.MarketplaceRef) *providerv1.MarketplaceRef {
+	if ref == nil {
+		return nil
+	}
+	return &providerv1.MarketplaceRef{
+		Publisher: ref.Publisher,
+		Offer:     ref.Offer,
+		Sku:       ref.SKU,
+		Version:   ref.Version,
+	}
 }
 
 func grpcRemoteProvisionerSource(source *v1alpha1.ProvisionerSourceSpec) *providerv1.RemoteProvisionerSource {

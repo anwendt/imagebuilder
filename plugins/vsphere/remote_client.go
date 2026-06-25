@@ -14,6 +14,10 @@ import (
 	"github.com/vmware/govmomi/find"
 	"github.com/vmware/govmomi/guest"
 	"github.com/vmware/govmomi/object"
+	"github.com/vmware/govmomi/vapi/library"
+	libraryfinder "github.com/vmware/govmomi/vapi/library/finder"
+	"github.com/vmware/govmomi/vapi/rest"
+	"github.com/vmware/govmomi/vapi/vcenter"
 	"github.com/vmware/govmomi/vim25/mo"
 	"github.com/vmware/govmomi/vim25/types"
 
@@ -28,8 +32,10 @@ type vsphereRemoteBuildInput struct {
 	ImageName          string
 	SourceType         string
 	SourceRef          string
+	SourceMarketplace  *v1alpha1.MarketplaceRef
 	SourceChecksum     string
 	OSFamily           platform.OSFamily
+	OSArch             string
 	Format             platform.ImageFormat
 	Tags               map[string]string
 	ProviderConfigName string
@@ -53,6 +59,13 @@ func (c *govmomiClient) ReconcileRemoteBuild(ctx context.Context, input vsphereR
 	}
 	defer cleanup()
 	input = expandedInput
+	if input.SourceRef == "" && input.SourceMarketplace != nil {
+		sourceRef, err := c.resolveMarketplaceSourceRef(ctx, input)
+		if err != nil {
+			return nil, err
+		}
+		input.SourceRef = sourceRef
+	}
 	if input.SourceRef == "" {
 		return nil, fmt.Errorf("vsphere remote build source providerRef is required")
 	}
@@ -98,6 +111,129 @@ func (c *govmomiClient) ReconcileRemoteBuild(ctx context.Context, input vsphereR
 	return c.finishRemoteVM(ctx, vm, input, ref)
 }
 
+func (c *govmomiClient) resolveMarketplaceSourceRef(ctx context.Context, input vsphereRemoteBuildInput) (string, error) {
+	ref := input.SourceMarketplace
+	if ref == nil {
+		return "", fmt.Errorf("vSphere marketplace source requires source.marketplaceRef or source.providerRef")
+	}
+	if strings.TrimSpace(ref.Publisher) == "" || strings.TrimSpace(ref.Offer) == "" || strings.TrimSpace(ref.SKU) == "" || strings.TrimSpace(ref.Version) == "" {
+		return "", fmt.Errorf("vSphere marketplace source requires source.marketplaceRef publisher, offer, sku, and version")
+	}
+	candidates := vsphereMarketplaceSourceCandidates(c.cfg.extraConfig, input)
+	var lastErr error
+	for _, candidate := range candidates {
+		if strings.TrimSpace(candidate) == "" {
+			continue
+		}
+		if isVSphereContentLibraryRef(candidate) {
+			if _, err := c.resolveContentLibraryItem(ctx, candidate); err == nil {
+				return candidate, nil
+			} else {
+				lastErr = err
+				continue
+			}
+		}
+		if _, err := c.resolveRemoteSourceVM(ctx, candidate); err == nil {
+			return candidate, nil
+		} else {
+			lastErr = err
+		}
+	}
+	if lastErr != nil {
+		return "", fmt.Errorf("resolve vSphere marketplace source %s: no matching VM/template among %v: %w", vsphereMarketplaceRefKey(ref), candidates, lastErr)
+	}
+	return "", fmt.Errorf("resolve vSphere marketplace source %s: no source candidates configured", vsphereMarketplaceRefKey(ref))
+}
+
+func vsphereMarketplaceSourceCandidates(extra map[string]string, input vsphereRemoteBuildInput) []string {
+	ref := input.SourceMarketplace
+	if ref == nil {
+		return nil
+	}
+	out := []string{}
+	for _, key := range vsphereMarketplaceConfigKeys(ref) {
+		if value := strings.TrimSpace(extra[key]); value != "" {
+			out = append(out, value)
+		}
+	}
+	offer := strings.TrimSpace(ref.Offer)
+	sku := strings.TrimSpace(ref.SKU)
+	version := strings.TrimSpace(ref.Version)
+	out = append(out,
+		offer+"-"+sku+"-"+version,
+		offer+"-"+sku,
+		offer+"-"+strings.ReplaceAll(sku, ".", "-")+"-"+version,
+		offer+"-"+strings.ReplaceAll(sku, ".", "-"),
+		offer+"-"+strings.ReplaceAll(sku, "_", "-"),
+	)
+	if strings.EqualFold(offer, "ubuntu") && strings.Contains(sku, "24.04") {
+		out = append(out,
+			"ubuntu-24-template",
+			"ubuntu-24.04-template",
+			"ubuntu-24-04-template",
+			"ubuntu-24.04",
+			"ubuntu-24-04",
+			"ubuntu-24_04-lts",
+			"ubuntu-24_04-lts-server",
+		)
+	}
+	return compactUniqueStrings(out)
+}
+
+func vsphereMarketplaceConfigKeys(ref *v1alpha1.MarketplaceRef) []string {
+	publisher := vsphereMarketplaceKeyPart(ref.Publisher)
+	offer := vsphereMarketplaceKeyPart(ref.Offer)
+	sku := vsphereMarketplaceKeyPart(ref.SKU)
+	version := vsphereMarketplaceKeyPart(ref.Version)
+	return compactUniqueStrings([]string{
+		"marketplace." + publisher + "." + offer + "." + sku + "." + version,
+		"marketplace." + offer + "." + sku + "." + version,
+		"marketplace." + publisher + "." + offer + "." + sku,
+		"marketplace." + offer + "." + sku,
+	})
+}
+
+func vsphereMarketplaceRefKey(ref *v1alpha1.MarketplaceRef) string {
+	return strings.Join([]string{
+		vsphereMarketplaceKeyPart(ref.Publisher),
+		vsphereMarketplaceKeyPart(ref.Offer),
+		vsphereMarketplaceKeyPart(ref.SKU),
+		vsphereMarketplaceKeyPart(ref.Version),
+	}, ".")
+}
+
+func vsphereMarketplaceKeyPart(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	lastDot := false
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastDot = false
+			continue
+		}
+		if !lastDot {
+			b.WriteByte('.')
+			lastDot = true
+		}
+	}
+	return strings.Trim(b.String(), ".")
+}
+
+func compactUniqueStrings(values []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
+}
+
 func expandVSphereRemoteProvisioners(ctx context.Context, input vsphereRemoteBuildInput) (vsphereRemoteBuildInput, func(), error) {
 	if !provisionersource.HasSources(input.Provisioners) {
 		return input, func() {}, nil
@@ -131,6 +267,9 @@ func (c *govmomiClient) CleanupRemoteBuild(ctx context.Context, input vsphereRem
 }
 
 func (c *govmomiClient) cloneRemoteSource(ctx context.Context, input vsphereRemoteBuildInput) (*vsphereRemoteBuildState, error) {
+	if isVSphereContentLibraryRef(input.SourceRef) {
+		return c.deployRemoteLibrarySource(ctx, input)
+	}
 	source, err := c.resolveRemoteSourceVM(ctx, input.SourceRef)
 	if err != nil {
 		return nil, err
@@ -201,6 +340,188 @@ func (c *govmomiClient) cloneRemoteSource(ctx context.Context, input vsphereRemo
 		Phase:        platform.RemoteBuildPhaseBooting,
 		Message:      "vSphere remote clone created",
 	}, nil
+}
+
+func (c *govmomiClient) deployRemoteLibrarySource(ctx context.Context, input vsphereRemoteBuildInput) (*vsphereRemoteBuildState, error) {
+	item, err := c.resolveContentLibraryItem(ctx, input.SourceRef)
+	if err != nil {
+		return nil, err
+	}
+	dc, ds, err := c.resolveDatastore(ctx, c.cfg.datacenter, c.cfg.datastore)
+	if err != nil {
+		return nil, err
+	}
+	vmFinder := c.finder
+	vmFinder.SetDatacenter(dc)
+	rp, err := c.resolveResourcePool(ctx, vmFinder)
+	if err != nil {
+		return nil, err
+	}
+	host, err := c.resolveHost(ctx, vmFinder)
+	if err != nil {
+		return nil, err
+	}
+	folder, err := vmFinder.FolderOrDefault(ctx, firstNonEmpty(c.cfg.folder, "vm"))
+	if err != nil {
+		return nil, fmt.Errorf("find VM folder %q: %w", firstNonEmpty(c.cfg.folder, "vm"), err)
+	}
+	restClient, err := c.restClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	manager := vcenter.NewManager(restClient)
+	name := firstNonEmpty(input.ImageName, vsphereRemoteVMName(input.BuildID))
+	ref := vsphereRemoteOperationRef{BuildID: input.BuildID, VMName: name}
+	moref, err := c.deployContentLibraryItem(ctx, manager, item, name, ds.Reference().Value, rp.Reference().Value, hostReferenceValue(host), folder.Reference().Value)
+	if err != nil {
+		_ = c.cleanupVSphereRemoteVM(ctx, ref)
+		return nil, err
+	}
+	ref.VMRef = moref.Value
+	vm := object.NewVirtualMachine(c.vc.Client, *moref)
+	if vsphereRemoteRequiresSSH(input) {
+		if err := c.ensureVSphereRemoteNIC(ctx, vmFinder, vm); err != nil {
+			_ = c.cleanupVSphereRemoteVM(ctx, ref)
+			return nil, err
+		}
+	}
+	return &vsphereRemoteBuildState{
+		OperationRef: ref.String(),
+		Phase:        platform.RemoteBuildPhaseBooting,
+		Message:      "vSphere content library source deployed",
+	}, nil
+}
+
+func (c *govmomiClient) deployContentLibraryItem(ctx context.Context, manager *vcenter.Manager, item *library.Item, name, datastoreID, resourcePoolID, hostID, folderID string) (*types.ManagedObjectReference, error) {
+	switch item.Type {
+	case library.ItemTypeOVF:
+		deploy := vcenter.Deploy{
+			DeploymentSpec: vcenter.DeploymentSpec{
+				Name:                name,
+				Annotation:          c.cfg.annotation,
+				DefaultDatastoreID:  datastoreID,
+				AcceptAllEULA:       true,
+				StorageProvisioning: c.cfg.diskProvisioning,
+			},
+			Target: vcenter.Target{
+				ResourcePoolID: resourcePoolID,
+				HostID:         hostID,
+				FolderID:       folderID,
+			},
+		}
+		if c.cfg.deployment != "" {
+			deploy.AdditionalParams = append(deploy.AdditionalParams, vcenter.AdditionalParams{
+				Class:       vcenter.ClassDeploymentOptionParams,
+				Type:        vcenter.TypeDeploymentOptionParams,
+				SelectedKey: c.cfg.deployment,
+			})
+		}
+		return manager.DeployLibraryItem(ctx, item.ID, deploy)
+	case library.ItemTypeVMTX:
+		storage := &vcenter.DiskStorage{
+			Datastore: datastoreID,
+			StoragePolicy: &vcenter.StoragePolicy{
+				Type: "USE_SOURCE_POLICY",
+			},
+		}
+		return manager.DeployTemplateLibraryItem(ctx, item.ID, vcenter.DeployTemplate{
+			Name:          name,
+			Description:   c.cfg.annotation,
+			DiskStorage:   storage,
+			VMHomeStorage: storage,
+			Placement: &vcenter.Placement{
+				ResourcePool: resourcePoolID,
+				Host:         hostID,
+				Folder:       folderID,
+			},
+			PoweredOn: false,
+		})
+	default:
+		return nil, fmt.Errorf("vSphere content library item %q has unsupported type %q; use OVF or VM Template items", item.Name, item.Type)
+	}
+}
+
+func (c *govmomiClient) resolveContentLibraryItem(ctx context.Context, ref string) (*library.Item, error) {
+	restClient, err := c.restClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	manager := library.NewManager(restClient)
+	if id, ok := contentLibraryItemID(ref); ok {
+		item, err := manager.GetLibraryItem(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("find content library item %q: %w", id, err)
+		}
+		return item, nil
+	}
+	path, ok := contentLibraryPath(ref)
+	if !ok {
+		return nil, fmt.Errorf("invalid vSphere content library source reference %q", ref)
+	}
+	results, err := libraryfinder.NewFinder(manager).Find(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("find content library source %q: %w", path, err)
+	}
+	items := make([]*library.Item, 0, len(results))
+	for _, result := range results {
+		if item, ok := result.GetResult().(library.Item); ok {
+			itemCopy := item
+			items = append(items, &itemCopy)
+		}
+	}
+	if len(items) == 0 {
+		return nil, fmt.Errorf("content library source %q did not match any library item", path)
+	}
+	if len(items) > 1 {
+		return nil, fmt.Errorf("content library source %q matched %d items; use a unique path or library-item:<id>", path, len(items))
+	}
+	return items[0], nil
+}
+
+func (c *govmomiClient) restClient(ctx context.Context) (*rest.Client, error) {
+	restClient := rest.NewClient(c.vc.Client)
+	if err := restClient.Login(ctx, url.UserPassword(c.cfg.username, c.cfg.password)); err != nil {
+		return nil, fmt.Errorf("login to vSphere REST API: %w", err)
+	}
+	return restClient, nil
+}
+
+func isVSphereContentLibraryRef(ref string) bool {
+	_, itemID := contentLibraryItemID(ref)
+	_, itemPath := contentLibraryPath(ref)
+	return itemID || itemPath
+}
+
+func contentLibraryItemID(ref string) (string, bool) {
+	ref = strings.TrimSpace(ref)
+	for _, prefix := range []string{"library-item:", "content-library-item:"} {
+		if strings.HasPrefix(ref, prefix) {
+			id := strings.TrimSpace(strings.TrimPrefix(ref, prefix))
+			return id, id != ""
+		}
+	}
+	return "", false
+}
+
+func contentLibraryPath(ref string) (string, bool) {
+	ref = strings.TrimSpace(ref)
+	for _, prefix := range []string{"content-library:", "library:"} {
+		if strings.HasPrefix(ref, prefix) {
+			path := strings.TrimSpace(strings.TrimPrefix(ref, prefix))
+			if path != "" && !strings.HasPrefix(path, "/") {
+				path = "/" + path
+			}
+			return path, path != ""
+		}
+	}
+	return "", false
+}
+
+func hostReferenceValue(host *object.HostSystem) string {
+	if host == nil {
+		return ""
+	}
+	return host.Reference().Value
 }
 
 func (c *govmomiClient) resolveRemoteSourceVM(ctx context.Context, ref string) (*object.VirtualMachine, error) {

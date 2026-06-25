@@ -21,3 +21,4 @@ spec:
     network: "VM Network"
     folder: /dc01/vm/templates
     uploadPathPrefix: imagebuilder
+    marketplace.canonical.ubuntu.24.04.latest: content-library:/Golden Images/ubuntu-24-template

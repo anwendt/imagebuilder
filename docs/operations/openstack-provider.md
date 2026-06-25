@@ -46,9 +46,37 @@ Useful `spec.extra` keys:
 
 ## Remote Builds
 
-Remote builds start a temporary Nova server from an existing Glance image ID
-provided via `spec.source.providerRef`, optionally run Linux SSH provisioners,
-stop the server, create a Glance image from it, and delete the temporary server.
+Remote builds start a temporary Nova server from an existing Glance image,
+optionally run Linux SSH provisioners, stop the server, create a Glance image
+from it, and delete the temporary server.
+
+The source can be a concrete Glance image ID:
+
+```yaml
+spec:
+  source:
+    type: cloud-image
+    providerRef: 00000000-0000-0000-0000-000000000000
+```
+
+For Open Telekom Cloud and similar OpenStack clouds, the provider also accepts
+the provider-neutral marketplace form. The OpenStack provider interprets this
+as a lookup over active public Glance images and selects the newest matching
+image:
+
+```yaml
+spec:
+  source:
+    type: marketplace
+    marketplaceRef:
+      publisher: Open Telekom Cloud
+      offer: ubuntu
+      sku: "24.04"
+      version: latest
+```
+
+Use a concrete `source.providerRef` when your cloud image naming is ambiguous
+or when a build must pin an exact source image.
 
 Required `spec.extra` keys for remote builds:
 

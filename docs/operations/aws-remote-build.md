@@ -8,7 +8,7 @@ available.
 
 ## Supported Sources
 
-Remote AWS builds currently require `spec.source.providerRef` to be an AMI ID:
+Remote AWS builds can use a provider-native AMI ID:
 
 ```yaml
 spec:
@@ -26,6 +26,33 @@ spec:
 `cloud-image` and `marketplace` are accepted as source types when the source
 provider reference is an AMI ID. `spec.source.url` is reserved for downloadable
 HTTPS sources and is not used for provider-native identifiers.
+
+AWS also accepts the provider-neutral `source.marketplaceRef` form. The AWS
+provider resolves supported Marketplace references to a source AMI before
+starting the temporary EC2 instance:
+
+```yaml
+spec:
+  build:
+    mode: remote
+  source:
+    type: marketplace
+    marketplaceRef:
+      publisher: Canonical
+      offer: ubuntu-24_04-lts
+      sku: server
+      version: latest
+  targets:
+    - providerConfigRef:
+        name: aws-eu-west-1
+      format: ami
+```
+
+For AWS, `publisher` maps to the AMI owner. The built-in Canonical Ubuntu
+mapping resolves `Canonical` / `ubuntu-24_04-lts` / `server` to the official
+Ubuntu 24.04 LTS AMI owner and selects the newest matching AMI for
+`spec.os.arch`. For other Marketplace products, use a deterministic AMI ID in
+`source.providerRef`.
 
 AWS can also register an AMI directly from an existing completed EBS snapshot:
 
@@ -68,8 +95,8 @@ The standalone AWS PlatformProvider image is built from `cmd/provider-aws`:
 
 ```bash
 make build-provider-aws
-make docker-build-provider-aws REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.1.0
-make docker-push-provider-aws REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.1.0
+make docker-build-provider-aws REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.2.0
+make docker-push-provider-aws REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.2.0
 AWS_PROVIDER_DIGEST=sha256:<digest> make sign-provider-aws REGISTRY=ghcr.io/anwendt
 AWS_PROVIDER_DIGEST=sha256:<digest> make update-aws-provider-samples REGISTRY=ghcr.io/anwendt
 ```

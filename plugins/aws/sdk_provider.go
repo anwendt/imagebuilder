@@ -275,6 +275,7 @@ func platformRemoteBuildRequest(input sdk.RemoteBuildInput) *platform.RemoteBuil
 		SourceType:        input.SourceType,
 		SourceURL:         input.SourceURL,
 		SourceProviderRef: input.SourceProviderRef,
+		SourceMarketplace: v1alpha1MarketplaceRef(input.SourceMarketplace),
 		SourceChecksum:    input.SourceChecksum,
 		Target: v1alpha1.TargetSpec{
 			ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: input.ProviderConfigName},
@@ -311,6 +312,18 @@ func platformRemoteBuildRequest(input sdk.RemoteBuildInput) *platform.RemoteBuil
 		}
 	}
 	return req
+}
+
+func v1alpha1MarketplaceRef(ref *sdk.MarketplaceRef) *v1alpha1.MarketplaceRef {
+	if ref == nil {
+		return nil
+	}
+	return &v1alpha1.MarketplaceRef{
+		Publisher: ref.Publisher,
+		Offer:     ref.Offer,
+		SKU:       ref.SKU,
+		Version:   ref.Version,
+	}
 }
 
 func awsSDKProvisionerSource(source *sdk.RemoteProvisionerSource) *v1alpha1.ProvisionerSourceSpec {
