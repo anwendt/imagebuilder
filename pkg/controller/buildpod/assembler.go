@@ -50,7 +50,7 @@ const (
 
 	// defaultBuilderImage is used when BUILDER_IMAGE is not set in the
 	// operator deployment.
-	defaultBuilderImage = "ghcr.io/anwendt/imagebuilder-builder:0.1.0"
+	defaultBuilderImage = "ghcr.io/anwendt/imagebuilder-builder:0.3.0"
 )
 
 // Assemble builds the Kubernetes Job spec for a VMImage build.
@@ -583,11 +583,11 @@ func isInitContainer(provisionerType string) bool {
 
 func defaultImageForProvisioner(provisionerType string) string {
 	defaults := map[string]string{
-		"ansible":   envOrDefault("PROVISIONER_ANSIBLE_IMAGE", "ghcr.io/anwendt/imagebuilder-provisioner-ansible:0.1.0"),
-		"chef":      envOrDefault("PROVISIONER_CHEF_IMAGE", "ghcr.io/anwendt/imagebuilder-provisioner-chef:0.1.0"),
-		"custom":    envOrDefault("PROVISIONER_CUSTOM_IMAGE", "ghcr.io/anwendt/imagebuilder-provisioner-custom:0.1.0"),
-		"puppet":    envOrDefault("PROVISIONER_PUPPET_IMAGE", "ghcr.io/anwendt/imagebuilder-provisioner-puppet:0.1.0"),
-		"saltstack": envOrDefault("PROVISIONER_SALTSTACK_IMAGE", "ghcr.io/anwendt/imagebuilder-provisioner-saltstack:0.1.0"),
+		"ansible":   envOrDefault("PROVISIONER_ANSIBLE_IMAGE", "ghcr.io/anwendt/imagebuilder-provisioner-ansible:0.3.0"),
+		"chef":      envOrDefault("PROVISIONER_CHEF_IMAGE", "ghcr.io/anwendt/imagebuilder-provisioner-chef:0.3.0"),
+		"custom":    envOrDefault("PROVISIONER_CUSTOM_IMAGE", "ghcr.io/anwendt/imagebuilder-provisioner-custom:0.3.0"),
+		"puppet":    envOrDefault("PROVISIONER_PUPPET_IMAGE", "ghcr.io/anwendt/imagebuilder-provisioner-puppet:0.3.0"),
+		"saltstack": envOrDefault("PROVISIONER_SALTSTACK_IMAGE", "ghcr.io/anwendt/imagebuilder-provisioner-saltstack:0.3.0"),
 	}
 	return defaults[provisionerType]
 }

@@ -128,7 +128,7 @@ type registerInput struct {
 }
 
 func (p *Plugin) Name() string    { return "azure" }
-func (p *Plugin) Version() string { return "v0.2.0" }
+func (p *Plugin) Version() string { return "v0.3.0" }
 
 func (p *Plugin) SupportedFormats() []platform.ImageFormat {
 	return []platform.ImageFormat{platform.FormatVHD}

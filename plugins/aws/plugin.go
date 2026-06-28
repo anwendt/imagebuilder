@@ -72,7 +72,7 @@ type awsConfig struct {
 // ---------------------------------------------------------------------------
 
 func (p *AWSPlugin) Name() string    { return "aws" }
-func (p *AWSPlugin) Version() string { return "v0.2.0" }
+func (p *AWSPlugin) Version() string { return "v0.3.0" }
 
 // ---------------------------------------------------------------------------
 // Capabilities

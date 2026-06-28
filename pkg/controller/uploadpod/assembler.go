@@ -20,7 +20,7 @@ const (
 	workspaceMount = "/workspace"
 	workspaceVol   = "workspace"
 
-	defaultUploaderImage = "ghcr.io/anwendt/imagebuilder-uploader:0.1.0"
+	defaultUploaderImage = "ghcr.io/anwendt/imagebuilder-uploader:0.3.0"
 )
 
 type TargetConfig struct {

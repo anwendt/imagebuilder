@@ -26,7 +26,7 @@ func New() *Provider {
 func (p *Provider) Capabilities(context.Context) (sdk.Capabilities, error) {
 	return sdk.Capabilities{
 		ProviderName:    "example",
-		ProviderVersion: "v0.1.0",
+		ProviderVersion: "v0.3.0",
 		Formats:         []string{"qcow2", "raw"},
 		OSFamilies:      []string{"linux", "windows"},
 		// Add "remote" after ReconcileRemoteBuild is implemented for your platform.
