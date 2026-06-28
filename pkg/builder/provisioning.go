@@ -229,12 +229,11 @@ func (r SequentialProvisionerRunner) waitForInitContainerOutput(ctx context.Cont
 	if interval <= 0 {
 		interval = 2 * time.Second
 	}
-	statusPath := filepath.Join(provisionerStepDir(workspaceDir, step), "status.json")
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
-		output, ok, err := readProvisionerOutput(statusPath)
+		output, ok, err := readProvisionerOutput(workspaceDir, step)
 		if err != nil {
 			return provisioner.ProvisionerOutput{}, err
 		}
@@ -249,13 +248,20 @@ func (r SequentialProvisionerRunner) waitForInitContainerOutput(ctx context.Cont
 	}
 }
 
-func readProvisionerOutput(path string) (provisioner.ProvisionerOutput, bool, error) {
-	data, err := os.ReadFile(path)
+func readProvisionerOutput(workspaceDir string, step int) (provisioner.ProvisionerOutput, bool, error) {
+	root, err := os.OpenRoot(workspaceDir)
+	if err != nil {
+		return provisioner.ProvisionerOutput{}, false, fmt.Errorf("open workspace root: %w", err)
+	}
+	defer root.Close()
+
+	statusPath := filepath.Join("provisioners", fmt.Sprintf("step-%d", step), "status.json")
+	data, err := root.ReadFile(statusPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return provisioner.ProvisionerOutput{}, false, nil
 		}
-		return provisioner.ProvisionerOutput{}, false, fmt.Errorf("read provisioner output %s: %w", path, err)
+		return provisioner.ProvisionerOutput{}, false, fmt.Errorf("read provisioner output %s: %w", statusPath, err)
 	}
 	if len(data) == 0 {
 		return provisioner.ProvisionerOutput{}, false, nil

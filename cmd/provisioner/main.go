@@ -105,8 +105,18 @@ func statusPath() string {
 func waitForInput(ctx context.Context, path string) (provisioner.ProvisionerInput, error) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
+	relPath, err := workspaceRelativePath(path)
+	if err != nil {
+		return provisioner.ProvisionerInput{}, err
+	}
+	root, err := os.OpenRoot("/workspace")
+	if err != nil {
+		return provisioner.ProvisionerInput{}, fmt.Errorf("open workspace root: %w", err)
+	}
+	defer root.Close()
+
 	for {
-		data, err := os.ReadFile(path)
+		data, err := root.ReadFile(relPath)
 		if err == nil && len(data) > 0 {
 			var input provisioner.ProvisionerInput
 			if err := json.Unmarshal(data, &input); err != nil {
@@ -125,6 +135,21 @@ func waitForInput(ctx context.Context, path string) (provisioner.ProvisionerInpu
 	}
 }
 
+func workspaceRelativePath(path string) (string, error) {
+	clean := filepath.Clean(strings.TrimSpace(path))
+	if clean == "" || !filepath.IsAbs(clean) {
+		return "", fmt.Errorf("provisioner path %q must be absolute and under /workspace", path)
+	}
+	rel, err := filepath.Rel("/workspace", clean)
+	if err != nil {
+		return "", fmt.Errorf("resolve provisioner path %q: %w", path, err)
+	}
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("provisioner path %q must be under /workspace", path)
+	}
+	return rel, nil
+}
+
 func writeStatus(success bool, message, detail string) error {
 	output := provisioner.ProvisionerOutput{Success: success, Message: message, Error: detail}
 	data, err := json.MarshalIndent(output, "", "  ")
@@ -132,10 +157,19 @@ func writeStatus(success bool, message, detail string) error {
 		return fmt.Errorf("marshal status: %w", err)
 	}
 	path := statusPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	relPath, err := workspaceRelativePath(path)
+	if err != nil {
+		return err
+	}
+	root, err := os.OpenRoot("/workspace")
+	if err != nil {
+		return fmt.Errorf("open workspace root: %w", err)
+	}
+	defer root.Close()
+	if err := root.MkdirAll(filepath.Dir(relPath), 0o700); err != nil {
 		return fmt.Errorf("create status directory: %w", err)
 	}
-	return os.WriteFile(path, append(data, '\n'), 0o600)
+	return root.WriteFile(relPath, append(data, '\n'), 0o600)
 }
 
 func workspaceDir(input provisioner.ProvisionerInput) string {
