@@ -144,6 +144,7 @@ func (p *Plugin) SupportedBuildModes() []string {
 
 func (p *Plugin) Init(ctx context.Context, cfg platform.PluginConfig) error {
 	p.log = slog.Default().With(slog.String("plugin", p.Name()))
+	platform.ApplyProxyEnvironment(cfg.Extra)
 	p.config = config{
 		providerConfigName: cfg.ProviderConfigName,
 		subscriptionID:     firstNonEmpty(secretString(cfg.SecretData, "subscriptionId"), cfg.Extra["subscriptionId"]),

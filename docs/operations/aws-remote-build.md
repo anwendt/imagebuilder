@@ -168,8 +168,8 @@ Recommended fields:
 | `roleArn` | Role assumed by the provider before calling AWS APIs. |
 | `remote.iamInstanceProfile` | Instance profile used by the build instance for SSM. Required when provisioners are configured. |
 | `remote.rootVolumeSizeGiB` | Root volume size override. |
-| `httpProxy` | HTTP proxy URL for provider API traffic when per-provider proxy support is enabled. |
-| `httpsProxy` | HTTPS proxy URL for provider API traffic when per-provider proxy support is enabled. |
+| `httpProxy` | HTTP proxy URL for provider API traffic. |
+| `httpsProxy` | HTTPS proxy URL for provider API traffic. |
 | `noProxy` | Comma-separated proxy bypass list, for example VPC endpoints, cluster-local names, and metadata endpoints. |
 
 Example proxy values:

@@ -1,6 +1,6 @@
 ---
 document-id: ADR-003
-title: Complex Provisioners as Kubernetes Init Containers
+title: Complex Provisioners as Kubernetes Restartable Init Containers
 status: Accepted
 date: 2026-04-18
 deciders: Platform Engineering
@@ -9,7 +9,7 @@ superseded-by: —
 classification: Internal
 ---
 
-# ADR-003 — Complex Provisioners as Kubernetes Init Containers
+# ADR-003 — Complex Provisioners as Kubernetes Restartable Init Containers
 
 ## Status
 

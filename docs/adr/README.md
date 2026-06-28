@@ -20,7 +20,7 @@ references the old one.
 |---|---|---|
 | [ADR-001](ADR-001-no-packer.md) | Do Not Use HashiCorp Packer | Accepted |
 | [ADR-002](ADR-002-providers-as-separate-containers.md) | Platform Providers as Separate Kubernetes Containers | Accepted |
-| [ADR-003](ADR-003-provisioners-as-init-containers.md) | Complex Provisioners as Kubernetes Init Containers | Accepted |
+| [ADR-003](ADR-003-provisioners-as-init-containers.md) | Complex Provisioners as Kubernetes Restartable Init Containers | Accepted |
 | [ADR-004](ADR-004-lgpl-as-external-processes.md) | LGPL Dependencies Accessed Only as External Processes | Accepted |
 | [ADR-005](ADR-005-protobuf-versioned-contract.md) | Protobuf Schema as Versioned and Immutable Provider Contract | Accepted |
 | [ADR-006](ADR-006-no-go-plugin-mechanism.md) | No Go Plugin Mechanism (.so Files) | Accepted |

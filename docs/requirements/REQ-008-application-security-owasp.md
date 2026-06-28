@@ -66,7 +66,7 @@ intended to be verifiable through code review, automated scanning, and ISAE audi
 | AS-014 | Shell script content in `spec.provisioners[].inline` or loaded from `spec.provisioners[].source.git` SHALL NOT be executed by the operator process directly. It is expanded into the build/provider workspace and executed only by the selected provisioner runtime. | Must |
 | AS-015 | URLs in `spec.source.url` and `spec.provisioners[].source.git.url` SHALL be validated as well-formed HTTPS URLs. HTTP (unencrypted) URLs are rejected. | Must |
 | AS-015A | Credentials for private `spec.provisioners[].source.git.url` repositories SHALL be supplied through `auth.secretRef`; embedding credentials in URLs is prohibited. | Must |
-| AS-016 | Arguments passed to init-container provisioners (`spec.provisioners[].args[]`) SHALL be passed as a JSON array (never shell-interpolated) to prevent argument injection. | Must |
+| AS-016 | Arguments passed to init-container provisioners (`spec.provisioners[].args[]`) SHALL be written to the provisioner config as a JSON array. Provisioner runtimes that translate those arguments into remote shell commands SHALL quote each argument independently before execution. | Must |
 | AS-017 | The operator SHALL NOT use `os/exec` with shell interpretation (`exec.Command("sh", "-c", userInput)`). All subprocess invocations use the array form with no shell expansion. | Must |
 | AS-018 | `go vet`, `staticcheck`, and `gosec` SHALL be run in CI to detect injection vulnerabilities, unsafe use of `os/exec`, and Go-specific security anti-patterns. | Must |
 
@@ -80,7 +80,7 @@ intended to be verifiable through code review, automated scanning, and ISAE audi
 | AS-020 | The principle of **fail-secure** SHALL apply: if the operator cannot verify a provider's identity (gRPC handshake fails) or a source image's integrity (checksum mismatch), the build MUST be aborted. | Must |
 | AS-021 | The operator SHALL implement **rate limiting** on VMImage build admission to prevent resource exhaustion (denial of service via excessive build requests). | Should |
 | AS-022 | Build isolation SHALL be enforced: one VMImage build SHALL NOT be able to access the workspace volume of another concurrent build. Each build Job uses a unique `emptyDir` volume. | Must |
-| AS-023 | The init-container filesystem contract (`/workspace`) SHALL use restrictive file permissions. `config.json` is written with mode `0600` (owner read/write only). | Must |
+| AS-023 | The init-container filesystem contract under `/workspace/provisioners/step-N/` SHALL use restrictive file permissions. `config.json` is written with mode `0600` (owner read/write only). | Must |
 
 ### A05:2021 — Security Misconfiguration
 

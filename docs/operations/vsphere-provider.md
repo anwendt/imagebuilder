@@ -107,8 +107,8 @@ Optional `extra` keys:
 | `contentLibrary` | empty | Content Library name for OVA/OVF publishing. |
 | `contentLibraryID` | empty | Content Library ID; takes precedence over `contentLibrary`. |
 | `requireManifest` | `false` | Requires `.mf` manifest files when publishing to Content Library. |
-| `httpProxy` | empty | HTTP proxy URL for provider API traffic when per-provider proxy support is enabled. |
-| `httpsProxy` | empty | HTTPS proxy URL for provider API traffic when per-provider proxy support is enabled. |
+| `httpProxy` | empty | HTTP proxy URL for provider API traffic. |
+| `httpsProxy` | empty | HTTPS proxy URL for provider API traffic. |
 | `noProxy` | empty | Comma-separated proxy bypass list, for example vCenter and cluster-local endpoints. |
 
 Example proxy values:

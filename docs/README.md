@@ -78,7 +78,7 @@ All documents are intended to support ISAE audit requirements.
 |---|---|---|
 | [ADR-001](adr/ADR-001-no-packer.md) | Do Not Use HashiCorp Packer | Accepted |
 | [ADR-002](adr/ADR-002-providers-as-separate-containers.md) | Platform Providers as Separate Kubernetes Containers | Accepted |
-| [ADR-003](adr/ADR-003-provisioners-as-init-containers.md) | Complex Provisioners as Kubernetes Init Containers | Accepted |
+| [ADR-003](adr/ADR-003-provisioners-as-init-containers.md) | Complex Provisioners as Kubernetes Restartable Init Containers | Accepted |
 | [ADR-004](adr/ADR-004-lgpl-as-external-processes.md) | LGPL Dependencies as External Processes Only | Accepted |
 | [ADR-005](adr/ADR-005-protobuf-versioned-contract.md) | Protobuf Schema as Versioned Provider Contract | Accepted |
 | [ADR-006](adr/ADR-006-no-go-plugin-mechanism.md) | No Go Plugin Mechanism (.so Files) | Accepted |

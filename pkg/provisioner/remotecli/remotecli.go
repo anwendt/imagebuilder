@@ -84,8 +84,22 @@ func WritePayload(workspaceDir, content, prefix string) (string, error) {
 }
 
 func CommandWithArgs(base string, args []string) string {
+	quoted := make([]string, 0, len(args))
+	for _, arg := range args {
+		quoted = append(quoted, shellQuote(arg))
+	}
+	if strings.TrimSpace(base) == "" {
+		return strings.Join(quoted, " ")
+	}
 	if len(args) == 0 {
 		return base
 	}
-	return base + " " + strings.Join(args, " ")
+	return base + " " + strings.Join(quoted, " ")
+}
+
+func shellQuote(arg string) string {
+	if arg == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(arg, "'", "'\"'\"'") + "'"
 }

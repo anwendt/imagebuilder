@@ -79,6 +79,45 @@ func TestVMImageWebhook_MarketplaceSource_AllowsProviderRef(t *testing.T) {
 	}
 }
 
+func TestVMImageWebhook_CustomOCIProvisionerRequiresImage(t *testing.T) {
+	img := &VMImage{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+		Spec: VMImageSpec{
+			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
+			Source: validMarketplaceSource(),
+			Provisioners: []ProvisionerSpec{
+				{Type: "inspec"},
+			},
+			Targets: []TargetSpec{
+				{ProviderConfigRef: ProviderConfigRef{Name: "aws-cfg"}, Format: "ami"},
+			},
+		},
+	}
+	_, err := img.ValidateCreate()
+	if err == nil || !strings.Contains(err.Error(), "image is required for custom OCI provisioner type") {
+		t.Fatalf("ValidateCreate error = %v, want missing custom OCI provisioner image", err)
+	}
+}
+
+func TestVMImageWebhook_CustomOCIProvisionerAllowsImage(t *testing.T) {
+	img := &VMImage{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+		Spec: VMImageSpec{
+			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
+			Source: validMarketplaceSource(),
+			Provisioners: []ProvisionerSpec{
+				{Type: "inspec", Image: "ghcr.io/example/imagebuilder-provisioner-inspec@sha256:abc123"},
+			},
+			Targets: []TargetSpec{
+				{ProviderConfigRef: ProviderConfigRef{Name: "aws-cfg"}, Format: "ami"},
+			},
+		},
+	}
+	if _, err := img.ValidateCreate(); err != nil {
+		t.Fatalf("ValidateCreate with custom OCI provisioner image returned error: %v", err)
+	}
+}
+
 func TestVMImageWebhook_MissingChecksum_ReturnsError(t *testing.T) {
 	img := &VMImage{
 		Spec: VMImageSpec{

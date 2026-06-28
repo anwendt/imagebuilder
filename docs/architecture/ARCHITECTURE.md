@@ -232,7 +232,7 @@ providers by name when processing targets.
 
 4. Controller validates the spec:
    - Source image URL and checksum format
-   - Provisioner types are registered (in-process or known init-container type)
+   - Provisioner types are either registered in-process types or init-container types with a default/custom OCI image
    - All referenced ProviderConfigs exist
    - All referenced providers are in Healthy state
 
@@ -319,9 +319,11 @@ VMImage
 │   │   ├── version       (e.g. "24.04")
 │   │   └── arch          (amd64 | arm64)
 │   ├── source
-│   │   ├── type          (iso | cloud-image | marketplace)
+│   │   ├── type          (iso | cloud-image | marketplace | snapshot)
 │   │   ├── url
-│   │   └── checksum      (sha256:...)
+│   │   ├── checksum      (sha256:...)
+│   │   ├── marketplaceRef
+│   │   └── providerRef
 │   ├── provisioners[]
 │   │   ├── type          (cloud-init | shell | file | powershell | ansible | ...)
 │   │   ├── inline        (for in-process types)
@@ -673,7 +675,8 @@ type Provisioner interface {
 | Remote build core contract | Complete | `build.mode`, provider capability checks, provider-neutral request/result contract, status/events, timeout handling, cleanup, durable operation refs, generic source refs, and hygiene attestation handling are implemented in the core. |
 | Deterministic core E2E coverage | Complete | Mocked-provider E2E tests cover remote success, timeout, cancellation/delete, cleanup failure, hygiene failure, upload/register restart recovery, restart during remote build, restart during upload/register, restart during cleanup, and restart during lease renewal. |
 | ISO installer media | Complete | NoCloud/autoinstall/kickstart/preseed/autounattend |
-| In-process provisioners | Complete | cloud-init, shell, file, PowerShell, sysprep, Ansible, Chef, Puppet, SaltStack, custom |
+| In-process provisioners | Complete | cloud-init, shell, file, PowerShell, sysprep |
+| Restartable init-container provisioners | Complete | Built-in defaults for Ansible, Chef, Puppet, SaltStack, custom; arbitrary third-party OCI provisioner images via `spec.provisioners[].image` |
 | CRD manifests (generated) | Complete | `config/crd/` |
 | RBAC manifests | Complete | generated under `config/rbac/` when `make manifests` runs |
 | Deployment manifests | Complete | `config/deploy/`, `config/webhook/`, `config/certmanager/`, `config/policy/` |

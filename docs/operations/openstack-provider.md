@@ -43,8 +43,8 @@ Useful `spec.extra` keys:
 | `image.minDiskGB` | `0` | Glance min disk |
 | `image.minRAMMB` | `0` | Glance min RAM |
 | `image.property.<name>` | unset | Additional Glance image property |
-| `httpProxy` | unset | HTTP proxy URL for provider API traffic when per-provider proxy support is enabled |
-| `httpsProxy` | unset | HTTPS proxy URL for provider API traffic when per-provider proxy support is enabled |
+| `httpProxy` | unset | HTTP proxy URL for provider API traffic |
+| `httpsProxy` | unset | HTTPS proxy URL for provider API traffic |
 | `noProxy` | unset | Comma-separated proxy bypass list, for example Keystone/Glance/Nova internal endpoints |
 
 Example proxy values:

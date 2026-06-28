@@ -107,6 +107,7 @@ func (p *AWSPlugin) SupportedBuildModes() []string {
 
 func (p *AWSPlugin) Init(ctx context.Context, cfg platform.PluginConfig) error {
 	p.log = slog.Default().With(slog.String("plugin", p.Name()))
+	platform.ApplyProxyEnvironment(cfg.Extra)
 
 	creds := cfg.SecretData
 	p.config = awsConfig{

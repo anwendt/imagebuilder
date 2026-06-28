@@ -153,6 +153,9 @@ func (r *VMImage) validate() (admission.Warnings, error) {
 			errs = append(errs, err)
 		}
 	}
+	if err := validateProvisionerTypes(r.Spec.Provisioners); err != nil {
+		errs = append(errs, err)
+	}
 	if err := validateProvisionerSources(r.Spec.Provisioners); err != nil {
 		errs = append(errs, err)
 	}
@@ -223,6 +226,31 @@ func validateBuildNodeIsolation(build BuildSpec) error {
 		return fmt.Errorf("spec.build.nodeSelector[\"imagebuilder.io/dedicated\"] must be \"imagebuilder\" when spec.build.security.enableKVM=true")
 	}
 	return nil
+}
+
+func validateProvisionerTypes(provisioners []ProvisionerSpec) error {
+	for i, p := range provisioners {
+		if strings.TrimSpace(p.Type) == "" {
+			return fmt.Errorf("spec.provisioners[%d].type is required", i)
+		}
+		if isKnownProvisionerType(p.Type) {
+			continue
+		}
+		if strings.TrimSpace(p.Image) == "" {
+			return fmt.Errorf("spec.provisioners[%d].image is required for custom OCI provisioner type %q", i, p.Type)
+		}
+	}
+	return nil
+}
+
+func isKnownProvisionerType(typeName string) bool {
+	switch typeName {
+	case "cloud-init", "shell", "file", "powershell", "sysprep",
+		"ansible", "chef", "puppet", "saltstack", "custom":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateProvisionerImagePolicy(provisioners []ProvisionerSpec, security *BuildSecuritySpec) error {

@@ -3,7 +3,6 @@ package custom
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/provisioner"
@@ -41,7 +40,7 @@ func (p Provisioner) Run(ctx context.Context, req *provisioner.RunRequest) (*pro
 	}
 	command := req.Spec.Inline
 	if command == "" {
-		command = strings.Join(req.Spec.Args, " ")
+		command = remotecli.CommandWithArgs("", req.Spec.Args)
 	}
 	switch req.Protocol {
 	case "ssh":

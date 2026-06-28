@@ -32,11 +32,17 @@ spec:
 |---|---|
 | `cloud-image` | Starts from an existing cloud image or generic disk image. |
 | `iso` | Boots an installer ISO through QEMU. |
-| `marketplace` | Reserved for platform-native marketplace sources. |
+| `marketplace` | Starts from a provider-native marketplace image through `source.marketplaceRef` or a provider-specific `source.providerRef`. |
 
 When `source.url` is set, `source.checksum` is required. Admission validation
 also rejects unsafe URL shapes such as raw IPs, private IPs, loopback, and
 non-HTTPS schemes.
+
+Marketplace sources are resolved by the selected provider. Azure resolves
+publisher/offer/SKU/version references directly, AWS maps them to matching AMIs,
+OpenStack/Open Telekom Cloud searches Glance images, and vSphere maps the
+provider-neutral reference through ProviderConfig `extra` keys such as
+`marketplace.<publisher>.<offer>.<sku>.<version>`.
 
 ## Architecture
 
@@ -180,6 +186,11 @@ Provisioners run in declared order. Built-ins include:
 - `saltstack`
 - `custom`
 
+`cloud-init`, `shell`, `file`, `powershell`, and `sysprep` run in-process in the
+builder. Ansible, Chef, Puppet, SaltStack, and `custom` run through restartable
+init containers. Any other `type` is treated as a third-party OCI provisioner and
+must set `image`.
+
 Example:
 
 ```yaml
@@ -196,7 +207,11 @@ provisioners:
 Provisioner content can also be loaded from a Git repository. `ref` is required;
 use an immutable commit SHA in production. If `path` points to a directory, all
 regular files are loaded in lexicographic order and executed as separate
-provisioner steps of the same type:
+provisioner steps of the same type. Directory expansion is supported for
+in-process provisioners. Init-container provisioners such as Ansible, Chef,
+Puppet, SaltStack, `custom`, and third-party OCI provisioners must resolve to a
+single file per provisioner entry because the build Pod's restartable
+init-container list is fixed before runtime:
 
 ```yaml
 provisioners:

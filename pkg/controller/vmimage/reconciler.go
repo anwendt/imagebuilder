@@ -6,7 +6,7 @@
 //
 //	Pending     → validate spec, check provider health
 //	Building    → create Kubernetes Job (QEMU / diskimage-builder)
-//	Provisioning → init-containers are running (managed by Kubernetes)
+//	Provisioning → provisioners run inside the build Job
 //	Uploading   → Job succeeded, upload artifact to each target platform
 //	Ready       → all targets registered, write image refs to status
 //	Failed      → any phase failed, cleanup partial uploads

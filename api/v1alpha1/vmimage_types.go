@@ -34,7 +34,8 @@ type VMImageSpec struct {
 
 	// Provisioners run sequentially after the OS boots.
 	// In-process types: cloud-init, shell, file, powershell, sysprep.
-	// Init-container types: ansible, chef, puppet, saltstack, custom.
+	// Built-in init-container types: ansible, chef, puppet, saltstack, custom.
+	// Other types run as custom OCI init-container provisioners and require image.
 	// +optional
 	Provisioners []ProvisionerSpec `json:"provisioners,omitempty"`
 
@@ -219,9 +220,9 @@ type MarketplaceRef struct {
 type ProvisionerSpec struct {
 	// Type determines how the provisioner runs.
 	// In-process: cloud-init, shell, file, powershell, sysprep.
-	// Init-container: ansible, chef, puppet, saltstack, custom.
-	// Unknown values are rejected by the admission webhook (AS-026, AS-027, REQ-008).
-	// +kubebuilder:validation:Enum=cloud-init;shell;file;powershell;sysprep;ansible;chef;puppet;saltstack;custom
+	// Built-in init-container: ansible, chef, puppet, saltstack, custom.
+	// Other values are treated as OCI init-container provisioners and require
+	// spec.provisioners[].image to select the runtime image.
 	Type string `json:"type"`
 
 	// Image is the OCI image for init-container provisioners
@@ -235,7 +236,9 @@ type ProvisionerSpec struct {
 
 	// Source loads provisioner content from an external source. When source.git.path
 	// points to a directory, regular files are loaded in lexicographic order and
-	// expanded into separate provisioner steps of the same type.
+	// expanded into separate provisioner steps of the same type. Directory
+	// expansion is supported only for in-process provisioners; init-container
+	// provisioners require a single resolved file per provisioner step.
 	// +optional
 	Source *ProvisionerSourceSpec `json:"source,omitempty"`
 
@@ -275,9 +278,10 @@ type GitProvisionerSourceSpec struct {
 	// use an immutable commit SHA.
 	Ref string `json:"ref"`
 
-	// Path is a file or directory within the repository. Directories are expanded
-	// into regular files sorted by relative path, for example 01-base.sh before
-	// 02-hardening.sh.
+	// Path is a file or directory within the repository. For in-process provisioners,
+	// directories are expanded into regular files sorted by relative path, for
+	// example 01-base.sh before 02-hardening.sh. Init-container provisioners require
+	// this path to resolve to a single file.
 	Path string `json:"path"`
 
 	// Auth references credentials for private Git repositories.
