@@ -33,7 +33,7 @@ The system and all its statically-linked dependencies MUST be licensed under
 | ID | Requirement | Priority | Rationale |
 |---|---|---|---|
 | LR-001 | The core operator binary and all Go dependencies used via `import` SHALL be Apache 2.0 or MIT licensed. | Must | Apache 2.0 redistribution terms |
-| LR-002 | HashiCorp Packer SHALL NOT be used as a dependency, library, or subprocess. | Must | BSL 1.1 since August 2023 — not redistributable |
+| LR-002 | BSL-licensed build tools SHALL NOT be used as dependencies, libraries, or subprocesses. | Must | BSL 1.1 components are not redistributable under Apache-2.0 terms |
 | LR-003 | LGPL-licensed libraries (libvirt, libguestfs) SHALL NOT be statically or dynamically linked into any operator binary. | Must | LGPL §4 copyleft on dynamic linking |
 | LR-004 | LGPL-licensed libraries MAY be used exclusively as external processes, accessed via Unix sockets, pipes, or child process invocation. | Must | Process boundary = license boundary |
 | LR-005 | All third-party dependency licenses SHALL be verifiable via `go-licenses check ./...` as part of the build pipeline. | Must | Automated compliance gate |
@@ -70,8 +70,7 @@ The following table lists all approved direct dependencies with their license st
 
 | Component | License | Reason |
 |---|---|---|
-| HashiCorp Packer | BSL 1.1 | Not Apache-2.0-compatible, not redistributable since 2023 |
-| HashiCorp Terraform | BSL 1.1 | Same reason |
+| BSL-licensed build tools | BSL 1.1 | Not Apache-2.0-compatible, not redistributable |
 | libvirt (linked) | LGPL 2.1+ | LGPL copyleft applies to linked binaries |
 | libguestfs (linked) | LGPL 2.1+ | Same reason |
 | Any GPL-licensed library | GPL v2/v3 | GPL copyleft incompatible with Apache 2.0 redistribution |
@@ -100,8 +99,7 @@ git add NOTICE
 
 ### 6.3 Annual Review
 The approved dependency matrix (Section 4) SHALL be reviewed annually or whenever
-a major dependency version is upgraded, to account for license changes (as occurred
-with HashiCorp in 2023).
+a major dependency version is upgraded, to account for upstream license changes.
 
 ---
 
@@ -124,6 +122,6 @@ The following artifacts serve as audit evidence for license compliance:
 
 | Requirement | ADR Reference | Evidence |
 |---|---|---|
-| LR-001 – LR-006 | ADR-001 (No Packer), ADR-004 (LGPL) | `NOTICE`, `go-licenses check` |
+| LR-001 – LR-006 | ADR-001, ADR-004 (LGPL) | `NOTICE`, `go-licenses check` |
 | LR-007 | ADR-002 (Containers) | OCI image manifests |
 | LR-008 | — | Git history, code review |

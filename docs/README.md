@@ -18,6 +18,7 @@ All documents are intended to support ISAE audit requirements.
 | Document | Description |
 |---|---|
 | [ARCHITECTURE.md](architecture/ARCHITECTURE.md) | Complete system architecture description (ISAE audit document) |
+| [Architecture Diagrams](architecture/diagrams.md) | Mermaid workflow and use-case diagrams |
 
 ## Getting Started
 
@@ -76,7 +77,6 @@ All documents are intended to support ISAE audit requirements.
 
 | Document | Title | Status |
 |---|---|---|
-| [ADR-001](adr/ADR-001-no-packer.md) | Do Not Use HashiCorp Packer | Accepted |
 | [ADR-002](adr/ADR-002-providers-as-separate-containers.md) | Platform Providers as Separate Kubernetes Containers | Accepted |
 | [ADR-003](adr/ADR-003-provisioners-as-init-containers.md) | Complex Provisioners as Kubernetes Restartable Init Containers | Accepted |
 | [ADR-004](adr/ADR-004-lgpl-as-external-processes.md) | LGPL Dependencies as External Processes Only | Accepted |

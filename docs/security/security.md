@@ -190,6 +190,5 @@ cannot be resolved safely.
 
 ## License Boundary
 
-The project does not use Packer. LGPL components must be executed only through
-external processes or sockets. They must not be statically or dynamically linked
-into Apache-2.0 core binaries.
+LGPL components must be executed only through external processes or sockets.
+They must not be statically or dynamically linked into Apache-2.0 core binaries.

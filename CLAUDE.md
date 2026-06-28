@@ -1,15 +1,15 @@
 # VM Image Builder — Claude Code Context
 
 This document contains all architectural decisions and design principles for the
-**VM Image Builder** — a Kubernetes-native, declarative image builder analogous to
-HashiCorp Packer, but fully licensed under **Apache 2.0**.
+**VM Image Builder** — a Kubernetes-native, declarative image builder fully
+licensed under **Apache 2.0**.
 
 ---
 
 ## Project Goal
 
 A Kubernetes Operator that enables building VM images for various platforms via
-declarative Kubernetes manifests. Analogous to HashiCorp Packer, but:
+declarative Kubernetes manifests with:
 - Fully **Apache 2.0** licensed (no BSL, no GPL linking)
 - Kubernetes-native (CRDs, Operator Pattern, Reconciliation Loop)
 - Extensible via a **plugin system** for platforms and provisioners
@@ -18,7 +18,7 @@ declarative Kubernetes manifests. Analogous to HashiCorp Packer, but:
 
 ## License Constraints — CRITICAL
 
-**Packer has been BSL 1.1 since 2023 — MUST NOT be used.**
+All runtime dependencies must remain compatible with Apache-2.0 redistribution.
 
 Permitted dependencies:
 | Component | License | Usage |
@@ -287,9 +287,9 @@ imagebuilder/
 
 ## Key Design Decisions (ADRs)
 
-### ADR-001: No Packer
-**Decision**: Packer will not be used.
-**Reason**: BSL 1.1 since 2023, not Apache-2.0-compatible, not redistributable.
+### ADR-001: Apache-Compatible Build Engine
+**Decision**: The build engine is implemented with Apache-compatible components.
+**Reason**: Runtime dependencies must remain redistributable.
 **Alternative**: Custom build engine with QEMU/libvirt + diskimage-builder + direct Cloud APIs.
 
 ### ADR-002: Providers as Separate Containers (Crossplane Model)

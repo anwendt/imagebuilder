@@ -105,7 +105,6 @@ make docker-build-uploader
 
 ## License Rules
 
-- Do not use Packer.
 - Do not link LGPL libraries into core binaries.
 - Use LGPL components only through external processes or sockets.
 - Keep statically linked dependencies Apache-2.0 or MIT compatible.

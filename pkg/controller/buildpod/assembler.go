@@ -581,10 +581,6 @@ func isInitContainer(provisionerType string) bool {
 	return provisioner.IsInitContainer(provisionerType)
 }
 
-func isInProcess(provisionerType string) bool {
-	return !isInitContainer(provisionerType)
-}
-
 func defaultImageForProvisioner(provisionerType string) string {
 	defaults := map[string]string{
 		"ansible":   envOrDefault("PROVISIONER_ANSIBLE_IMAGE", "ghcr.io/anwendt/imagebuilder-provisioner-ansible:0.1.0"),
@@ -638,8 +634,8 @@ func boolPtr(b bool) *bool { return &b }
 // the corresponding EnvVar. Returns nil when the slice is empty (no env var
 // added — the build engine treats an absent BOOT_COMMAND as "no boot commands").
 //
-// Uses SetEscapeHTML(false) so that Packer-style tokens like <enter>, <tab>
-// are preserved literally instead of being escaped to \u003center\u003e.
+// Uses SetEscapeHTML(false) so boot-command tokens like <enter>, <tab> are
+// preserved literally instead of being escaped to \u003center\u003e.
 func bootCommandEnv(cmds []string) *corev1.EnvVar {
 	if len(cmds) == 0 {
 		return nil
@@ -668,16 +664,6 @@ func provisionersEnv(provisioners []v1alpha1.ProvisionerSpec) *corev1.EnvVar {
 		return nil
 	}
 	return &corev1.EnvVar{Name: "PROVISIONERS", Value: data}
-}
-
-func inProcessProvisioners(provisioners []v1alpha1.ProvisionerSpec) []v1alpha1.ProvisionerSpec {
-	var filtered []v1alpha1.ProvisionerSpec
-	for _, p := range provisioners {
-		if isInProcess(p.Type) {
-			filtered = append(filtered, p)
-		}
-	}
-	return filtered
 }
 
 func guestAccessEnv(access *v1alpha1.GuestAccessSpec) []corev1.EnvVar {

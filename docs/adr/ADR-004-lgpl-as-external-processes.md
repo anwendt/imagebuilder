@@ -123,4 +123,3 @@ build:
 ## Related Documents
 
 - [REQ-003 — License & Compliance Requirements](../requirements/REQ-003-license-compliance-requirements.md) (LR-003, LR-004)
-- [ADR-001 — Do Not Use HashiCorp Packer](ADR-001-no-packer.md)

@@ -1,9 +1,8 @@
 # VM Image Builder
 
 VM Image Builder is a Kubernetes-native operator for declarative VM image
-builds. It is similar in intent to HashiCorp Packer, but designed around CRDs,
-Kubernetes Jobs, external platform providers, and an Apache-2.0-compatible
-dependency model.
+builds. It is designed around CRDs, Kubernetes Jobs, external platform
+providers, and an Apache-2.0-compatible dependency model.
 
 ## What It Does
 
@@ -35,6 +34,7 @@ dependency model.
 - [Provider SDK guide](docs/development/provider-sdk.md)
 - [Troubleshooting](docs/operations/troubleshooting.md)
 - [Architecture](docs/architecture/ARCHITECTURE.md)
+- [Architecture diagrams](docs/architecture/diagrams.md)
 - [ADRs](docs/adr/README.md)
 
 ## Basic Development Commands
@@ -58,7 +58,6 @@ make test-e2e
 
 ## License Boundary
 
-Packer is not used. LGPL components such as libvirt/libguestfs must only be
-accessed through process or socket boundaries, never linked into the core
-binaries. See [ADR-001](docs/adr/ADR-001-no-packer.md) and
+LGPL components such as libvirt/libguestfs must only be accessed through
+process or socket boundaries, never linked into the core binaries. See
 [ADR-004](docs/adr/ADR-004-lgpl-as-external-processes.md).

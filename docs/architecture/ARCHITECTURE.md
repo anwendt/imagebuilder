@@ -51,18 +51,15 @@ The **VM Image Builder** is a Kubernetes-native operator that enables automated,
 construction of virtual machine (VM) disk images for multiple cloud and on-premises
 infrastructure platforms.
 
-The system provides the same capabilities as HashiCorp Packer — building, customising, and
-publishing VM images — but is implemented as a Kubernetes Operator and released exclusively
-under the **Apache License 2.0**, making it suitable for commercial redistribution without
-license restrictions.
+The system builds, customises, and publishes VM images as a Kubernetes Operator
+and is released exclusively under the **Apache License 2.0**, making it suitable
+for commercial redistribution without license restrictions.
 
 ### 1.2 Problem Statement
 
 Organisations operating multi-cloud or hybrid environments need a unified mechanism to
-build consistent, hardened VM base images across platforms such as AWS, Azure, GCP,
-VMware vSphere, and OpenStack. Existing tools (HashiCorp Packer) are either:
-- No longer Apache-licensed (BSL 1.1 since 2023, see ADR-001), or
-- Not integrated with Kubernetes-native workflows.
+build consistent, hardened VM base images across platforms such as AWS, Azure,
+VMware vSphere, and OpenStack while keeping image definitions Kubernetes-native.
 
 ### 1.3 System Boundaries
 
@@ -112,54 +109,43 @@ Each principle is referenced by one or more Architecture Decision Records (ADRs)
 
 ### 3.1 High-Level Component Diagram
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Kubernetes Cluster                           │
-│                                                                     │
-│  ┌──────────────────────────────────────────────────────────────┐  │
-│  │                   imagebuilder-system namespace               │  │
-│  │                                                              │  │
-│  │  ┌─────────────────────────────────────────────────────┐    │  │
-│  │  │              Core Operator (Deployment)              │    │  │
-│  │  │                                                     │    │  │
-│  │  │  ┌──────────────────┐  ┌─────────────────────────┐ │    │  │
-│  │  │  │ VMImage Controller│  │PlatformProvider Controller│ │    │  │
-│  │  │  │  (Reconciler)    │  │  (Provider Lifecycle)   │ │    │  │
-│  │  │  └────────┬─────────┘  └───────────┬─────────────┘ │    │  │
-│  │  │           │                        │               │    │  │
-│  │  │  ┌────────▼──────────────────────────────────────┐ │    │  │
-│  │  │  │              Plugin Registry                   │ │    │  │
-│  │  │  └────────────────────────────────────────────────┘ │    │  │
-│  │  └──────────────────────────┬──────────────────────────┘    │  │
-│  │                             │ gRPC / TCP via ClusterIP       │  │
-│  │  ┌──────────────────────────▼──────────────────────────┐    │  │
-│  │  │              Platform Provider Pods                  │    │  │
-│  │  │  ┌──────────┐ ┌──────────┐ ┌──────────┐            │    │  │
-│  │  │  │ provider │ │ provider │ │ provider │  ...        │    │  │
-│  │  │  │   -aws   │ │ -vsphere │ │  -gcp    │            │    │  │
-│  │  │  └──────────┘ └──────────┘ └──────────┘            │    │  │
-│  │  └──────────────────────────────────────────────────────┘    │  │
-│  │                                                              │  │
-│  │  ┌──────────────────────────────────────────────────────┐    │  │
-│  │  │              Build Job Pods (per VMImage build)       │    │  │
-│  │  │                                                      │    │  │
-│  │  │  Init: cloud-init-writer                             │    │  │
-│  │  │  Init: provisioner-ansible:v2.16                     │    │  │
-│  │  │  Init: provisioner-inspec:v1.0                       │    │  │
-│  │  │  Main: artifact-uploader                             │    │  │
-│  │  └──────────────────────────────────────────────────────┘    │  │
-│  └──────────────────────────────────────────────────────────────┘  │
-│                                                                     │
-│  ┌──────────────────────────────────────────────────────────────┐  │
-│  │                  Kubernetes API Server                        │  │
-│  │         VMImage CRD │ PlatformProvider CRD │ ProviderConfig   │  │
-│  └──────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────┘
-                              │
-               External Cloud / On-Premises Platforms
-          ┌────────┬──────────┬────────┬──────────┬────────────┐
-          │  AWS   │  Azure   │  GCP   │ vSphere  │ OpenStack  │
-          └────────┴──────────┴────────┴──────────┴────────────┘
+```mermaid
+flowchart TD
+    subgraph cluster[Kubernetes Cluster]
+        api[Kubernetes API Server<br/>VMImage CRD<br/>PlatformProvider CRD<br/>ProviderConfig]
+
+        subgraph ns[imagebuilder-system namespace]
+            subgraph operator[Core Operator Deployment]
+                vmc[VMImage Controller<br/>Reconciler]
+                ppc[PlatformProvider Controller<br/>Provider Lifecycle]
+                registry[Plugin Registry]
+                vmc --> registry
+                ppc --> registry
+            end
+
+            subgraph providers[Platform Provider Pods]
+                aws[provider-aws]
+                azure[provider-azure]
+                vsphere[provider-vsphere]
+                openstack[provider-openstack]
+            end
+
+            subgraph build[Build Job Pods per VMImage build]
+                builder[Main builder container<br/>QEMU and in-process provisioners]
+                init[Restartable init containers<br/>Ansible Chef Puppet SaltStack custom]
+                workspace[Shared workspace volume]
+                init --> workspace
+                builder --> workspace
+            end
+        end
+    end
+
+    api --> vmc
+    api --> ppc
+    registry -->|gRPC over ClusterIP| providers
+    vmc --> build
+    build -->|upload/register| providers
+    providers --> platforms[External cloud and on-premises platforms<br/>AWS Azure vSphere OpenStack]
 ```
 
 ### 3.2 Component Descriptions
