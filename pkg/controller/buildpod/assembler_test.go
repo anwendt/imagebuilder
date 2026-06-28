@@ -11,6 +11,7 @@
 //   - Job naming and labels
 //   - Init container creation per provisioner type
 //   - In-process provisioner types do NOT produce init containers
+//   - Complex provisioner types produce restartable init containers
 //   - Workspace volume present and mounted
 //   - Owner reference set on the Job
 //   - Security contexts (pod-level and container-level)
@@ -293,10 +294,10 @@ func TestAssemble_NoInitContainers_InProcessProvisioners(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Built-in provisioners stay in the builder container
+// Complex provisioners run as restartable init containers
 // ---------------------------------------------------------------------------
 
-func TestAssemble_NoInitContainer_AnsibleProvisioner(t *testing.T) {
+func TestAssemble_InitContainer_AnsibleProvisioner(t *testing.T) {
 	img := baseImage()
 	img.Spec.Provisioners = []v1alpha1.ProvisionerSpec{
 		{Type: "ansible", Image: "ghcr.io/anwendt/imagebuilder-provisioner-ansible:v1.0.0"},
@@ -305,8 +306,15 @@ func TestAssemble_NoInitContainer_AnsibleProvisioner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Assemble failed: %v", err)
 	}
-	if n := len(job.Spec.Template.Spec.InitContainers); n != 0 {
-		t.Fatalf("expected 0 init containers, got %d", n)
+	ics := job.Spec.Template.Spec.InitContainers
+	if n := len(ics); n != 1 {
+		t.Fatalf("expected 1 init container, got %d", n)
+	}
+	if ics[0].Name != "provisioner-0-ansible" {
+		t.Fatalf("init container name = %q", ics[0].Name)
+	}
+	if ics[0].RestartPolicy == nil || *ics[0].RestartPolicy != corev1.ContainerRestartPolicyAlways {
+		t.Fatalf("init container restartPolicy = %#v, want Always", ics[0].RestartPolicy)
 	}
 }
 
@@ -322,8 +330,11 @@ func TestAssemble_InitContainers_Order(t *testing.T) {
 		t.Fatalf("Assemble failed: %v", err)
 	}
 	ics := job.Spec.Template.Spec.InitContainers
-	if len(ics) != 0 {
-		t.Fatalf("expected 0 init containers, got %d", len(ics))
+	if len(ics) != 2 {
+		t.Fatalf("expected 2 init containers, got %d", len(ics))
+	}
+	if ics[0].Name != "provisioner-0-ansible" || ics[1].Name != "provisioner-1-chef" {
+		t.Fatalf("init container order = %#v", []string{ics[0].Name, ics[1].Name})
 	}
 }
 
@@ -347,6 +358,10 @@ func TestAssemble_InitContainer_StepEnvVar(t *testing.T) {
 		want := string(rune('0' + i))
 		if stepVal != want {
 			t.Errorf("init container %d: PROVISIONER_STEP = %q, want %q", i, stepVal, want)
+		}
+		envMap := envMap(ic.Env)
+		if envMap["PROVISIONER_CONFIG_PATH"] == "" || envMap["PROVISIONER_STATUS_PATH"] == "" {
+			t.Errorf("init container %d missing config/status path env: %#v", i, envMap)
 		}
 	}
 }

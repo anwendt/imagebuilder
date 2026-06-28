@@ -22,6 +22,17 @@ spec:
     hyperVGeneration: {{ .Values.providerConfig.extra.hyperVGeneration | quote }}
     osState: {{ .Values.providerConfig.extra.osState | quote }}
     storageAccountType: {{ .Values.providerConfig.extra.storageAccountType | quote }}
+    {{- with .Values.providerConfig.extra.proxy }}
+    {{- with .httpProxy }}
+    httpProxy: {{ . | quote }}
+    {{- end }}
+    {{- with .httpsProxy }}
+    httpsProxy: {{ . | quote }}
+    {{- end }}
+    {{- with .noProxy }}
+    noProxy: {{ . | quote }}
+    {{- end }}
+    {{- end }}
     remote.vmSize: {{ .Values.providerConfig.extra.remote.vmSize | quote }}
     remote.networkInterfaceId: {{ .Values.providerConfig.extra.remote.networkInterfaceId | quote }}
 {{- end }}

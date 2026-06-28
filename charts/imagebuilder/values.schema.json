@@ -93,6 +93,26 @@
       "minLength": 1,
       "description": "Namespace where PlatformProvider Deployments and Services are created."
     },
+    "proxy": {
+      "type": "object",
+      "properties": {
+        "httpProxy": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional HTTP proxy URL rendered as HTTP_PROXY and http_proxy in the operator container."
+        },
+        "httpsProxy": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional HTTPS proxy URL rendered as HTTPS_PROXY and https_proxy in the operator container."
+        },
+        "noProxy": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional comma-separated proxy bypass list rendered as NO_PROXY and no_proxy in the operator container."
+        }
+      }
+    },
     "providerSecurity": {
       "type": "object",
       "properties": {
@@ -174,6 +194,9 @@
         "chef": {
           "$ref": "#/definitions/imageReference"
         },
+        "custom": {
+          "$ref": "#/definitions/imageReference"
+        },
         "puppet": {
           "$ref": "#/definitions/imageReference"
         },
@@ -181,7 +204,7 @@
           "$ref": "#/definitions/imageReference"
         }
       },
-      "required": ["ansible", "chef", "puppet", "saltstack"]
+      "required": ["ansible", "chef", "custom", "puppet", "saltstack"]
     }
   },
   "definitions": {

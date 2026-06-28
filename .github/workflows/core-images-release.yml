@@ -16,6 +16,11 @@ env:
   OPERATOR_IMAGE: ${{ github.repository_owner }}/imagebuilder-operator
   BUILDER_IMAGE: ${{ github.repository_owner }}/imagebuilder-builder
   UPLOADER_IMAGE: ${{ github.repository_owner }}/imagebuilder-uploader
+  PROVISIONER_ANSIBLE_IMAGE: ${{ github.repository_owner }}/imagebuilder-provisioner-ansible
+  PROVISIONER_CHEF_IMAGE: ${{ github.repository_owner }}/imagebuilder-provisioner-chef
+  PROVISIONER_CUSTOM_IMAGE: ${{ github.repository_owner }}/imagebuilder-provisioner-custom
+  PROVISIONER_PUPPET_IMAGE: ${{ github.repository_owner }}/imagebuilder-provisioner-puppet
+  PROVISIONER_SALTSTACK_IMAGE: ${{ github.repository_owner }}/imagebuilder-provisioner-saltstack
 
 permissions:
   contents: read
@@ -101,6 +106,81 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Build and push Ansible provisioner image
+        id: provisioner_ansible
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f
+        with:
+          context: .
+          file: Dockerfile.provisioner
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.PROVISIONER_ANSIBLE_IMAGE }}:${{ steps.meta.outputs.tag }}
+          build-args: PROVISIONER_TYPE=ansible
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push Chef provisioner image
+        id: provisioner_chef
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f
+        with:
+          context: .
+          file: Dockerfile.provisioner
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.PROVISIONER_CHEF_IMAGE }}:${{ steps.meta.outputs.tag }}
+          build-args: PROVISIONER_TYPE=chef
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push Puppet provisioner image
+        id: provisioner_puppet
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f
+        with:
+          context: .
+          file: Dockerfile.provisioner
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.PROVISIONER_PUPPET_IMAGE }}:${{ steps.meta.outputs.tag }}
+          build-args: PROVISIONER_TYPE=puppet
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push Custom provisioner image
+        id: provisioner_custom
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f
+        with:
+          context: .
+          file: Dockerfile.provisioner
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.PROVISIONER_CUSTOM_IMAGE }}:${{ steps.meta.outputs.tag }}
+          build-args: PROVISIONER_TYPE=custom
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push SaltStack provisioner image
+        id: provisioner_saltstack
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f
+        with:
+          context: .
+          file: Dockerfile.provisioner
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.PROVISIONER_SALTSTACK_IMAGE }}:${{ steps.meta.outputs.tag }}
+          build-args: PROVISIONER_TYPE=saltstack
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
       - name: Install cosign
         uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003
 
@@ -111,10 +191,20 @@ jobs:
           cosign sign --yes ${{ env.REGISTRY }}/${{ env.OPERATOR_IMAGE }}@${{ steps.operator.outputs.digest }}
           cosign sign --yes ${{ env.REGISTRY }}/${{ env.BUILDER_IMAGE }}@${{ steps.builder.outputs.digest }}
           cosign sign --yes ${{ env.REGISTRY }}/${{ env.UPLOADER_IMAGE }}@${{ steps.uploader.outputs.digest }}
+          cosign sign --yes ${{ env.REGISTRY }}/${{ env.PROVISIONER_ANSIBLE_IMAGE }}@${{ steps.provisioner_ansible.outputs.digest }}
+          cosign sign --yes ${{ env.REGISTRY }}/${{ env.PROVISIONER_CHEF_IMAGE }}@${{ steps.provisioner_chef.outputs.digest }}
+          cosign sign --yes ${{ env.REGISTRY }}/${{ env.PROVISIONER_CUSTOM_IMAGE }}@${{ steps.provisioner_custom.outputs.digest }}
+          cosign sign --yes ${{ env.REGISTRY }}/${{ env.PROVISIONER_PUPPET_IMAGE }}@${{ steps.provisioner_puppet.outputs.digest }}
+          cosign sign --yes ${{ env.REGISTRY }}/${{ env.PROVISIONER_SALTSTACK_IMAGE }}@${{ steps.provisioner_saltstack.outputs.digest }}
 
       - name: Publish digest summary
         run: |
           echo "Operator image: ${{ env.REGISTRY }}/${{ env.OPERATOR_IMAGE }}@${{ steps.operator.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
           echo "Builder image: ${{ env.REGISTRY }}/${{ env.BUILDER_IMAGE }}@${{ steps.builder.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
           echo "Uploader image: ${{ env.REGISTRY }}/${{ env.UPLOADER_IMAGE }}@${{ steps.uploader.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "Set Helm image.digest, builderImage.digest, and uploaderImage.digest to these values." >> "$GITHUB_STEP_SUMMARY"
+          echo "Ansible provisioner image: ${{ env.REGISTRY }}/${{ env.PROVISIONER_ANSIBLE_IMAGE }}@${{ steps.provisioner_ansible.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Chef provisioner image: ${{ env.REGISTRY }}/${{ env.PROVISIONER_CHEF_IMAGE }}@${{ steps.provisioner_chef.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Custom provisioner image: ${{ env.REGISTRY }}/${{ env.PROVISIONER_CUSTOM_IMAGE }}@${{ steps.provisioner_custom.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Puppet provisioner image: ${{ env.REGISTRY }}/${{ env.PROVISIONER_PUPPET_IMAGE }}@${{ steps.provisioner_puppet.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "SaltStack provisioner image: ${{ env.REGISTRY }}/${{ env.PROVISIONER_SALTSTACK_IMAGE }}@${{ steps.provisioner_saltstack.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Set Helm image.digest, builderImage.digest, uploaderImage.digest, and provisionerImages.*.digest to these values." >> "$GITHUB_STEP_SUMMARY"

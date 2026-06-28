@@ -61,6 +61,10 @@ provisionerImages:
     repository: ghcr.io/anwendt/imagebuilder-provisioner-chef
     tag: "0.1.0"
     digest: ""
+  custom:
+    repository: ghcr.io/anwendt/imagebuilder-provisioner-custom
+    tag: "0.1.0"
+    digest: ""
   puppet:
     repository: ghcr.io/anwendt/imagebuilder-provisioner-puppet
     tag: "0.1.0"
@@ -100,6 +104,11 @@ imageSignaturePolicy:
 maxConcurrentBuilds: 3
 maxConcurrentBuildsPerNode: 1
 logLevel: info
+
+# proxy:
+#   httpProxy: http://proxy.example.com:8080
+#   httpsProxy: http://proxy.example.com:8443
+#   noProxy: localhost,127.0.0.1,.svc,.cluster.local,169.254.169.254
 
 metrics:
   enabled: true

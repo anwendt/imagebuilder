@@ -120,6 +120,118 @@ func TestAWSRemoteBuild_E2E(t *testing.T) {
 	}
 }
 
+func TestAWSRemoteBuildUbuntuLatest_E2E(t *testing.T) {
+	if os.Getenv("AWS_E2E") != "1" || !strings.EqualFold(os.Getenv("AWS_E2E_WORKLOAD"), "ubuntu24") {
+		t.Skip("set AWS_E2E=1 and AWS_E2E_WORKLOAD=ubuntu24 to run the real AWS Ubuntu 24.04 latest marketplace E2E test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), envDuration("AWS_E2E_TIMEOUT", 45*time.Minute))
+	defer cancel()
+
+	buildID := "aws-ubuntu24-e2e-" + time.Now().UTC().Format("20060102-150405")
+	cfg := awsConfig{
+		region: os.Getenv("AWS_E2E_REGION"),
+		extraConfig: map[string]string{
+			"remote.instanceType":       envDefault("AWS_E2E_INSTANCE_TYPE", "t3.micro"),
+			"remote.subnetId":           os.Getenv("AWS_E2E_SUBNET_ID"),
+			"remote.securityGroupIds":   os.Getenv("AWS_E2E_SECURITY_GROUP_IDS"),
+			"remote.iamInstanceProfile": os.Getenv("AWS_E2E_INSTANCE_PROFILE"),
+			"remote.kmsKeyId":           os.Getenv("AWS_E2E_KMS_KEY_ID"),
+			"remote.rootVolumeSizeGiB":  envDefault("AWS_E2E_ROOT_VOLUME_SIZE_GIB", "16"),
+		},
+	}
+	if roleARN := os.Getenv("AWS_E2E_ROLE_ARN"); roleARN != "" {
+		cfg.roleARN = roleARN
+	}
+	for key, value := range map[string]string{
+		"AWS_E2E_REGION":             cfg.region,
+		"AWS_E2E_SUBNET_ID":          cfg.extraConfig["remote.subnetId"],
+		"AWS_E2E_SECURITY_GROUP_IDS": cfg.extraConfig["remote.securityGroupIds"],
+		"AWS_E2E_INSTANCE_PROFILE":   cfg.extraConfig["remote.iamInstanceProfile"],
+		"AWS_E2E_KMS_KEY_ID":         cfg.extraConfig["remote.kmsKeyId"],
+	} {
+		if strings.TrimSpace(value) == "" {
+			t.Fatalf("%s is required when AWS_E2E=1", key)
+		}
+	}
+
+	client, err := newAWSRemoteBuildClient(ctx, cfg, slog.Default())
+	if err != nil {
+		t.Fatalf("newAWSRemoteBuildClient: %v", err)
+	}
+	awsClient, ok := client.(*awsSDKRemoteBuildClient)
+	if !ok {
+		t.Fatalf("client type = %T, want *awsSDKRemoteBuildClient", client)
+	}
+
+	req := awsRemoteBuildRequest{
+		BuildID:        buildID,
+		ImageName:      envDefault("AWS_E2E_UBUNTU24_IMAGE_NAME", buildID),
+		Namespace:      "imagebuilder-e2e",
+		Region:         cfg.region,
+		SourceType:     "marketplace",
+		OSFamily:       platform.OSFamilyLinux,
+		OSDistribution: "ubuntu",
+		OSVersion:      "24.04",
+		OSArch:         envDefault("AWS_E2E_OS_ARCH", "amd64"),
+		SourceMarketplace: &v1alpha1.MarketplaceRef{
+			Publisher: envDefault("AWS_E2E_MARKETPLACE_PUBLISHER", "Canonical"),
+			Offer:     envDefault("AWS_E2E_MARKETPLACE_OFFER", "ubuntu-24_04-lts"),
+			SKU:       envDefault("AWS_E2E_MARKETPLACE_SKU", "server"),
+			Version:   envDefault("AWS_E2E_MARKETPLACE_VERSION", "latest"),
+		},
+		Target: v1alpha1.TargetSpec{
+			ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "aws-e2e"},
+			Format:            string(platform.FormatAMI),
+			Tags:              map[string]string{"imagebuilder.io/e2e": "true", "imagebuilder-workload": "ubuntu24"},
+		},
+		Provisioners: []v1alpha1.ProvisionerSpec{
+			{Type: "shell", Inline: "set -eu\necho imagebuilder-aws-ubuntu24-e2e >/tmp/imagebuilder-e2e.txt"},
+		},
+		Timeout: envDuration("AWS_E2E_BUILD_TIMEOUT", 40*time.Minute),
+	}
+
+	var lastRef awsRemoteOperationRef
+	defer func() {
+		if lastRef.InstanceID != "" || lastRef.ImageID != "" {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cleanupCancel()
+			if err := awsClient.cleanupRemoteBuild(cleanupCtx, lastRef); err != nil {
+				t.Logf("cleanup failed: %v", err)
+			}
+		}
+	}()
+
+	for {
+		state, err := awsClient.ReconcileRemoteBuild(ctx, req)
+		if err != nil {
+			t.Fatalf("ReconcileRemoteBuild: %v", err)
+		}
+		if state.OperationRef != "" {
+			req.OperationRef = state.OperationRef
+			parsed, err := parseAWSRemoteOperationRef(state.OperationRef)
+			if err != nil {
+				t.Fatalf("parse operation ref: %v", err)
+			}
+			lastRef = parsed
+		}
+		t.Logf("phase=%s done=%t ref=%s message=%s", state.Phase, state.Done, state.OperationRef, state.Message)
+		if state.Done {
+			if state.AMIID == "" {
+				t.Fatal("remote build completed without AMI ID")
+			}
+			lastRef.ImageID = state.AMIID
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for AWS Ubuntu 24.04 latest remote build: %v", ctx.Err())
+		case <-time.After(envDuration("AWS_E2E_POLL_INTERVAL", 20*time.Second)):
+		}
+	}
+}
+
 func envDefault(key, fallback string) string {
 	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
 		return value

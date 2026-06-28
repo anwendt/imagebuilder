@@ -1,0 +1,46 @@
+# Dockerfile for ADR-003 provisioner init-container images.
+#
+# Build with PROVISIONER_TYPE=ansible|chef|puppet|saltstack|custom and tag the
+# resulting image accordingly. The runtime reads PROVISIONER_CONFIG_PATH and
+# writes PROVISIONER_STATUS_PATH.
+
+FROM golang:1.26.4-alpine@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648 AS builder
+
+ARG TARGETOS
+ARG TARGETARCH
+
+RUN apk add --no-cache ca-certificates
+
+WORKDIR /workspace
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build \
+      -trimpath \
+      -ldflags="-s -w -extldflags=-static" \
+      -o /workspace/imagebuilder-provisioner \
+      ./cmd/provisioner
+
+FROM debian:12-slim@sha256:67b30a61dc87758f0caf819646104f29ecbda97d920aaf5edc834128ac8493d3
+
+ARG PROVISIONER_TYPE=custom
+
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends ansible ca-certificates openssh-client \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 65532 --home-dir /workspace --shell /usr/sbin/nologin nonroot
+
+COPY --from=builder /workspace/imagebuilder-provisioner /imagebuilder-provisioner
+
+ENV IMAGEBUILDER_PROVISIONER_TYPE=${PROVISIONER_TYPE}
+ENV WORKSPACE_DIR=/workspace
+
+USER 65532:65532
+WORKDIR /workspace
+
+ENTRYPOINT ["/imagebuilder-provisioner"]

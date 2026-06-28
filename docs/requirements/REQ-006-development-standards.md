@@ -60,7 +60,7 @@ written before (or alongside) the production code.
 | DR-006 | **Unit Tests** — Each exported function or method SHALL have unit tests covering normal cases, edge cases, and error cases. | Single function/method | `testing` stdlib, `t.Run()` |
 | DR-007 | **Integration Tests** — Controller reconcilers SHALL be tested against a real Kubernetes API server via `envtest` (controller-runtime). No fake clients. | Controller + K8s API | `sigs.k8s.io/controller-runtime/pkg/envtest` |
 | DR-008 | **Interface Compliance Tests** — Each concrete implementation of a Go interface (`Plugin`, `Provisioner`) SHALL have a compliance test that exercises every interface method. | Interface implementations | `testing` stdlib |
-| DR-009 | **Contract Tests** — The init-container filesystem contract (`/workspace/config.json` / `status.json`) SHALL be tested by both the operator (writer) and at least one reference provisioner (reader). | Cross-component | Docker-based test |
+| DR-009 | **Contract Tests** — The init-container filesystem contract (`/workspace/provisioners/step-N/config.json` / `status.json`) SHALL be tested by both the builder (writer) and at least one reference provisioner (reader). | Cross-component | Docker-based test |
 | DR-010 | **End-to-End Tests** — At least one E2E test SHALL validate a full VMImage build lifecycle (create resource → build → ready status) against a real or kind-based cluster. | Full system | `kind` + `kubectl` |
 
 ### 2.4 Coverage Requirements

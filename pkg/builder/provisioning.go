@@ -30,8 +30,10 @@ type ProvisioningRequest struct {
 type ProvisionerLookup func(typeName string) (provisioner.Provisioner, bool)
 
 type SequentialProvisionerRunner struct {
-	Lookup ProvisionerLookup
-	Logger *slog.Logger
+	Lookup          ProvisionerLookup
+	IsInitContainer func(typeName string) bool
+	Logger          *slog.Logger
+	PollInterval    time.Duration
 }
 
 type ProvisionerStepStatus struct {
@@ -72,6 +74,7 @@ func (r SequentialProvisionerRunner) Run(ctx context.Context, req ProvisioningRe
 		return err
 	}
 	statuses := make([]ProvisionerStepStatus, 0, len(provisioners))
+	externalStep := 0
 	for step, spec := range provisioners {
 		status := ProvisionerStepStatus{Step: step, Type: spec.Type}
 		runReq := &provisioner.RunRequest{
@@ -87,6 +90,64 @@ func (r SequentialProvisionerRunner) Run(ctx context.Context, req ProvisioningRe
 			OS:                      req.Image.Spec.OS.Family,
 			Spec:                    spec,
 		}
+
+		if requiresGuestAccess(spec.Type) && req.GuestAccess.Host == "" {
+			err := fmt.Errorf("provisioner step %d type %q requires spec.build.guestAccess", step, spec.Type)
+			status.Error = sanitizeProvisionerDetail(err.Error(), req)
+			statuses = append(statuses, status)
+			_ = writeProvisionerStepOutput(req.WorkspaceDir, step, status)
+			_ = writeProvisionerStatuses(req.WorkspaceDir, statuses)
+			return err
+		}
+
+		if r.isInitContainerType(spec.Type) {
+			configStep := externalStep
+			externalStep++
+			if err := writeProvisionerInput(req.WorkspaceDir, configStep, runReq); err != nil {
+				status.Error = sanitizeProvisionerDetail(err.Error(), req)
+				statuses = append(statuses, status)
+				_ = writeProvisionerStepOutput(req.WorkspaceDir, configStep, status)
+				_ = writeProvisionerStatuses(req.WorkspaceDir, statuses)
+				return err
+			}
+			stepLogger := logger.With("provisioner", spec.Type, "step", step, "externalStep", configStep)
+			stepLogger.Info("waiting for init-container provisioner")
+			start := time.Now()
+			output, err := r.waitForInitContainerOutput(ctx, req.WorkspaceDir, configStep)
+			status.Duration = time.Since(start).Seconds()
+			if err != nil {
+				wrapped := fmt.Errorf("wait for provisioner step %d type %q: %w", step, spec.Type, err)
+				status.Error = sanitizeProvisionerDetail(wrapped.Error(), req)
+				statuses = append(statuses, status)
+				_ = writeProvisionerStepOutput(req.WorkspaceDir, configStep, status)
+				_ = writeProvisionerStatuses(req.WorkspaceDir, statuses)
+				return wrapped
+			}
+			if !output.Success {
+				detail := output.Error
+				if detail == "" {
+					detail = output.Message
+				}
+				err := fmt.Errorf("provisioner step %d type %q failed: %s", step, spec.Type, detail)
+				status.Error = sanitizeProvisionerDetail(err.Error(), req)
+				statuses = append(statuses, status)
+				_ = writeProvisionerStatuses(req.WorkspaceDir, statuses)
+				return err
+			}
+			status.Success = true
+			status.Message = output.Message
+			statuses = append(statuses, status)
+			if err := writeProvisionerStatuses(req.WorkspaceDir, statuses); err != nil {
+				return err
+			}
+			if status.Message != "" {
+				stepLogger.Info("init-container provisioner completed", slog.String("message", status.Message))
+			} else {
+				stepLogger.Info("init-container provisioner completed")
+			}
+			continue
+		}
+
 		if err := writeProvisionerInput(req.WorkspaceDir, step, runReq); err != nil {
 			status.Error = sanitizeProvisionerDetail(err.Error(), req)
 			statuses = append(statuses, status)
@@ -105,14 +166,6 @@ func (r SequentialProvisionerRunner) Run(ctx context.Context, req ProvisioningRe
 		}
 		if p.ExecutionType() != provisioner.TypeInProcess {
 			err := fmt.Errorf("provisioner step %d type %q has unsupported execution type %q in builder runtime", step, spec.Type, p.ExecutionType())
-			status.Error = sanitizeProvisionerDetail(err.Error(), req)
-			statuses = append(statuses, status)
-			_ = writeProvisionerStepOutput(req.WorkspaceDir, step, status)
-			_ = writeProvisionerStatuses(req.WorkspaceDir, statuses)
-			return err
-		}
-		if requiresGuestAccess(spec.Type) && req.GuestAccess.Host == "" {
-			err := fmt.Errorf("provisioner step %d type %q requires spec.build.guestAccess", step, spec.Type)
 			status.Error = sanitizeProvisionerDetail(err.Error(), req)
 			statuses = append(statuses, status)
 			_ = writeProvisionerStepOutput(req.WorkspaceDir, step, status)
@@ -161,25 +214,77 @@ func (r SequentialProvisionerRunner) Run(ctx context.Context, req ProvisioningRe
 	return nil
 }
 
+func (r SequentialProvisionerRunner) isInitContainerType(typeName string) bool {
+	if r.IsInitContainer != nil {
+		return r.IsInitContainer(typeName)
+	}
+	return provisioner.IsInitContainer(typeName)
+}
+
+func (r SequentialProvisionerRunner) waitForInitContainerOutput(ctx context.Context, workspaceDir string, step int) (provisioner.ProvisionerOutput, error) {
+	if workspaceDir == "" {
+		return provisioner.ProvisionerOutput{}, fmt.Errorf("workspace directory is required for init-container provisioner")
+	}
+	interval := r.PollInterval
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+	statusPath := filepath.Join(provisionerStepDir(workspaceDir, step), "status.json")
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		output, ok, err := readProvisionerOutput(statusPath)
+		if err != nil {
+			return provisioner.ProvisionerOutput{}, err
+		}
+		if ok {
+			return output, nil
+		}
+		select {
+		case <-ctx.Done():
+			return provisioner.ProvisionerOutput{}, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func readProvisionerOutput(path string) (provisioner.ProvisionerOutput, bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return provisioner.ProvisionerOutput{}, false, nil
+		}
+		return provisioner.ProvisionerOutput{}, false, fmt.Errorf("read provisioner output %s: %w", path, err)
+	}
+	if len(data) == 0 {
+		return provisioner.ProvisionerOutput{}, false, nil
+	}
+	var output provisioner.ProvisionerOutput
+	if err := json.Unmarshal(data, &output); err != nil {
+		return provisioner.ProvisionerOutput{}, false, nil
+	}
+	return output, true, nil
+}
+
 func writeProvisionerInput(workspaceDir string, step int, req *provisioner.RunRequest) error {
 	if workspaceDir == "" {
 		return nil
 	}
 	input := provisioner.ProvisionerInput{
-		VMAddress:      req.VMAddress,
-		VMUser:         req.VMUser,
-		Protocol:       req.Protocol,
-		SSHPort:        req.SSHPort,
-		SSHKeyPath:     req.SSHKeyPath,
-		VMPasswordPath: req.VMPasswordPath,
-		OS:             req.OS,
-		Step:           step,
-		UserConfig:     req.Spec,
+		VMAddress:               req.VMAddress,
+		VMUser:                  req.VMUser,
+		Protocol:                req.Protocol,
+		SSHPort:                 req.SSHPort,
+		SSHKeyPath:              req.SSHKeyPath,
+		VMPasswordPath:          req.VMPasswordPath,
+		WinRMHTTPS:              req.WinRMHTTPS,
+		WinRMInsecureSkipVerify: req.WinRMInsecureSkipVerify,
+		OS:                      req.OS,
+		Step:                    step,
+		UserConfig:              req.Spec,
 	}
-	if err := writeProvisionerJSON(filepath.Join(provisionerStepDir(workspaceDir, step), "config.json"), input); err != nil {
-		return err
-	}
-	return writeProvisionerJSON(filepath.Join(workspaceDir, "config.json"), input)
+	return writeProvisionerJSON(filepath.Join(provisionerStepDir(workspaceDir, step), "config.json"), input)
 }
 
 func writeProvisionerStepOutput(workspaceDir string, step int, status ProvisionerStepStatus) error {
@@ -191,10 +296,7 @@ func writeProvisionerStepOutput(workspaceDir string, step int, status Provisione
 		Message: status.Message,
 		Error:   status.Error,
 	}
-	if err := writeProvisionerJSON(filepath.Join(provisionerStepDir(workspaceDir, step), "status.json"), output); err != nil {
-		return err
-	}
-	return writeProvisionerJSON(filepath.Join(workspaceDir, "status.json"), output)
+	return writeProvisionerJSON(filepath.Join(provisionerStepDir(workspaceDir, step), "status.json"), output)
 }
 
 func writeProvisionerStatuses(workspaceDir string, statuses []ProvisionerStepStatus) error {

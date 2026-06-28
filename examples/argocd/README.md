@@ -19,3 +19,20 @@ This directory contains example GitOps paths for imagebuilder.
 The `*-credentials.example.yaml` files contain placeholders only. Replace them
 with your preferred secret-management mechanism before using these paths with
 ArgoCD.
+
+## Proxy Configuration
+
+The plain resource examples include commented `ProviderConfig.spec.extra`
+proxy keys:
+
+```yaml
+extra:
+  # httpProxy: http://proxy.example.com:8080
+  # httpsProxy: http://proxy.example.com:8443
+  # noProxy: localhost,127.0.0.1,.svc,.cluster.local,169.254.169.254
+```
+
+Use those keys for provider API traffic only when the selected provider
+implementation supports per-provider proxy configuration. If the operator pod
+itself must use a proxy to reach Kubernetes, registries, provider Services, or
+external endpoints, configure the operator chart `proxy` values instead.

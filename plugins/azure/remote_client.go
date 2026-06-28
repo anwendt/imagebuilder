@@ -44,6 +44,8 @@ type azureRemoteBuildState struct {
 	Hygiene      *platform.RemoteHygieneResult
 }
 
+const azureRemoteBuildPublicKey = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDDzch/BPwsvvCVPklQJaRRO7gsqw4mLjnJiLHTQ5o0mBi7BLInDe12I5C9Qw2QU+mh46eaDzqa9vggfoZxWCENfhJ7zsdYReh27XzmpFD36THxci5awdPVmiF+kQ0LlxGZgtkf11lLt9hpSSqeXcIsnQRO9LAEXqBtMAR50zSBgeHcyXRNxeiR4D1c/FtsGcm+6GJu4eL+T1GPvNTr77dhVaOAYfba0QUTfnDOW3j0A8YqtH+0Aagzh6w2yAxP//NV1TtL0g1l0PTa8jTqjvBi13PI6RgpHP5HDsxyQPj7UoNiHLP2no/X3MguOYoqPZWDRdOzsAbL4+ufCOJu41bN imagebuilder-azure-remote-build"
+
 func (c *sdkClient) ReconcileRemoteBuild(ctx context.Context, input azureRemoteBuildInput) (*azureRemoteBuildState, error) {
 	expandedInput, cleanup, err := expandAzureRemoteProvisioners(ctx, input)
 	if err != nil {
@@ -204,6 +206,9 @@ func (c *sdkClient) startRemoteBuildVM(ctx context.Context, input azureRemoteBui
 			},
 			StorageProfile: storageProfile,
 		},
+	}
+	if sourceType == "marketplace" {
+		vm.Properties.OSProfile = azureRemoteOSProfile(input)
 	}
 	poller, err := c.vms.BeginCreateOrUpdate(ctx, c.cfg.resourceGroup, ref.VMName, vm, nil)
 	if err != nil {
@@ -408,6 +413,27 @@ func azureMarketplaceImageReference(ref *v1alpha1.MarketplaceRef) *armcompute.Im
 	}
 }
 
+func azureRemoteOSProfile(input azureRemoteBuildInput) *armcompute.OSProfile {
+	const adminUser = "imagebuilder"
+	profile := &armcompute.OSProfile{
+		AdminUsername: to.Ptr(adminUser),
+		ComputerName:  to.Ptr(azureRemoteComputerName(input.BuildID)),
+	}
+	if input.OSFamily != platform.OSFamilyWindows {
+		profile.LinuxConfiguration = &armcompute.LinuxConfiguration{
+			DisablePasswordAuthentication: to.Ptr(true),
+			ProvisionVMAgent:              to.Ptr(true),
+			SSH: &armcompute.SSHConfiguration{
+				PublicKeys: []*armcompute.SSHPublicKey{{
+					Path:    to.Ptr("/home/" + adminUser + "/.ssh/authorized_keys"),
+					KeyData: to.Ptr(azureRemoteBuildPublicKey),
+				}},
+			},
+		}
+	}
+	return profile
+}
+
 func validateAzureRemoteProvisioners(input azureRemoteBuildInput) error {
 	for _, provisioner := range input.Provisioners {
 		switch provisioner.Type {
@@ -561,6 +587,14 @@ func parseAzureRemoteOperationRef(value string) (azureRemoteOperationRef, error)
 
 func azureRemoteVMName(buildID string) string {
 	return "ib-" + sanitizeName(buildID) + "-vm"
+}
+
+func azureRemoteComputerName(buildID string) string {
+	name := sanitizeName(buildID)
+	if len(name) > 64 {
+		name = name[:64]
+	}
+	return firstNonEmpty(name, "imagebuilder")
 }
 
 func azureRemoteDiskName(buildID string) string {

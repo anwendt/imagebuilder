@@ -167,6 +167,8 @@ spec:
               value: ghcr.io/anwendt/imagebuilder-provisioner-ansible:dev
             - name: PROVISIONER_CHEF_IMAGE
               value: ghcr.io/anwendt/imagebuilder-provisioner-chef:dev
+            - name: PROVISIONER_CUSTOM_IMAGE
+              value: ghcr.io/anwendt/imagebuilder-provisioner-custom:dev
             - name: PROVISIONER_PUPPET_IMAGE
               value: ghcr.io/anwendt/imagebuilder-provisioner-puppet:dev
             - name: PROVISIONER_SALTSTACK_IMAGE

@@ -215,6 +215,7 @@ func TestHelmChartImagesAreDigestConfigurable(t *testing.T) {
 		"--allowed-provider-registries={{ join \",\" .Values.providerSecurity.allowedRegistries }}",
 		"name: PROVISIONER_ANSIBLE_IMAGE",
 		"name: PROVISIONER_CHEF_IMAGE",
+		"name: PROVISIONER_CUSTOM_IMAGE",
 		"name: PROVISIONER_PUPPET_IMAGE",
 		"name: PROVISIONER_SALTSTACK_IMAGE",
 		`{{ include "imagebuilder.imageRef" .Values.builderImage | quote }}`,

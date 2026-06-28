@@ -15,6 +15,9 @@ spec:
       name: vsphere-credentials
       key: credentials
   extra:
+    # httpProxy: http://proxy.example.com:8080
+    # httpsProxy: http://proxy.example.com:8443
+    # noProxy: localhost,127.0.0.1,.svc,.cluster.local,169.254.169.254
     datacenter: dc01
     cluster: cluster01
     datastore: vsanDatastore

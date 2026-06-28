@@ -3,12 +3,12 @@
 // Assembles the Kubernetes Job that runs the VM image build.
 //
 // Job structure:
-//   Init containers  — one per external init-container provisioner, when enabled
+//   Init containers  — restartable sidecar-style init containers for complex provisioners
 //   Main container   — QEMU build engine + in-process provisioners + upload
 //
 // Filesystem contract (ADR-003):
-//   /workspace/config.json  — operator writes ProvisionerInput before each init-container
-//   /workspace/status.json  — init-container writes ProvisionerOutput before exit
+//   /workspace/provisioners/step-N/config.json  — builder writes ProvisionerInput
+//   /workspace/provisioners/step-N/status.json  — init-container writes ProvisionerOutput
 //
 // The workspace volume is either a per-build emptyDir or an artifact PVC,
 // depending on spec.build.artifactStorage.
@@ -52,26 +52,6 @@ const (
 	// operator deployment.
 	defaultBuilderImage = "ghcr.io/anwendt/imagebuilder-builder:0.1.0"
 )
-
-// initContainerTypes lists provisioner types that run as Kubernetes init containers.
-// This mirrors the kubebuilder enum in ProvisionerSpec.Type (REQ-001, ADR-003).
-// Kept here as a static map so the assembler does not depend on runtime plugin
-// registration — the set of types is fixed at compile time by the CRD schema.
-var initContainerTypes = map[string]bool{}
-
-// inProcessTypes lists provisioner types that run inside the main build container.
-var inProcessTypes = map[string]bool{
-	"ansible":    true,
-	"chef":       true,
-	"cloud-init": true,
-	"custom":     true,
-	"shell":      true,
-	"file":       true,
-	"powershell": true,
-	"puppet":     true,
-	"saltstack":  true,
-	"sysprep":    true,
-}
 
 // Assemble builds the Kubernetes Job spec for a VMImage build.
 // The Job is owned by img so it is garbage-collected when the VMImage is deleted.
@@ -142,37 +122,56 @@ func Assemble(img *v1alpha1.VMImage, scheme *runtime.Scheme) (*batchv1.Job, erro
 func buildInitContainers(img *v1alpha1.VMImage) ([]corev1.Container, error) {
 	var containers []corev1.Container
 	step := 0
+	restartPolicy := corev1.ContainerRestartPolicyAlways
 	for _, p := range img.Spec.Provisioners {
 		if !isInitContainer(p.Type) {
 			continue
 		}
-		img := p.Image
-		if img == "" {
-			img = defaultImageForProvisioner(p.Type)
+		image := p.Image
+		if image == "" {
+			image = defaultImageForProvisioner(p.Type)
 		}
-		if img == "" {
+		if image == "" {
 			return nil, fmt.Errorf("provisioner %q has no image and no built-in default", p.Type)
 		}
 
 		envVars := []corev1.EnvVar{
 			{
-				// Tell the init-container which step it is so it can read /workspace/config.json
 				Name:  "PROVISIONER_STEP",
 				Value: fmt.Sprintf("%d", step),
 			},
+			{Name: "PROVISIONER_CONFIG_PATH", Value: fmt.Sprintf("%s/provisioners/step-%d/config.json", workspaceMount, step)},
+			{Name: "PROVISIONER_STATUS_PATH", Value: fmt.Sprintf("%s/provisioners/step-%d/status.json", workspaceMount, step)},
 		}
 		for _, e := range p.Env {
 			envVars = append(envVars, translateEnvVar(e))
 		}
 
+		volumeMounts := []corev1.VolumeMount{
+			{Name: workspaceVol, MountPath: workspaceMount},
+		}
+		if hasGuestCredentials(img) {
+			volumeMounts = append(volumeMounts, corev1.VolumeMount{
+				Name:      guestCredsVol,
+				MountPath: guestCredsMount,
+				ReadOnly:  true,
+			})
+		}
+		if generatesGuestCredentials(img) {
+			volumeMounts = append(volumeMounts, corev1.VolumeMount{
+				Name:      generatedCredsVol,
+				MountPath: generatedCredsMount,
+			})
+		}
+		volumeMounts = append(volumeMounts, gitAuthVolumeMounts(img)...)
+
 		containers = append(containers, corev1.Container{
-			Name:  fmt.Sprintf("provisioner-%d-%s", step, p.Type),
-			Image: img,
-			Args:  p.Args,
-			Env:   envVars,
-			VolumeMounts: []corev1.VolumeMount{
-				{Name: workspaceVol, MountPath: workspaceMount},
-			},
+			Name:            fmt.Sprintf("provisioner-%d-%s", step, p.Type),
+			Image:           image,
+			Args:            p.Args,
+			Env:             envVars,
+			VolumeMounts:    volumeMounts,
+			RestartPolicy:   &restartPolicy,
 			SecurityContext: restrictedSecCtx(),
 		})
 		step++
@@ -211,7 +210,7 @@ func buildMainContainer(img *v1alpha1.VMImage) corev1.Container {
 	// without needing to understand any quoting or escaping conventions.
 	// Empty slice → empty JSON array "[]"; nil slice → omitted env var.
 	bootCmdEnv := bootCommandEnv(img.Spec.Source.BootCommand)
-	provisionersEnv := provisionersEnv(withGitAuthMountPaths(inProcessProvisioners(img.Spec.Provisioners)))
+	provisionersEnv := provisionersEnv(withGitAuthMountPaths(img.Spec.Provisioners))
 
 	env := []corev1.EnvVar{
 		{Name: "BUILD_ID", Value: buildID(img)},
@@ -443,7 +442,7 @@ func withGitAuthMountPaths(provisioners []v1alpha1.ProvisionerSpec) []v1alpha1.P
 func gitAuthSecretRefs(img *v1alpha1.VMImage) []v1alpha1.GitProvisionerAuthSecretRef {
 	var refs []v1alpha1.GitProvisionerAuthSecretRef
 	seen := map[string]bool{}
-	for _, spec := range inProcessProvisioners(img.Spec.Provisioners) {
+	for _, spec := range img.Spec.Provisioners {
 		if spec.Source == nil || spec.Source.Git == nil || spec.Source.Git.Auth == nil ||
 			spec.Source.Git.Auth.SecretRef == nil || spec.Source.Git.Auth.SecretRef.Name == "" {
 			continue
@@ -579,14 +578,6 @@ func jobLabels(img *v1alpha1.VMImage) map[string]string {
 }
 
 func isInitContainer(provisionerType string) bool {
-	if initContainerTypes[provisionerType] {
-		return true
-	}
-	if inProcessTypes[provisionerType] {
-		return false
-	}
-	// Unknown type: fall back to the runtime provisioner registry.
-	// If not registered as in-process there either, treat as init-container.
 	return provisioner.IsInitContainer(provisionerType)
 }
 
@@ -598,6 +589,7 @@ func defaultImageForProvisioner(provisionerType string) string {
 	defaults := map[string]string{
 		"ansible":   envOrDefault("PROVISIONER_ANSIBLE_IMAGE", "ghcr.io/anwendt/imagebuilder-provisioner-ansible:0.1.0"),
 		"chef":      envOrDefault("PROVISIONER_CHEF_IMAGE", "ghcr.io/anwendt/imagebuilder-provisioner-chef:0.1.0"),
+		"custom":    envOrDefault("PROVISIONER_CUSTOM_IMAGE", "ghcr.io/anwendt/imagebuilder-provisioner-custom:0.1.0"),
 		"puppet":    envOrDefault("PROVISIONER_PUPPET_IMAGE", "ghcr.io/anwendt/imagebuilder-provisioner-puppet:0.1.0"),
 		"saltstack": envOrDefault("PROVISIONER_SALTSTACK_IMAGE", "ghcr.io/anwendt/imagebuilder-provisioner-saltstack:0.1.0"),
 	}

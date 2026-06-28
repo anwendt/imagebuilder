@@ -107,6 +107,18 @@ Optional `extra` keys:
 | `contentLibrary` | empty | Content Library name for OVA/OVF publishing. |
 | `contentLibraryID` | empty | Content Library ID; takes precedence over `contentLibrary`. |
 | `requireManifest` | `false` | Requires `.mf` manifest files when publishing to Content Library. |
+| `httpProxy` | empty | HTTP proxy URL for provider API traffic when per-provider proxy support is enabled. |
+| `httpsProxy` | empty | HTTPS proxy URL for provider API traffic when per-provider proxy support is enabled. |
+| `noProxy` | empty | Comma-separated proxy bypass list, for example vCenter and cluster-local endpoints. |
+
+Example proxy values:
+
+```yaml
+extra:
+  httpProxy: http://proxy.example.com:8080
+  httpsProxy: http://proxy.example.com:8443
+  noProxy: localhost,127.0.0.1,.svc,.cluster.local,169.254.169.254
+```
 
 ## Required vCenter Permissions
 

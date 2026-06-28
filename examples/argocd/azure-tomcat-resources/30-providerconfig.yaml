@@ -14,6 +14,9 @@ spec:
       key: credentials
   region: germanywestcentral
   extra:
+    # httpProxy: http://proxy.example.com:8080
+    # httpsProxy: http://proxy.example.com:8443
+    # noProxy: localhost,127.0.0.1,.svc,.cluster.local,169.254.169.254
     authMode: clientSecret
     resourceGroup: imagebuilder-test
     storageAccount: imagebuilderstaging

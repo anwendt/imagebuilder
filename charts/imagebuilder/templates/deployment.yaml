@@ -46,10 +46,32 @@ spec:
               value: {{ include "imagebuilder.imageRef" .Values.provisionerImages.ansible | quote }}
             - name: PROVISIONER_CHEF_IMAGE
               value: {{ include "imagebuilder.imageRef" .Values.provisionerImages.chef | quote }}
+            - name: PROVISIONER_CUSTOM_IMAGE
+              value: {{ include "imagebuilder.imageRef" .Values.provisionerImages.custom | quote }}
             - name: PROVISIONER_PUPPET_IMAGE
               value: {{ include "imagebuilder.imageRef" .Values.provisionerImages.puppet | quote }}
             - name: PROVISIONER_SALTSTACK_IMAGE
               value: {{ include "imagebuilder.imageRef" .Values.provisionerImages.saltstack | quote }}
+            {{- with .Values.proxy }}
+            {{- with .httpProxy }}
+            - name: HTTP_PROXY
+              value: {{ . | quote }}
+            - name: http_proxy
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .httpsProxy }}
+            - name: HTTPS_PROXY
+              value: {{ . | quote }}
+            - name: https_proxy
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .noProxy }}
+            - name: NO_PROXY
+              value: {{ . | quote }}
+            - name: no_proxy
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
           ports:
             - name: metrics
               containerPort: 8080

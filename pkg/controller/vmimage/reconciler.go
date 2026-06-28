@@ -246,18 +246,20 @@ func (r *VMImageReconciler) reconcileBuilding(ctx context.Context, img *v1alpha1
 		return ctrl.Result{}, fmt.Errorf("get build job: %w", err)
 	}
 
-	// Update phase to Provisioning if init containers are running.
-	if img.Status.Phase == v1alpha1.PhaseBuilding && jobHasActiveInitContainers(job) {
+	// Update phase to Provisioning once the build job is active. The builder
+	// coordinates in-process and restartable init-container provisioners inside
+	// the job.
+	if img.Status.Phase == v1alpha1.PhaseBuilding && jobHasActiveBuildPod(job) {
 		img.Status.Phase = v1alpha1.PhaseProvisioning
 		setStep(img, "Build", "Running", "BuildJobRunning", "Build Job is running", "")
 		setStep(img, "Boot", "Running", "GuestBooting", "Guest boot/readiness phase is in progress", "")
 		setStep(img, "Readiness", "Running", "WaitingForGuest", "Waiting for guest management endpoint", "")
-		setStep(img, "Provisioning", "Running", "ProvisionerInitContainersRunning", "Provisioner init containers are executing", "")
-		setCondition(img, "Provisioning", metav1.ConditionTrue, "InitContainersRunning", "Provisioner init containers are executing")
+		setStep(img, "Provisioning", "Running", "BuildJobRunning", "Provisioning is coordinated inside the build job", "")
+		setCondition(img, "Provisioning", metav1.ConditionTrue, "BuildJobRunning", "Provisioning is coordinated inside the build job")
 		if err := r.Status().Update(ctx, img); err != nil {
 			return ctrl.Result{}, fmt.Errorf("update status to Provisioning: %w", err)
 		}
-		r.recordEvent(img, corev1.EventTypeNormal, "ProvisioningStarted", "Provisioner init containers are executing in Job %q", job.Name)
+		r.recordEvent(img, corev1.EventTypeNormal, "ProvisioningStarted", "Provisioning is coordinated in Job %q", job.Name)
 	}
 
 	// Check for Job completion.
@@ -1598,6 +1600,6 @@ func isJobFailed(job *batchv1.Job) bool {
 	return false
 }
 
-func jobHasActiveInitContainers(job *batchv1.Job) bool {
+func jobHasActiveBuildPod(job *batchv1.Job) bool {
 	return job.Status.Active > 0
 }

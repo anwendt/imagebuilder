@@ -176,6 +176,101 @@ func TestVSphereRemoteBuildTomcat_E2E(t *testing.T) {
 	}
 }
 
+func TestVSphereRemoteBuildUbuntuLatest_E2E(t *testing.T) {
+	if os.Getenv("VSPHERE_E2E") != "1" || !strings.EqualFold(os.Getenv("VSPHERE_E2E_WORKLOAD"), "ubuntu24") {
+		t.Skip("set VSPHERE_E2E=1 and VSPHERE_E2E_WORKLOAD=ubuntu24 to run live vSphere Ubuntu 24.04 latest marketplace E2E")
+	}
+
+	timeout := durationFromEnv(t, "VSPHERE_E2E_TIMEOUT", 75*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	buildID := "vsphere-ubuntu24-e2e-" + strconv.FormatInt(time.Now().Unix(), 10)
+	cfg := platform.PluginConfig{
+		ProviderConfigName: "vsphere-e2e",
+		Endpoint:           os.Getenv("VSPHERE_E2E_ENDPOINT"),
+		Insecure:           boolFromEnv("VSPHERE_E2E_INSECURE", true),
+		SecretData: map[string][]byte{
+			"username": []byte(os.Getenv("VSPHERE_E2E_USERNAME")),
+			"password": []byte(os.Getenv("VSPHERE_E2E_PASSWORD")),
+		},
+		Extra: liveExtraConfig(buildID),
+	}
+	cfg.Extra["imageName"] = firstNonEmpty(os.Getenv("VSPHERE_E2E_UBUNTU24_IMAGE_NAME"), buildID)
+	if source := strings.TrimSpace(os.Getenv("VSPHERE_E2E_MARKETPLACE_SOURCE")); source != "" {
+		cfg.Extra["marketplace.canonical.ubuntu.24.04.latest"] = source
+	}
+	requireVSphereE2EEnv(t, cfg)
+	if strings.TrimSpace(cfg.Extra["marketplace.canonical.ubuntu.24.04.latest"]) == "" {
+		t.Fatal("VSPHERE_E2E_MARKETPLACE_SOURCE is required and must reference a template, VM, content-library:/Library/Item, or library-item:<id>")
+	}
+
+	plugin := &Plugin{}
+	if err := plugin.Init(ctx, cfg); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := plugin.HealthCheck(ctx); err != nil {
+		t.Fatalf("HealthCheck: %v", err)
+	}
+
+	req := &platform.RemoteBuildRequest{
+		BuildID:        buildID,
+		ImageName:      cfg.Extra["imageName"],
+		Namespace:      firstNonEmpty(os.Getenv("VSPHERE_E2E_NAMESPACE"), "imagebuilder-e2e"),
+		OSFamily:       platform.OSFamilyLinux,
+		OSDistribution: "ubuntu",
+		OSVersion:      "24.04",
+		OSArch:         firstNonEmpty(os.Getenv("VSPHERE_E2E_OS_ARCH"), "amd64"),
+		SourceType:     "marketplace",
+		SourceMarketplace: &v1alpha1.MarketplaceRef{
+			Publisher: firstNonEmpty(os.Getenv("VSPHERE_E2E_MARKETPLACE_PUBLISHER"), "Canonical"),
+			Offer:     firstNonEmpty(os.Getenv("VSPHERE_E2E_MARKETPLACE_OFFER"), "ubuntu"),
+			SKU:       firstNonEmpty(os.Getenv("VSPHERE_E2E_MARKETPLACE_SKU"), "24.04"),
+			Version:   firstNonEmpty(os.Getenv("VSPHERE_E2E_MARKETPLACE_VERSION"), "latest"),
+		},
+		Target: v1alpha1.TargetSpec{
+			ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "vsphere-e2e"},
+			Format:            firstNonEmpty(os.Getenv("VSPHERE_E2E_FORMAT"), string(platform.FormatVMDK)),
+			Tags:              map[string]string{"imagebuilder.io/e2e": "true", "imagebuilder.io/workload": "ubuntu24"},
+		},
+		Timeout: durationFromEnv(t, "VSPHERE_E2E_BUILD_TIMEOUT", 65*time.Minute),
+	}
+
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cleanupCancel()
+		if err := plugin.CleanupRemoteBuild(cleanupCtx, req); err != nil {
+			t.Logf("remote cleanup failed: %v", err)
+		}
+	}()
+
+	pollInterval := durationFromEnv(t, "VSPHERE_E2E_POLL_INTERVAL", 20*time.Second)
+	for {
+		result, err := plugin.ReconcileRemoteBuild(ctx, req)
+		if err != nil {
+			t.Fatalf("ReconcileRemoteBuild: %v", err)
+		}
+		if result.OperationRef != "" {
+			req.OperationRef = result.OperationRef
+		}
+		t.Logf("phase=%s done=%t ref=%s message=%s", result.Phase, result.Done, result.OperationRef, result.Message)
+		if result.Done {
+			if len(result.Images) != 1 || result.Images[0].ImageRef.ID == "" {
+				t.Fatalf("remote build completed without vSphere image ID: %#v", result.Images)
+			}
+			if result.Hygiene == nil || result.Hygiene.Status != "passed" {
+				t.Fatalf("remote build completed without passed hygiene result: %#v", result.Hygiene)
+			}
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for vSphere Ubuntu 24.04 latest remote build: %v", ctx.Err())
+		case <-time.After(pollInterval):
+		}
+	}
+}
+
 func liveExtraConfig(artifactPath string) map[string]string {
 	extra := map[string]string{
 		"datacenter":       os.Getenv("VSPHERE_E2E_DATACENTER"),

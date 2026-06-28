@@ -13,6 +13,7 @@ import (
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
+	"github.com/anwendt/imagebuilder/pkg/provisioner"
 	"github.com/anwendt/imagebuilder/pkg/security/netguard"
 )
 
@@ -78,6 +79,9 @@ func expandGitProvisioner(ctx context.Context, workspaceDir string, step int, sp
 	files, err := provisionerSourceFiles(sourcePath)
 	if err != nil {
 		return nil, err
+	}
+	if provisioner.IsInitContainer(spec.Type) && len(files) > 1 {
+		return nil, fmt.Errorf("git provisioner source for init-container type %q expands to %d files; use one provisioner entry per init-container step", spec.Type, len(files))
 	}
 	steps := make([]v1alpha1.ProvisionerSpec, 0, len(files))
 	var total int64

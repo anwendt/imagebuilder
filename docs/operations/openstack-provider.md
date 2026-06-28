@@ -43,6 +43,18 @@ Useful `spec.extra` keys:
 | `image.minDiskGB` | `0` | Glance min disk |
 | `image.minRAMMB` | `0` | Glance min RAM |
 | `image.property.<name>` | unset | Additional Glance image property |
+| `httpProxy` | unset | HTTP proxy URL for provider API traffic when per-provider proxy support is enabled |
+| `httpsProxy` | unset | HTTPS proxy URL for provider API traffic when per-provider proxy support is enabled |
+| `noProxy` | unset | Comma-separated proxy bypass list, for example Keystone/Glance/Nova internal endpoints |
+
+Example proxy values:
+
+```yaml
+extra:
+  httpProxy: http://proxy.example.com:8080
+  httpsProxy: http://proxy.example.com:8443
+  noProxy: localhost,127.0.0.1,.svc,.cluster.local,169.254.169.254
+```
 
 ## Remote Builds
 

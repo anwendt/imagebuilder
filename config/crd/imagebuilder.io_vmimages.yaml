@@ -387,8 +387,9 @@ spec:
                 type: object
               provisioners:
                 description: |-
-                  Provisioners run sequentially after the OS boots
-                  In-process types: cloud-init, shell, file, powershell, sysprep, ansible, chef, puppet, saltstack, custom
+                  Provisioners run sequentially after the OS boots.
+                  In-process types: cloud-init, shell, file, powershell, sysprep.
+                  Init-container types: ansible, chef, puppet, saltstack, custom.
                 items:
                   properties:
                     args:
@@ -516,7 +517,8 @@ spec:
                     type:
                       description: |-
                         Type determines how the provisioner runs.
-                        In-process: cloud-init, shell, file, powershell, sysprep, ansible, chef, puppet, saltstack, custom
+                        In-process: cloud-init, shell, file, powershell, sysprep.
+                        Init-container: ansible, chef, puppet, saltstack, custom.
                         Unknown values are rejected by the admission webhook (AS-026, AS-027, REQ-008).
                       enum:
                       - cloud-init

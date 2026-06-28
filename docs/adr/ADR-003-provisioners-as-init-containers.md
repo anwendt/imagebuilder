@@ -42,18 +42,16 @@ must abort the entire build.
 **Simple provisioners** are implemented as in-process Go implementations of the
 `Provisioner` interface (`pkg/provisioner/interface.go`), compiled into the operator binary.
 
-**Complex provisioners** are implemented as **Kubernetes Init Containers** within the
-build Job Pod. Each provisioner is a separate OCI container image.
+**Complex provisioners** are implemented as **Kubernetes restartable Init Containers**
+within the build Job Pod. Each provisioner is a separate OCI container image.
 
 The contract between the operator and an init-container provisioner is filesystem-based:
 
 ```
-/workspace/config.json   ← Written by operator before build starts
-                            Contains: VM IP, SSH credentials, OS info, provisioner spec
-/workspace/status.json   → Written by provisioner upon completion
+/workspace/provisioners/step-N/config.json   ← Written by builder when the VM is reachable
+                                                Contains: VM IP, SSH credentials, OS info, provisioner spec
+/workspace/provisioners/step-N/status.json   → Written by provisioner upon completion
                             Contains: success/error message, artifact paths
-Exit code 0              → Provisioner succeeded, next init container starts
-Exit code != 0           → Build fails, operator reads status.json for error details
 ```
 
 ---
@@ -63,14 +61,14 @@ Exit code != 0           → Build fails, operator reads status.json for error d
 ```
 Build Job Pod
 ┌─────────────────────────────────────────────────────────┐
-│  Init Container 1: cloud-init-writer (in-process equiv) │
-│  Init Container 2: provisioner-ansible:v2.16            │
-│  Init Container 3: provisioner-inspec:v1.0              │
-│  Main Container:   artifact-upload                       │
+│  Restartable Init Container 1: provisioner-ansible:v2.16 │
+│  Restartable Init Container 2: provisioner-inspec:v1.0   │
+│  Main Container: QEMU build engine + in-process steps     │
 └─────────────────────────────────────────────────────────┘
 
-Kubernetes guarantees: Init Containers run sequentially, one at a time.
-If any init container exits with non-zero, the Pod fails.
+Kubernetes starts restartable init containers before the main container. They
+remain available while the main builder boots the VM, writes step config files,
+and waits for each provisioner status file in manifest order.
 ```
 
 ---
@@ -81,10 +79,10 @@ If any init container exits with non-zero, the Pod fails.
 
 | Benefit | Detail |
 |---|---|
-| **Sequential semantics built-in** | Kubernetes guarantees init containers run one at a time in order. This is exactly the semantics required for provisioners. No custom orchestration code needed. |
-| **Zero SDK requirement** | A community provisioner needs only to be an OCI image that reads `/workspace/config.json` and writes `/workspace/status.json`. No Go SDK, no gRPC, no operator dependency. |
+| **Sequential semantics** | The builder coordinates manifest order through per-step config/status files while Kubernetes keeps the provisioner OCI images isolated from the builder runtime. |
+| **Zero SDK requirement** | A community provisioner needs only to be an OCI image that reads `/workspace/provisioners/step-N/config.json` and writes `/workspace/provisioners/step-N/status.json`. No Go SDK, no gRPC, no operator dependency. |
 | **Independent tool environments** | Ansible (Python), Chef (Ruby), InSpec (Ruby) run in their own isolated containers without conflicting dependencies. |
-| **Failure atomicity** | Pod-level failure semantics ensure the entire build job fails if any provisioner fails, with automatic cleanup. |
+| **Failure atomicity** | The builder fails the build job when a provisioner writes `success=false` or the build context times out, with automatic cleanup. |
 | **Retryability** | The operator can restart the Job if the build environment allows it (idempotent provisioners). |
 
 ### Why Not gRPC (Like Providers)?
@@ -97,9 +95,10 @@ If any init container exits with non-zero, the Pod fails.
 
 ### Why Not Sidecar Containers?
 
-Sidecar containers run in parallel with the main container. Provisioners must run
-sequentially. Init containers are the correct Kubernetes primitive for sequential,
-ordered setup tasks.
+Regular sidecar containers run in parallel with the main container without a
+standard startup contract. Restartable init containers provide a Kubernetes-native
+way to start provisioner containers before the builder while the builder keeps
+provisioner execution ordered through the filesystem contract.
 
 ---
 
@@ -107,13 +106,13 @@ ordered setup tasks.
 
 ### Positive
 - Any OCI image can be a provisioner with no SDK changes required.
-- Sequential ordering is enforced by Kubernetes, not by custom code.
+- Sequential ordering is enforced by the builder through per-step config/status files.
 - Complex provisioner ecosystems (Ansible Galaxy roles, Chef Cookbooks) are available without porting to Go.
-- Clear failure semantics via exit code and status.json.
+- Clear failure semantics via `success=false` and `error` in the step status file.
 
 ### Negative
 - Provisioners cannot stream real-time progress to the operator; only terminal status is captured.
-- The `/workspace` volume must be a shared `emptyDir` between init containers, requiring careful volume management.
+- The `/workspace` volume must be shared between the main builder and restartable init containers, requiring careful volume management.
 - Provisioner OCI images may be large (Ansible: ~500 MB with Python); pull time affects build latency.
 
 ### Mitigations
@@ -124,7 +123,7 @@ ordered setup tasks.
 
 ## Filesystem Contract (Normative)
 
-### `/workspace/config.json` — Input (written by operator)
+### `/workspace/provisioners/step-N/config.json` — Input (written by builder)
 
 ```json
 {
@@ -147,7 +146,7 @@ ordered setup tasks.
 }
 ```
 
-### `/workspace/status.json` — Output (written by provisioner)
+### `/workspace/provisioners/step-N/status.json` — Output (written by provisioner)
 
 ```json
 {

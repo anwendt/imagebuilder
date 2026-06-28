@@ -134,13 +134,15 @@ interface changes.
 
 **Init Container Contract** (no SDK required):
 ```
-/workspace/config.json  ← Operator writes (VM address, SSH key, spec)
-/workspace/status.json  → Provisioner writes (success/error)
-Exit 0                  → Success, next init container starts
-Exit != 0               → Build fails
+/workspace/provisioners/step-N/config.json  ← Builder writes when step N may run
+/workspace/provisioners/step-N/status.json  → Provisioner writes success/error
+success=true                            → Builder continues to next provisioner
+success=false or timeout                → Build fails
 ```
 
-Init containers run **sequentially** — this is exactly the semantics of provisioners.
+Restartable init containers are started before the main builder. The builder
+keeps provisioner execution sequential by writing one step config at a time and
+waiting for the matching status file.
 
 ---
 
@@ -346,9 +348,9 @@ NetworkPolicies and mTLS when providers are outside the strict namespace-local
 trust boundary.
 
 ### ADR-003: Provisioners as Init Containers
-**Decision**: Complex provisioners (Ansible, Chef) run as Kubernetes init containers.
-**Reason**: Init containers run sequentially — this matches exactly the provisioner semantics.
-No gRPC overhead needed; the contract is simple (config.json/status.json + exit code).
+**Decision**: Complex provisioners (Ansible, Chef) run as Kubernetes restartable init containers.
+**Reason**: The builder coordinates sequential execution with per-step config/status files while each complex tool runs in an isolated OCI image.
+No gRPC overhead needed; the contract is simple (`/workspace/provisioners/step-N/config.json` and `status.json`).
 Community provisioners need no SDK, only an OCI image that follows the file-path contract.
 
 ### ADR-004: LGPL Dependencies Only as External Processes

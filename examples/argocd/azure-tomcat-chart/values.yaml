@@ -37,6 +37,10 @@ providerConfig:
     hyperVGeneration: V2
     osState: generalized
     storageAccountType: Standard_LRS
+    # proxy:
+    #   httpProxy: http://proxy.example.com:8080
+    #   httpsProxy: http://proxy.example.com:8443
+    #   noProxy: localhost,127.0.0.1,.svc,.cluster.local,169.254.169.254
     remote:
       vmSize: Standard_B2s
       networkInterfaceId: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/imagebuilder-test/providers/Microsoft.Network/networkInterfaces/imagebuilder-e2e-build-nic

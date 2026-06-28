@@ -200,12 +200,13 @@ interface. Managed by the core operator as Kubernetes Deployments.
 
 #### 3.2.3 Build Job Pods
 
-Kubernetes Jobs created per VMImage build. Use init containers for sequential provisioner
+Kubernetes Jobs created per VMImage build. Use restartable init containers for
+complex provisioner tool isolation while the builder coordinates sequential
 execution.
 
 **Responsibilities:**
 - Execute the build backend (QEMU, diskimage-builder, or cloud API)
-- Run provisioners sequentially (init container pattern)
+- Run provisioners sequentially through builder coordination and init-container isolation
 - Write build artifacts to the shared `/workspace` volume
 - Upload artifacts to target platforms via the platform provider (or directly via SDK)
 
@@ -251,14 +252,14 @@ providers by name when processing targets.
    - Boots the VM (QEMU) or assembles the image (diskimage-builder)
    - Writes the raw disk image to /workspace/artifact.*
 
-8. Provisioners run sequentially (init containers):
+8. Provisioners run sequentially:
    For each provisioner:
-     a. Operator writes /workspace/config.json
-     b. Init container runs
-     c. Provisioner writes /workspace/status.json
-     d. Exit 0 → next provisioner; exit != 0 → Job fails
+     a. In-process provisioners run inside the builder
+     b. Init-container provisioners read /workspace/provisioners/step-N/config.json
+     c. Init-container provisioners write /workspace/provisioners/step-N/status.json
+     d. Builder waits for success before continuing to the next provisioner
 
-9. Controller detects Job completion (all init containers succeeded)
+9. Controller detects Job completion
    Sets status.phase = Uploading
 
 10. Artifact uploader (main container):
@@ -415,7 +416,7 @@ Sub-layer 2a: In-Process Provisioners (Go interface)
 
 Sub-layer 2b: Init-Container Provisioners (OCI)
   Purpose: Complex tools (Ansible, Chef, custom)
-  Mechanism: OCI image + filesystem contract (/workspace/config.json)
+  Mechanism: OCI image + filesystem contract (/workspace/provisioners/step-N/config.json)
   Contract: JSON file format (documented in ADR-003)
   Lifecycle: Runtime — any OCI image compliant with the contract
 ```
@@ -462,9 +463,11 @@ Source: `pkg/plugin/platform/interface.go`
 
 ### 7.2 Execution Order Guarantee
 
-Kubernetes guarantees that init containers execute **strictly sequentially**. Container N+1
-starts only after Container N exits with code 0. This provides the sequential ordering
-guarantee required by the provisioner model without custom orchestration logic.
+The builder guarantees that provisioners execute **strictly sequentially** in
+manifest order. In-process provisioners run directly inside the builder. Complex
+provisioners run in restartable init containers; the builder writes each
+provisioner's step config only when it is that provisioner's turn and waits for
+the matching status file before continuing.
 
 ---
 
@@ -627,10 +630,10 @@ service PlatformProviderService {
 Filesystem-based. Defined normatively in [ADR-003](../adr/ADR-003-provisioners-as-init-containers.md).
 
 ```
-/workspace/config.json  (operator writes before init container starts)
-/workspace/status.json  (provisioner writes before exiting)
-exit 0                  success
-exit != 0               failure
+/workspace/provisioners/step-N/config.json  (builder writes when step N may run)
+/workspace/provisioners/step-N/status.json  (provisioner writes upon completion)
+success=true                             success
+success=false or context timeout         failure
 ```
 
 ### 11.3 In-Process Provisioner Interface

@@ -21,7 +21,8 @@ func TestOpenStackRemoteBuild_E2E(t *testing.T) {
 	defer cancel()
 
 	cfg := openStackE2EConfig()
-	requireOpenStackE2EEnv(t, cfg)
+	provisioners := openStackE2EProvisioners()
+	requireOpenStackE2EEnv(t, cfg, true, provisioners)
 	plugin := &Plugin{}
 	if err := plugin.Init(ctx, cfg); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -46,7 +47,7 @@ func TestOpenStackRemoteBuild_E2E(t *testing.T) {
 			Format:            openStackE2EDefault("OPENSTACK_E2E_FORMAT", string(platform.FormatQCOW2)),
 			Tags:              map[string]string{"imagebuilder.io/e2e": "true"},
 		},
-		Provisioners: openStackE2EProvisioners(),
+		Provisioners: provisioners,
 		Timeout:      openStackE2EDuration(t, "OPENSTACK_E2E_BUILD_TIMEOUT", 45*time.Minute),
 	}
 
@@ -93,6 +94,91 @@ func TestOpenStackRemoteBuild_E2E(t *testing.T) {
 	}
 }
 
+func TestOpenTelekomCloudUbuntuLatest_E2E(t *testing.T) {
+	if os.Getenv("OPENSTACK_E2E") != "1" || !strings.EqualFold(os.Getenv("OPENSTACK_E2E_WORKLOAD"), "ubuntu24") {
+		t.Skip("set OPENSTACK_E2E=1 and OPENSTACK_E2E_WORKLOAD=ubuntu24 to run the real Open Telekom Cloud Ubuntu 24.04 latest marketplace E2E test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), openStackE2EDuration(t, "OPENSTACK_E2E_TIMEOUT", 55*time.Minute))
+	defer cancel()
+
+	cfg := openStackE2EConfig()
+	requireOpenStackE2EEnv(t, cfg, false, nil)
+	plugin := &Plugin{}
+	if err := plugin.Init(ctx, cfg); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := plugin.HealthCheck(ctx); err != nil {
+		t.Fatalf("HealthCheck: %v", err)
+	}
+
+	buildID := "otc-ubuntu24-e2e-" + time.Now().UTC().Format("20060102-150405")
+	req := &platform.RemoteBuildRequest{
+		BuildID:        buildID,
+		ImageName:      openStackE2EDefault("OPENSTACK_E2E_UBUNTU24_IMAGE_NAME", buildID),
+		Namespace:      openStackE2EDefault("OPENSTACK_E2E_NAMESPACE", "imagebuilder-e2e"),
+		OSFamily:       platform.OSFamilyLinux,
+		OSDistribution: "ubuntu",
+		OSVersion:      "24.04",
+		OSArch:         openStackE2EDefault("OPENSTACK_E2E_OS_ARCH", "amd64"),
+		SourceType:     "marketplace",
+		SourceMarketplace: &v1alpha1.MarketplaceRef{
+			Publisher: openStackE2EDefault("OPENSTACK_E2E_MARKETPLACE_PUBLISHER", "Open Telekom Cloud"),
+			Offer:     openStackE2EDefault("OPENSTACK_E2E_MARKETPLACE_OFFER", "Ubuntu 24.04"),
+			SKU:       openStackE2EDefault("OPENSTACK_E2E_MARKETPLACE_SKU", "amd64"),
+			Version:   openStackE2EDefault("OPENSTACK_E2E_MARKETPLACE_VERSION", "latest"),
+		},
+		Target: v1alpha1.TargetSpec{
+			ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "openstack-e2e"},
+			Format:            openStackE2EDefault("OPENSTACK_E2E_FORMAT", string(platform.FormatQCOW2)),
+			Tags:              map[string]string{"imagebuilder.io/e2e": "true", "imagebuilder-workload": "ubuntu24"},
+		},
+		Timeout: openStackE2EDuration(t, "OPENSTACK_E2E_BUILD_TIMEOUT", 45*time.Minute),
+	}
+
+	var completedImageID string
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cleanupCancel()
+		if err := plugin.CleanupRemoteBuild(cleanupCtx, req); err != nil {
+			t.Logf("remote cleanup failed: %v", err)
+		}
+		if completedImageID != "" {
+			if err := plugin.Cleanup(cleanupCtx, &platform.BuildArtifact{Metadata: map[string]string{"imageID": completedImageID}}); err != nil {
+				t.Logf("image cleanup failed: %v", err)
+			}
+		}
+	}()
+
+	pollInterval := openStackE2EDuration(t, "OPENSTACK_E2E_POLL_INTERVAL", 20*time.Second)
+	for {
+		result, err := plugin.ReconcileRemoteBuild(ctx, req)
+		if err != nil {
+			t.Fatalf("ReconcileRemoteBuild: %v", err)
+		}
+		if result.OperationRef != "" {
+			req.OperationRef = result.OperationRef
+		}
+		t.Logf("phase=%s done=%t ref=%s message=%s", result.Phase, result.Done, result.OperationRef, result.Message)
+		if result.Done {
+			if len(result.Images) != 1 || result.Images[0].ImageRef.ID == "" {
+				t.Fatalf("remote build completed without Open Telekom Cloud image ID: %#v", result.Images)
+			}
+			completedImageID = result.Images[0].ImageRef.ID
+			if result.Hygiene == nil || result.Hygiene.Status != "passed" {
+				t.Fatalf("remote build completed without passed hygiene result: %#v", result.Hygiene)
+			}
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for Open Telekom Cloud Ubuntu 24.04 latest remote build: %v", ctx.Err())
+		case <-time.After(pollInterval):
+		}
+	}
+}
+
 func openStackE2EConfig() platform.PluginConfig {
 	return platform.PluginConfig{
 		ProviderConfigName: "openstack-e2e",
@@ -125,13 +211,15 @@ func openStackE2EConfig() platform.PluginConfig {
 	}
 }
 
-func requireOpenStackE2EEnv(t *testing.T, cfg platform.PluginConfig) {
+func requireOpenStackE2EEnv(t *testing.T, cfg platform.PluginConfig, requireSourceImage bool, provisioners []v1alpha1.ProvisionerSpec) {
 	t.Helper()
 	required := map[string]string{
-		"OPENSTACK_E2E_AUTH_URL":        cfg.Endpoint,
-		"OPENSTACK_E2E_REGION":          cfg.Region,
-		"OPENSTACK_E2E_SOURCE_IMAGE_ID": os.Getenv("OPENSTACK_E2E_SOURCE_IMAGE_ID"),
-		"OPENSTACK_E2E_FLAVOR_REF":      cfg.Extra["remote.flavorRef"],
+		"OPENSTACK_E2E_AUTH_URL":   cfg.Endpoint,
+		"OPENSTACK_E2E_REGION":     cfg.Region,
+		"OPENSTACK_E2E_FLAVOR_REF": cfg.Extra["remote.flavorRef"],
+	}
+	if requireSourceImage {
+		required["OPENSTACK_E2E_SOURCE_IMAGE_ID"] = os.Getenv("OPENSTACK_E2E_SOURCE_IMAGE_ID")
 	}
 	for key, value := range required {
 		if strings.TrimSpace(value) == "" {
@@ -142,7 +230,7 @@ func requireOpenStackE2EEnv(t *testing.T, cfg platform.PluginConfig) {
 		(strings.TrimSpace(string(cfg.SecretData["username"])) == "" || strings.TrimSpace(string(cfg.SecretData["password"])) == "") {
 		t.Fatal("OPENSTACK_E2E_TOKEN or OPENSTACK_E2E_USERNAME/OPENSTACK_E2E_PASSWORD is required")
 	}
-	if len(openStackE2EProvisioners()) > 0 {
+	if len(provisioners) > 0 {
 		for key, value := range map[string]string{
 			"OPENSTACK_E2E_KEY_NAME":           cfg.Extra["remote.keyName"],
 			"OPENSTACK_E2E_REMOTE_PRIVATE_KEY": string(cfg.SecretData["remotePrivateKey"]),

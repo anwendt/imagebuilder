@@ -4,6 +4,7 @@
 BINARY_NAME    := imagebuilder-operator
 BUILDER_BINARY := imagebuilder-builder
 UPLOADER_BINARY := imagebuilder-uploader
+PROVISIONER_BINARY := imagebuilder-provisioner
 AWS_PROVIDER_BINARY := imagebuilder-provider-aws
 VSPHERE_PROVIDER_BINARY := imagebuilder-provider-vsphere
 AZURE_PROVIDER_BINARY := imagebuilder-provider-azure
@@ -13,11 +14,17 @@ REGISTRY       ?= ghcr.io/anwendt
 OPERATOR_IMAGE := $(REGISTRY)/$(BINARY_NAME)
 BUILDER_IMAGE := $(REGISTRY)/$(BUILDER_BINARY)
 UPLOADER_IMAGE := $(REGISTRY)/$(UPLOADER_BINARY)
+PROVISIONER_ANSIBLE_IMAGE := $(REGISTRY)/imagebuilder-provisioner-ansible
+PROVISIONER_CHEF_IMAGE := $(REGISTRY)/imagebuilder-provisioner-chef
+PROVISIONER_CUSTOM_IMAGE := $(REGISTRY)/imagebuilder-provisioner-custom
+PROVISIONER_PUPPET_IMAGE := $(REGISTRY)/imagebuilder-provisioner-puppet
+PROVISIONER_SALTSTACK_IMAGE := $(REGISTRY)/imagebuilder-provisioner-saltstack
 AWS_PROVIDER_IMAGE := $(REGISTRY)/$(AWS_PROVIDER_BINARY)
 VSPHERE_PROVIDER_IMAGE := $(REGISTRY)/$(VSPHERE_PROVIDER_BINARY)
 AZURE_PROVIDER_IMAGE := $(REGISTRY)/$(AZURE_PROVIDER_BINARY)
 OPENSTACK_PROVIDER_IMAGE := $(REGISTRY)/$(OPENSTACK_PROVIDER_BINARY)
 CORE_IMAGE_PLATFORMS ?= linux/amd64,linux/arm64
+PROVISIONER_IMAGE_PLATFORMS ?= linux/amd64,linux/arm64
 AWS_PROVIDER_PLATFORMS ?= linux/amd64,linux/arm64
 VSPHERE_PROVIDER_PLATFORMS ?= linux/amd64,linux/arm64
 AZURE_PROVIDER_PLATFORMS ?= linux/amd64,linux/arm64
@@ -44,7 +51,7 @@ GOVULNCHECK_VERSION     := v1.3.0
 STATICCHECK_VERSION     := 2026.1
 GO_LICENSES_VERSION     := v1.6.0
 
-.PHONY: all build build-builder build-uploader build-provider-aws build-provider-vsphere build-provider-azure build-provider-openstack test test-race test-core-e2e test-manifests test-vsphere-simulator test-e2e test-e2e-production test-e2e-aws test-e2e-aws-tomcat test-e2e-azure test-e2e-azure-tomcat test-e2e-azure-tomcat-prep test-e2e-azure-tomcat-run-clean test-e2e-azure-tomcat-cleanup test-e2e-vsphere test-e2e-vsphere-tomcat test-e2e-openstack test-e2e-openstack-tomcat test-e2e-windows-cloudbase lint vet verify-deps gosec govulncheck staticcheck security-check generate manifests patch-webhook-manifest run docker-build docker-build-builder docker-build-uploader docker-build-provider-aws docker-build-provider-vsphere docker-build-provider-azure docker-build-provider-openstack docker-build-core-multiarch docker-build-provider-aws-multiarch docker-build-provider-vsphere-multiarch docker-build-provider-azure-multiarch docker-build-provider-openstack-multiarch docker-push-core docker-push-builder docker-push-uploader docker-push-provider-aws docker-push-provider-vsphere docker-push-provider-azure docker-push-provider-openstack docker-digest-core docker-digest-builder docker-digest-uploader docker-digest-provider-aws docker-digest-provider-vsphere docker-digest-provider-azure docker-digest-provider-openstack sign-core sign-builder sign-uploader sign-provider-aws sign-provider-vsphere sign-provider-azure sign-provider-openstack update-provider-samples update-aws-provider-samples update-vsphere-provider-samples update-azure-provider-samples update-openstack-provider-samples license-check help deploy-production deploy-observability deploy-policies helm-lint helm-template
+.PHONY: all build build-builder build-uploader build-provisioner build-provider-aws build-provider-vsphere build-provider-azure build-provider-openstack test test-race test-core-e2e test-manifests test-vsphere-simulator test-e2e test-e2e-production test-e2e-aws test-e2e-aws-tomcat test-e2e-aws-ubuntu24 test-e2e-azure test-e2e-azure-tomcat test-e2e-azure-ubuntu24 test-e2e-azure-tomcat-prep test-e2e-azure-tomcat-run-clean test-e2e-azure-tomcat-cleanup test-e2e-vsphere test-e2e-vsphere-tomcat test-e2e-vsphere-ubuntu24 test-e2e-openstack test-e2e-openstack-tomcat test-e2e-open-telekom-cloud-ubuntu24 test-e2e-windows-cloudbase lint vet verify-deps gosec govulncheck staticcheck security-check generate manifests patch-webhook-manifest run docker-build docker-build-builder docker-build-uploader docker-build-provisioner-ansible docker-build-provisioner-chef docker-build-provisioner-custom docker-build-provisioner-puppet docker-build-provisioner-saltstack docker-build-provisioners docker-build-provider-aws docker-build-provider-vsphere docker-build-provider-azure docker-build-provider-openstack docker-build-core-multiarch docker-build-provisioners-multiarch docker-build-provider-aws-multiarch docker-build-provider-vsphere-multiarch docker-build-provider-azure-multiarch docker-build-provider-openstack-multiarch docker-push-core docker-push-builder docker-push-uploader docker-push-provisioners docker-push-provider-aws docker-push-provider-vsphere docker-push-provider-azure docker-push-provider-openstack docker-digest-core docker-digest-builder docker-digest-uploader docker-digest-provider-aws docker-digest-provider-vsphere docker-digest-provider-azure docker-digest-provider-openstack sign-core sign-builder sign-uploader sign-provider-aws sign-provider-vsphere sign-provider-azure sign-provider-openstack update-provider-samples update-aws-provider-samples update-vsphere-provider-samples update-azure-provider-samples update-openstack-provider-samples license-check help deploy-production deploy-observability deploy-policies helm-lint helm-template
 
 all: generate manifests build
 
@@ -58,6 +65,9 @@ build-builder: ## Build the build-engine binary
 
 build-uploader: ## Build the upload/register binary
 	CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(GOFLAGS) -trimpath -o bin/$(UPLOADER_BINARY) ./cmd/uploader/
+
+build-provisioner: ## Build the generic ADR-003 provisioner runner binary
+	CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(GOFLAGS) -trimpath -o bin/$(PROVISIONER_BINARY) ./cmd/provisioner/
 
 build-provider-aws: ## Build the standalone AWS PlatformProvider binary
 	CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(GOFLAGS) -trimpath -o bin/$(AWS_PROVIDER_BINARY) ./cmd/provider-aws/
@@ -86,6 +96,23 @@ docker-build-builder: ## Build the build-engine Docker image
 docker-build-uploader: ## Build the upload/register Docker image
 	docker build -f Dockerfile.uploader -t $(UPLOADER_IMAGE):$(IMAGE_TAG) .
 
+docker-build-provisioner-ansible: ## Build the Ansible provisioner image
+	docker build -f Dockerfile.provisioner --build-arg PROVISIONER_TYPE=ansible -t $(PROVISIONER_ANSIBLE_IMAGE):$(IMAGE_TAG) .
+
+docker-build-provisioner-chef: ## Build the Chef provisioner image
+	docker build -f Dockerfile.provisioner --build-arg PROVISIONER_TYPE=chef -t $(PROVISIONER_CHEF_IMAGE):$(IMAGE_TAG) .
+
+docker-build-provisioner-custom: ## Build the custom provisioner image
+	docker build -f Dockerfile.provisioner --build-arg PROVISIONER_TYPE=custom -t $(PROVISIONER_CUSTOM_IMAGE):$(IMAGE_TAG) .
+
+docker-build-provisioner-puppet: ## Build the Puppet provisioner image
+	docker build -f Dockerfile.provisioner --build-arg PROVISIONER_TYPE=puppet -t $(PROVISIONER_PUPPET_IMAGE):$(IMAGE_TAG) .
+
+docker-build-provisioner-saltstack: ## Build the SaltStack provisioner image
+	docker build -f Dockerfile.provisioner --build-arg PROVISIONER_TYPE=saltstack -t $(PROVISIONER_SALTSTACK_IMAGE):$(IMAGE_TAG) .
+
+docker-build-provisioners: docker-build-provisioner-ansible docker-build-provisioner-chef docker-build-provisioner-custom docker-build-provisioner-puppet docker-build-provisioner-saltstack ## Build all provisioner images
+
 docker-build-provider-aws: ## Build the standalone AWS PlatformProvider Docker image
 	docker build -f Dockerfile.provider-aws -t $(AWS_PROVIDER_IMAGE):$(IMAGE_TAG) .
 
@@ -102,6 +129,13 @@ docker-build-core-multiarch: ## Build operator, builder, and uploader multi-arch
 	docker buildx build --platform $(CORE_IMAGE_PLATFORMS) -t $(OPERATOR_IMAGE):$(IMAGE_TAG) .
 	docker buildx build --platform $(CORE_IMAGE_PLATFORMS) -f Dockerfile.builder -t $(BUILDER_IMAGE):$(IMAGE_TAG) .
 	docker buildx build --platform $(CORE_IMAGE_PLATFORMS) -f Dockerfile.uploader -t $(UPLOADER_IMAGE):$(IMAGE_TAG) .
+
+docker-build-provisioners-multiarch: ## Build provisioner multi-arch images locally via buildx
+	docker buildx build --platform $(PROVISIONER_IMAGE_PLATFORMS) -f Dockerfile.provisioner --build-arg PROVISIONER_TYPE=ansible -t $(PROVISIONER_ANSIBLE_IMAGE):$(IMAGE_TAG) .
+	docker buildx build --platform $(PROVISIONER_IMAGE_PLATFORMS) -f Dockerfile.provisioner --build-arg PROVISIONER_TYPE=chef -t $(PROVISIONER_CHEF_IMAGE):$(IMAGE_TAG) .
+	docker buildx build --platform $(PROVISIONER_IMAGE_PLATFORMS) -f Dockerfile.provisioner --build-arg PROVISIONER_TYPE=custom -t $(PROVISIONER_CUSTOM_IMAGE):$(IMAGE_TAG) .
+	docker buildx build --platform $(PROVISIONER_IMAGE_PLATFORMS) -f Dockerfile.provisioner --build-arg PROVISIONER_TYPE=puppet -t $(PROVISIONER_PUPPET_IMAGE):$(IMAGE_TAG) .
+	docker buildx build --platform $(PROVISIONER_IMAGE_PLATFORMS) -f Dockerfile.provisioner --build-arg PROVISIONER_TYPE=saltstack -t $(PROVISIONER_SALTSTACK_IMAGE):$(IMAGE_TAG) .
 
 docker-build-provider-aws-multiarch: ## Build the standalone AWS PlatformProvider multi-arch image locally via buildx
 	docker buildx build \
@@ -167,6 +201,13 @@ docker-push-core: ## Build and push operator, builder, and uploader multi-arch i
 	docker buildx build --platform $(CORE_IMAGE_PLATFORMS) -t $(OPERATOR_IMAGE):$(IMAGE_TAG) --push .
 	docker buildx build --platform $(CORE_IMAGE_PLATFORMS) -f Dockerfile.builder -t $(BUILDER_IMAGE):$(IMAGE_TAG) --push .
 	docker buildx build --platform $(CORE_IMAGE_PLATFORMS) -f Dockerfile.uploader -t $(UPLOADER_IMAGE):$(IMAGE_TAG) --push .
+
+docker-push-provisioners: ## Build and push provisioner multi-arch images
+	docker buildx build --platform $(PROVISIONER_IMAGE_PLATFORMS) -f Dockerfile.provisioner --build-arg PROVISIONER_TYPE=ansible -t $(PROVISIONER_ANSIBLE_IMAGE):$(IMAGE_TAG) --push .
+	docker buildx build --platform $(PROVISIONER_IMAGE_PLATFORMS) -f Dockerfile.provisioner --build-arg PROVISIONER_TYPE=chef -t $(PROVISIONER_CHEF_IMAGE):$(IMAGE_TAG) --push .
+	docker buildx build --platform $(PROVISIONER_IMAGE_PLATFORMS) -f Dockerfile.provisioner --build-arg PROVISIONER_TYPE=custom -t $(PROVISIONER_CUSTOM_IMAGE):$(IMAGE_TAG) --push .
+	docker buildx build --platform $(PROVISIONER_IMAGE_PLATFORMS) -f Dockerfile.provisioner --build-arg PROVISIONER_TYPE=puppet -t $(PROVISIONER_PUPPET_IMAGE):$(IMAGE_TAG) --push .
+	docker buildx build --platform $(PROVISIONER_IMAGE_PLATFORMS) -f Dockerfile.provisioner --build-arg PROVISIONER_TYPE=saltstack -t $(PROVISIONER_SALTSTACK_IMAGE):$(IMAGE_TAG) --push .
 
 docker-push-builder: ## Build and push the build-engine multi-arch image
 	docker buildx build --platform $(CORE_IMAGE_PLATFORMS) -f Dockerfile.builder -t $(BUILDER_IMAGE):$(IMAGE_TAG) --push .
@@ -307,11 +348,17 @@ test-e2e-aws: ## Run opt-in real AWS remote build E2E test (requires AWS_E2E=1 a
 test-e2e-aws-tomcat: ## Run opt-in real AWS remote build E2E with a tar-based Apache Tomcat workload
 	AWS_E2E=1 AWS_E2E_WORKLOAD=tomcat $(GO) test ./plugins/aws -run TestAWSRemoteBuild_E2E -count=1 -v -timeout=75m
 
+test-e2e-aws-ubuntu24: ## Run opt-in real AWS remote build E2E from Ubuntu 24.04 latest Marketplace source
+	AWS_E2E=1 AWS_E2E_WORKLOAD=ubuntu24 $(GO) test ./plugins/aws -run TestAWSRemoteBuildUbuntuLatest_E2E -count=1 -v -timeout=75m
+
 test-e2e-azure: ## Run opt-in real Azure provider E2E test (requires AZURE_E2E=1 and AZURE_E2E_* env)
 	AZURE_E2E=1 $(GO) test ./plugins/azure -run TestAzureProviderLive_E2E -count=1 -v -timeout=60m
 
 test-e2e-azure-tomcat: ## Run opt-in real Azure remote build E2E with a tar-based Apache Tomcat workload
 	AZURE_E2E=1 AZURE_E2E_WORKLOAD=tomcat $(GO) test ./plugins/azure -run TestAzureRemoteBuildTomcat_E2E -count=1 -v -timeout=90m
+
+test-e2e-azure-ubuntu24: ## Run opt-in real Azure remote build E2E from Ubuntu 24.04 latest Marketplace source
+	AZURE_E2E=1 AZURE_E2E_WORKLOAD=ubuntu24 $(GO) test ./plugins/azure -run TestAzureRemoteBuildUbuntuLatest_E2E -count=1 -v -timeout=90m
 
 test-e2e-azure-tomcat-prep: ## Prepare Azure resources for the Tomcat E2E helper
 	test/e2e/azure-tomcat-e2e.sh prep
@@ -328,11 +375,17 @@ test-e2e-vsphere: ## Run opt-in real vSphere provider E2E test (requires VSPHERE
 test-e2e-vsphere-tomcat: ## Run opt-in real vSphere remote build E2E with a tar-based Apache Tomcat workload
 	VSPHERE_E2E=1 VSPHERE_E2E_WORKLOAD=tomcat $(GO) test ./plugins/vsphere -run TestVSphereRemoteBuildTomcat_E2E -count=1 -v -timeout=90m
 
+test-e2e-vsphere-ubuntu24: ## Run opt-in real vSphere E2E from Ubuntu 24.04 latest marketplace mapping
+	VSPHERE_E2E=1 VSPHERE_E2E_WORKLOAD=ubuntu24 $(GO) test ./plugins/vsphere -run TestVSphereRemoteBuildUbuntuLatest_E2E -count=1 -v -timeout=90m
+
 test-e2e-openstack: ## Run opt-in real OpenStack remote build E2E test (requires OPENSTACK_E2E=1 and OPENSTACK_E2E_* env)
 	OPENSTACK_E2E=1 $(GO) test ./plugins/openstack -run TestOpenStackRemoteBuild_E2E -count=1 -v -timeout=60m
 
 test-e2e-openstack-tomcat: ## Run opt-in real OpenStack remote build E2E with a tar-based Apache Tomcat workload
 	OPENSTACK_E2E=1 OPENSTACK_E2E_WORKLOAD=tomcat $(GO) test ./plugins/openstack -run TestOpenStackRemoteBuild_E2E -count=1 -v -timeout=75m
+
+test-e2e-open-telekom-cloud-ubuntu24: ## Run opt-in real Open Telekom Cloud E2E from Ubuntu 24.04 latest Glance source
+	OPENSTACK_E2E=1 OPENSTACK_E2E_WORKLOAD=ubuntu24 $(GO) test ./plugins/openstack -run TestOpenTelekomCloudUbuntuLatest_E2E -count=1 -v -timeout=75m
 
 test-e2e-windows-cloudbase: ## Run opt-in live Windows ISO Cloudbase-Init/Sysprep E2E test (requires IMAGEBUILDER_WINDOWS_E2E=1 and local QEMU)
 	IMAGEBUILDER_WINDOWS_E2E=1 $(GO) test ./pkg/builder -run TestQEMUISOBackend_WindowsCloudbaseInitSysprep_E2E -count=1 -v -timeout=4h

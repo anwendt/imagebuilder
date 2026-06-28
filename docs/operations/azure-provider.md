@@ -80,6 +80,18 @@ The `ProviderConfig` uses `region` as the Azure image location and the following
 | `armEndpoint` | no | Custom ARM endpoint for private clouds. |
 | `armAudience` | no | ARM token audience override for private clouds. |
 | `authorityHost` | no | Entra authority host override for private clouds. |
+| `httpProxy` | no | HTTP proxy URL for provider API traffic when per-provider proxy support is enabled. |
+| `httpsProxy` | no | HTTPS proxy URL for provider API traffic when per-provider proxy support is enabled. |
+| `noProxy` | no | Comma-separated proxy bypass list, for example cluster-local names and metadata endpoints. |
+
+Example proxy values in `spec.extra`:
+
+```yaml
+extra:
+  httpProxy: http://proxy.example.com:8080
+  httpsProxy: http://proxy.example.com:8443
+  noProxy: localhost,127.0.0.1,.svc,.cluster.local,169.254.169.254
+```
 
 ## Artifact Requirements
 

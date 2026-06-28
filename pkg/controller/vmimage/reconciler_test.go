@@ -807,10 +807,10 @@ func TestReconcile_Building_Timeout_MovesToFailed(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Building → Provisioning (init containers active)
+// Building → Provisioning (build job active)
 // ---------------------------------------------------------------------------
 
-func TestReconcile_Building_InitContainersActive_MovesToProvisioning(t *testing.T) {
+func TestReconcile_Building_BuildJobActive_MovesToProvisioning(t *testing.T) {
 	jobName := "provisioning-test-build"
 	now := metav1.Now()
 	img := newImg("provisioning-test", "default", v1alpha1.PhaseBuilding)
@@ -820,7 +820,7 @@ func TestReconcile_Building_InitContainersActive_MovesToProvisioning(t *testing.
 
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: "default"},
-		Status:     batchv1.JobStatus{Active: 1}, // Active pods = init containers running
+		Status:     batchv1.JobStatus{Active: 1},
 	}
 
 	s := testScheme(t)
@@ -834,7 +834,7 @@ func TestReconcile_Building_InitContainersActive_MovesToProvisioning(t *testing.
 	updated := &v1alpha1.VMImage{}
 	c.Get(context.Background(), types.NamespacedName{Name: "provisioning-test", Namespace: "default"}, updated) //nolint:errcheck
 	if updated.Status.Phase != v1alpha1.PhaseProvisioning {
-		t.Errorf("phase = %q, want Provisioning when init containers are active", updated.Status.Phase)
+		t.Errorf("phase = %q, want Provisioning when build job is active", updated.Status.Phase)
 	}
 }
 

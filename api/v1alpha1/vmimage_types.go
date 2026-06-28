@@ -32,8 +32,9 @@ type VMImageSpec struct {
 	// Source describes where to get the base image from
 	Source SourceSpec `json:"source"`
 
-	// Provisioners run sequentially after the OS boots
-	// In-process types: cloud-init, shell, file, powershell, sysprep, ansible, chef, puppet, saltstack, custom
+	// Provisioners run sequentially after the OS boots.
+	// In-process types: cloud-init, shell, file, powershell, sysprep.
+	// Init-container types: ansible, chef, puppet, saltstack, custom.
 	// +optional
 	Provisioners []ProvisionerSpec `json:"provisioners,omitempty"`
 
@@ -217,7 +218,8 @@ type MarketplaceRef struct {
 
 type ProvisionerSpec struct {
 	// Type determines how the provisioner runs.
-	// In-process: cloud-init, shell, file, powershell, sysprep, ansible, chef, puppet, saltstack, custom
+	// In-process: cloud-init, shell, file, powershell, sysprep.
+	// Init-container: ansible, chef, puppet, saltstack, custom.
 	// Unknown values are rejected by the admission webhook (AS-026, AS-027, REQ-008).
 	// +kubebuilder:validation:Enum=cloud-init;shell;file;powershell;sysprep;ansible;chef;puppet;saltstack;custom
 	Type string `json:"type"`

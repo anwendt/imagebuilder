@@ -76,8 +76,34 @@ rendered reference is `repository@sha256:...` instead of `repository:tag`.
 The operator passes `BUILDER_IMAGE` and `UPLOADER_IMAGE` to the control loop.
 `spec.build.upload.image` can still override the uploader image for a specific
 `VMImage`. Provisioner defaults are passed via `PROVISIONER_ANSIBLE_IMAGE`,
-`PROVISIONER_CHEF_IMAGE`, `PROVISIONER_PUPPET_IMAGE`, and
-`PROVISIONER_SALTSTACK_IMAGE`.
+`PROVISIONER_CHEF_IMAGE`, `PROVISIONER_CUSTOM_IMAGE`,
+`PROVISIONER_PUPPET_IMAGE`, and `PROVISIONER_SALTSTACK_IMAGE`.
+
+## Proxy Configuration
+
+Use the Helm `proxy` values when the operator pod itself must reach Kubernetes,
+registries, provider Services, or external endpoints through an HTTP proxy:
+
+```yaml
+proxy:
+  httpProxy: http://proxy.example.com:8080
+  httpsProxy: http://proxy.example.com:8443
+  noProxy: localhost,127.0.0.1,.svc,.cluster.local,169.254.169.254
+```
+
+The chart renders both uppercase and lowercase environment variables:
+`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `http_proxy`, `https_proxy`, and
+`no_proxy`.
+
+Keep cluster-local names and metadata endpoints in `noProxy`. For most clusters
+that includes at least `localhost`, `127.0.0.1`, `.svc`, `.cluster.local`, and
+`169.254.169.254`. Add internal registry, vCenter, Keystone, or private cloud
+endpoints when they must be reached directly.
+
+Provider-specific proxy examples are shown in `ProviderConfig.spec.extra` in the
+ArgoCD examples. Use those keys for provider API traffic when the selected
+provider implementation supports per-provider proxy configuration; otherwise set
+the proxy at the provider pod/runtime boundary.
 
 Provider images are pinned directly in `PlatformProvider.spec.package`. In
 production chart installs, `providerSecurity.requireDigest=true`,

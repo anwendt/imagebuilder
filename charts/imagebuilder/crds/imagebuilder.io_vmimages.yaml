@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.19.0
+    controller-gen.kubebuilder.io/version: v0.21.0
   name: vmimages.imagebuilder.io
 spec:
   group: imagebuilder.io
@@ -387,8 +387,9 @@ spec:
                 type: object
               provisioners:
                 description: |-
-                  Provisioners run sequentially after the OS boots
-                  In-process types: cloud-init, shell, file, powershell, sysprep, ansible, chef, puppet, saltstack, custom
+                  Provisioners run sequentially after the OS boots.
+                  In-process types: cloud-init, shell, file, powershell, sysprep.
+                  Init-container types: ansible, chef, puppet, saltstack, custom.
                 items:
                   properties:
                     args:
@@ -438,10 +439,86 @@ spec:
                       description: Playbook path for ansible (s3://, http://, or local
                         path in workspace)
                       type: string
+                    source:
+                      description: |-
+                        Source loads provisioner content from an external source. When source.git.path
+                        points to a directory, regular files are loaded in lexicographic order and
+                        expanded into separate provisioner steps of the same type.
+                      properties:
+                        git:
+                          description: Git loads provisioner content from a Git repository.
+                          properties:
+                            auth:
+                              description: Auth references credentials for private
+                                Git repositories.
+                              properties:
+                                passwordPath:
+                                  description: PasswordPath is a runtime-mounted file
+                                    containing the basic auth password/token.
+                                  type: string
+                                secretRef:
+                                  description: |-
+                                    SecretRef references a Secret in the VMImage namespace. Use tokenKey for
+                                    bearer/personal-access tokens, or usernameKey/passwordKey for basic auth.
+                                  properties:
+                                    name:
+                                      description: Name is the Secret name in the
+                                        VMImage namespace.
+                                      type: string
+                                    passwordKey:
+                                      description: |-
+                                        PasswordKey is the Secret key containing the basic auth password/token.
+                                        Defaults to password.
+                                      type: string
+                                    tokenKey:
+                                      description: |-
+                                        TokenKey is the Secret key containing a bearer or personal access token.
+                                        Defaults to token.
+                                      type: string
+                                    usernameKey:
+                                      description: |-
+                                        UsernameKey is the Secret key containing the basic auth username.
+                                        Defaults to username.
+                                      type: string
+                                  required:
+                                  - name
+                                  type: object
+                                tokenPath:
+                                  description: TokenPath is a runtime-mounted file
+                                    containing a bearer or personal access token.
+                                  type: string
+                                usernamePath:
+                                  description: UsernamePath is a runtime-mounted file
+                                    containing the basic auth username.
+                                  type: string
+                              type: object
+                            path:
+                              description: |-
+                                Path is a file or directory within the repository. Directories are expanded
+                                into regular files sorted by relative path, for example 01-base.sh before
+                                02-hardening.sh.
+                              type: string
+                            ref:
+                              description: |-
+                                Ref is the branch, tag, or commit to check out. Production manifests should
+                                use an immutable commit SHA.
+                              type: string
+                            url:
+                              description: |-
+                                URL is the HTTPS Git repository URL. Raw IP hosts and private/link-local
+                                resolved addresses are rejected by admission and runtime SSRF checks.
+                              type: string
+                          required:
+                          - path
+                          - ref
+                          - url
+                          type: object
+                      type: object
                     type:
                       description: |-
                         Type determines how the provisioner runs.
-                        In-process: cloud-init, shell, file, powershell, sysprep, ansible, chef, puppet, saltstack, custom
+                        In-process: cloud-init, shell, file, powershell, sysprep.
+                        Init-container: ansible, chef, puppet, saltstack, custom.
                         Unknown values are rejected by the admission webhook (AS-026, AS-027, REQ-008).
                       enum:
                       - cloud-init
@@ -643,11 +720,16 @@ spec:
                       or presigned URLs.
                     type: string
                   type:
-                    description: 'Type is one of: iso, cloud-image, marketplace'
+                    description: |-
+                      Type is one of: iso, cloud-image, marketplace, snapshot.
+                      snapshot is a provider-native source that registers an image from an
+                      existing platform snapshot, for example an AWS EBS snapshot ID in
+                      providerRef.
                     enum:
                     - iso
                     - cloud-image
                     - marketplace
+                    - snapshot
                     type: string
                   url:
                     description: |-

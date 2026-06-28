@@ -64,6 +64,7 @@ jobs:
           make build
           make build-builder
           make build-uploader
+          make build-provisioner
           make build-provider-aws
           make build-provider-vsphere
           make build-provider-azure

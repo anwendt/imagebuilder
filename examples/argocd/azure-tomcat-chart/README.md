@@ -53,6 +53,25 @@ helm template azure-tomcat examples/argocd/azure-tomcat-chart \
   --namespace imagebuilder-system
 ```
 
+## Proxy Configuration
+
+`values.yaml` includes a commented `providerConfig.extra.proxy` block. When
+enabled, the chart renders flat `ProviderConfig.spec.extra` keys:
+
+```yaml
+providerConfig:
+  extra:
+    proxy:
+      httpProxy: http://proxy.example.com:8080
+      httpsProxy: http://proxy.example.com:8443
+      noProxy: localhost,127.0.0.1,.svc,.cluster.local,169.254.169.254
+```
+
+Use these values for provider API traffic only when the provider supports
+per-provider proxy configuration. Configure the imagebuilder operator chart
+`proxy` values when the operator pod itself must reach endpoints through a
+proxy.
+
 ## Deploy With ArgoCD
 
 Use `../azure-tomcat-application.yaml` as a starting point and replace

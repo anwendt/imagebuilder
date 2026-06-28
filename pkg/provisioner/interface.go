@@ -1,8 +1,8 @@
 // pkg/provisioner/interface.go
 //
-// Provisioner interface — all in-process provisioners implement this.
-// Init-container provisioners do NOT implement this interface; they communicate
-// via the filesystem contract (/workspace/config.json + /workspace/status.json).
+// Provisioner interface — in-process provisioners implement this.
+// Init-container provisioners communicate
+// via the filesystem contract under /workspace/provisioners/step-N/.
 //
 // See docs/adr/ADR-003-provisioners-as-init-containers.md for the full init-container contract.
 
@@ -106,15 +106,16 @@ type RunResult struct {
 // ---------------------------------------------------------------------------
 //
 // For init-container provisioners the following JSON schemas apply.
-// The operator writes ProvisionerInput to /workspace/config.json before
-// starting each init container. The init container must write ProvisionerOutput
-// to /workspace/status.json before exiting.
+// The builder writes ProvisionerInput to /workspace/provisioners/step-N/config.json.
+// The restartable init container waits for that file, performs its work, and
+// writes ProvisionerOutput to /workspace/provisioners/step-N/status.json.
 //
-// Exit code 0  → success, next init container starts.
-// Exit code != 0 → failure, the build job fails immediately.
+// Restartable init containers should remain alive after writing status or be
+// idempotent on restart. Kubernetes starts them before the main build container
+// and stops them with the pod when the build container exits.
 
-// ProvisionerInput is written by the operator to /workspace/config.json.
-// Init-container provisioners read this at startup.
+// ProvisionerInput is written by the builder to the step config path.
+// Init-container provisioners read it after startup.
 type ProvisionerInput struct {
 	// VMAddress is the IP/hostname of the running build VM.
 	VMAddress string `json:"vmAddress"`
@@ -134,17 +135,23 @@ type ProvisionerInput struct {
 	// VMPasswordPath is a file containing the guest password for WinRM.
 	VMPasswordPath string `json:"vmPasswordPath,omitempty"`
 
+	// WinRMHTTPS controls whether WinRM provisioners connect with HTTPS.
+	WinRMHTTPS bool `json:"winRMHTTPS,omitempty"`
+
+	// WinRMInsecureSkipVerify disables TLS certificate verification for WinRM.
+	WinRMInsecureSkipVerify bool `json:"winRMInsecureSkipVerify,omitempty"`
+
 	// OS family: "linux" or "windows".
 	OS string `json:"os"`
 
-	// Step is the index of this provisioner in the spec.provisioners list.
+	// Step is the step file index used under /workspace/provisioners/step-N.
 	Step int `json:"step"`
 
 	// UserConfig is the raw ProvisionerSpec as passed by the user.
 	UserConfig v1alpha1.ProvisionerSpec `json:"userConfig"`
 }
 
-// ProvisionerOutput is written by the init-container to /workspace/status.json.
+// ProvisionerOutput is written by the init-container to the step status path.
 type ProvisionerOutput struct {
 	// Success indicates whether the provisioner completed successfully.
 	Success bool `json:"success"`
@@ -176,8 +183,46 @@ func GetInProcess(typeName string) (Provisioner, bool) {
 	return p, ok
 }
 
-// IsInitContainer returns true if the given provisioner type runs as init-container.
+var builtInInitContainerTypes = map[string]struct{}{
+	"ansible":   {},
+	"chef":      {},
+	"custom":    {},
+	"puppet":    {},
+	"saltstack": {},
+}
+
+var builtInInProcessTypes = map[string]struct{}{
+	"cloud-init": {},
+	"file":       {},
+	"powershell": {},
+	"shell":      {},
+	"sysprep":    {},
+}
+
+// IsBuiltInInitContainer returns true for the built-in provisioner types that
+// are executed through the ADR-003 init-container contract.
+func IsBuiltInInitContainer(typeName string) bool {
+	_, ok := builtInInitContainerTypes[typeName]
+	return ok
+}
+
+// IsBuiltInInProcess returns true for the built-in provisioner types that are
+// executed directly inside the builder process.
+func IsBuiltInInProcess(typeName string) bool {
+	_, ok := builtInInProcessTypes[typeName]
+	return ok
+}
+
+// IsInitContainer returns true if the given provisioner type runs as an
+// init-container. Unknown types default to init-container execution so custom
+// externally supplied images can still be assembled by the controller.
 func IsInitContainer(typeName string) bool {
+	if IsBuiltInInitContainer(typeName) {
+		return true
+	}
+	if IsBuiltInInProcess(typeName) {
+		return false
+	}
 	_, inProcess := inProcessRegistry[typeName]
-	return !inProcess // if not registered as in-process → it's an init-container
+	return !inProcess
 }

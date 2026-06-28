@@ -6,7 +6,7 @@
 //   - RegisterInProcess registers a provisioner
 //   - GetInProcess retrieves a registered provisioner
 //   - GetInProcess returns false for unknown types
-//   - IsInitContainer returns false for registered in-process types
+//   - IsInitContainer returns false for registered in-process types unless the type is built-in init-container
 //   - IsInitContainer returns true for unknown types (init-container by default)
 
 package provisioner_test
@@ -27,8 +27,8 @@ type fakeProvisioner struct {
 	name string
 }
 
-func (p *fakeProvisioner) Name() string                                    { return p.name }
-func (p *fakeProvisioner) ExecutionType() provisioner.Type                 { return provisioner.TypeInProcess }
+func (p *fakeProvisioner) Name() string                                                 { return p.name }
+func (p *fakeProvisioner) ExecutionType() provisioner.Type                              { return provisioner.TypeInProcess }
 func (p *fakeProvisioner) Validate(_ context.Context, _ v1alpha1.ProvisionerSpec) error { return nil }
 func (p *fakeProvisioner) Run(_ context.Context, _ *provisioner.RunRequest) (*provisioner.RunResult, error) {
 	return &provisioner.RunResult{Message: "ok"}, nil
@@ -70,6 +70,22 @@ func TestIsInitContainer_False_ForRegisteredInProcess(t *testing.T) {
 func TestIsInitContainer_True_ForUnknownType(t *testing.T) {
 	if !provisioner.IsInitContainer("completely-unknown-provisioner-xyz") {
 		t.Error("IsInitContainer for unknown type should return true (default to init-container)")
+	}
+}
+
+func TestIsInitContainer_True_ForBuiltInExternalProvisioners(t *testing.T) {
+	for _, typeName := range []string{"ansible", "chef", "custom", "puppet", "saltstack"} {
+		if !provisioner.IsInitContainer(typeName) {
+			t.Errorf("IsInitContainer(%q) = false, want true", typeName)
+		}
+	}
+}
+
+func TestIsInitContainer_False_ForBuiltInInProcessProvisioners(t *testing.T) {
+	for _, typeName := range []string{"cloud-init", "file", "powershell", "shell", "sysprep"} {
+		if provisioner.IsInitContainer(typeName) {
+			t.Errorf("IsInitContainer(%q) = true, want false", typeName)
+		}
 	}
 }
 

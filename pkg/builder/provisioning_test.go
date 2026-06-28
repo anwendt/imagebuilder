@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/builder"
@@ -95,6 +96,82 @@ func TestSequentialProvisionerRunner_RequiresGuestAccessForRemoteProvisioner(t *
 
 	if err := runner.Run(context.Background(), builder.ProvisioningRequest{Image: img, WorkspaceDir: "/workspace"}); err == nil {
 		t.Fatal("Run should require guest access for shell provisioner")
+	}
+}
+
+func TestSequentialProvisionerRunner_WaitsForInitContainerProvisioner(t *testing.T) {
+	runner := builder.SequentialProvisionerRunner{
+		Lookup: func(string) (provisioner.Provisioner, bool) {
+			t.Fatal("init-container provisioner must not be resolved through in-process lookup")
+			return nil, false
+		},
+		PollInterval: 10 * time.Millisecond,
+	}
+	img := testImage(v1alpha1.SourceSpec{Type: "iso"}, "qcow2")
+	img.Spec.Provisioners = []v1alpha1.ProvisionerSpec{{Type: "ansible", Playbook: "site.yml"}}
+	workspace := t.TempDir()
+
+	done := make(chan error, 1)
+	go func() {
+		configPath := filepath.Join(workspace, "provisioners", "step-0", "config.json")
+		deadline := time.After(5 * time.Second)
+		for {
+			data, err := os.ReadFile(configPath)
+			if err == nil {
+				var input provisioner.ProvisionerInput
+				if err := json.Unmarshal(data, &input); err != nil {
+					done <- err
+					return
+				}
+				if input.UserConfig.Type != "ansible" || input.UserConfig.Playbook != "site.yml" {
+					done <- fmt.Errorf("input = %#v", input)
+					return
+				}
+				statusPath := filepath.Join(workspace, "provisioners", "step-0", "status.json")
+				done <- os.WriteFile(statusPath, []byte(`{"success":true,"message":"ansible ok"}`), 0o600)
+				return
+			}
+			if !os.IsNotExist(err) {
+				done <- err
+				return
+			}
+			select {
+			case <-deadline:
+				done <- fmt.Errorf("timed out waiting for config")
+				return
+			default:
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+	}()
+
+	err := runner.Run(context.Background(), builder.ProvisioningRequest{
+		Image:        img,
+		WorkspaceDir: workspace,
+		GuestAccess: builder.GuestAccess{
+			Protocol:   "ssh",
+			Host:       "127.0.0.1",
+			HostPort:   2222,
+			User:       "imagebuilder",
+			SSHKeyPath: "/workspace/id_ed25519",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("external provisioner simulation: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(workspace, "provisioners-result.json"))
+	if err != nil {
+		t.Fatalf("read provisioner result: %v", err)
+	}
+	var statuses []builder.ProvisionerStepStatus
+	if err := json.Unmarshal(data, &statuses); err != nil {
+		t.Fatalf("decode statuses: %v", err)
+	}
+	if len(statuses) != 1 || !statuses[0].Success || statuses[0].Message != "ansible ok" {
+		t.Fatalf("statuses = %#v", statuses)
 	}
 }
 
