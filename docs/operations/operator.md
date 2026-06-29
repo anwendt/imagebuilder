@@ -29,7 +29,7 @@ Helm deployment from the published OCI chart:
 
 ```bash
 helm install imagebuilder oci://ghcr.io/anwendt/charts/imagebuilder \
-  --version 0.4.0 \
+  --version 0.4.1 \
   --namespace imagebuilder-system \
   --create-namespace
 ```
@@ -38,7 +38,7 @@ Development install for local clusters from a checkout:
 
 ```bash
 helm install imagebuilder oci://ghcr.io/anwendt/charts/imagebuilder \
-  --version 0.4.0 \
+  --version 0.4.1 \
   --namespace imagebuilder-system \
   --create-namespace \
   -f charts/imagebuilder/values-development.yaml
@@ -49,7 +49,7 @@ Kyverno CRDs are installed:
 
 ```bash
 helm install imagebuilder oci://ghcr.io/anwendt/charts/imagebuilder \
-  --version 0.4.0 \
+  --version 0.4.1 \
   --namespace imagebuilder-system \
   --create-namespace \
   --set imageSignaturePolicy.enabled=true
@@ -108,6 +108,20 @@ The operator passes `BUILDER_IMAGE` and `UPLOADER_IMAGE` to the control loop.
 `VMImage`. Provisioner defaults are passed via `PROVISIONER_ANSIBLE_IMAGE`,
 `PROVISIONER_CHEF_IMAGE`, `PROVISIONER_CUSTOM_IMAGE`,
 `PROVISIONER_PUPPET_IMAGE`, and `PROVISIONER_SALTSTACK_IMAGE`.
+
+The released default provisioner images contain the matching runtime binaries:
+
+| Image value | Runtime included |
+|---|---|
+| `provisionerImages.ansible` | `ansible-playbook` |
+| `provisionerImages.chef` | `chef-client`, `chef-apply` |
+| `provisionerImages.puppet` | `puppet` |
+| `provisionerImages.saltstack` | `salt-call`, `salt-minion` |
+| `provisionerImages.custom` | Image Builder provisioner runner and base OS tools only |
+
+Override the image reference when you need a pinned toolchain, additional
+Ansible collections, Chef cookbooks, Puppet modules, Salt states, or internal
+bootstrap tooling baked into the provisioner image.
 
 ## Proxy Configuration
 

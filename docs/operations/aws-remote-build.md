@@ -95,8 +95,8 @@ The standalone AWS PlatformProvider image is built from `cmd/provider-aws`:
 
 ```bash
 make build-provider-aws
-make docker-build-provider-aws REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.4.0
-make docker-push-provider-aws REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.4.0
+make docker-build-provider-aws REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.4.1
+make docker-push-provider-aws REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.4.1
 AWS_PROVIDER_DIGEST=sha256:<digest> make sign-provider-aws REGISTRY=ghcr.io/anwendt
 AWS_PROVIDER_DIGEST=sha256:<digest> make update-aws-provider-samples REGISTRY=ghcr.io/anwendt
 ```

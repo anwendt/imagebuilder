@@ -25,6 +25,24 @@ providers, and an Apache-2.0-compatible dependency model.
 | Build Job | Per-image Kubernetes Job running QEMU/build/provisioning. |
 | Upload Job | Separate job that uploads/registers artifacts after a successful build. |
 
+## Provisioner Images
+
+Complex provisioners run as restartable init containers. The released default
+provisioner images include the matching runtime binaries, so builds do not need
+to install the provisioner tool before executing a step:
+
+| Provisioner image | Included runtime |
+|---|---|
+| `imagebuilder-provisioner-ansible` | `ansible-playbook` |
+| `imagebuilder-provisioner-chef` | `chef-client`, `chef-apply` |
+| `imagebuilder-provisioner-puppet` | `puppet` |
+| `imagebuilder-provisioner-saltstack` | `salt-call`, `salt-minion` |
+| `imagebuilder-provisioner-custom` | Only the Image Builder provisioner runner and base OS tools |
+
+Custom provisioner images can still be supplied per `VMImage` when a different
+runtime version, extra collections/cookbooks/modules, or organisation-specific
+tooling is required.
+
 ## Quick Links
 
 - [Quickstart](docs/getting-started/quickstart.md)
@@ -44,7 +62,7 @@ Install the latest released chart from GHCR:
 
 ```bash
 helm install imagebuilder oci://ghcr.io/anwendt/charts/imagebuilder \
-  --version 0.4.0 \
+  --version 0.4.1 \
   --namespace imagebuilder-system \
   --create-namespace
 
@@ -62,7 +80,7 @@ profile from a checkout:
 
 ```bash
 helm install imagebuilder oci://ghcr.io/anwendt/charts/imagebuilder \
-  --version 0.4.0 \
+  --version 0.4.1 \
   --namespace imagebuilder-system \
   --create-namespace \
   -f charts/imagebuilder/values-development.yaml

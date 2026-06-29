@@ -38,40 +38,40 @@ namespaceResourceGuardrails:
 
 image:
   repository: ghcr.io/anwendt/imagebuilder-operator
-  tag: "v0.4.0"
+  tag: "v0.4.1"
   digest: ""
   pullPolicy: IfNotPresent
 
 builderImage:
   repository: ghcr.io/anwendt/imagebuilder-builder
-  tag: "v0.4.0"
+  tag: "v0.4.1"
   digest: ""
 
 uploaderImage:
   repository: ghcr.io/anwendt/imagebuilder-uploader
-  tag: "v0.4.0"
+  tag: "v0.4.1"
   digest: ""
 
 provisionerImages:
   ansible:
     repository: ghcr.io/anwendt/imagebuilder-provisioner-ansible
-    tag: "v0.4.0"
+    tag: "v0.4.1"
     digest: ""
   chef:
     repository: ghcr.io/anwendt/imagebuilder-provisioner-chef
-    tag: "v0.4.0"
+    tag: "v0.4.1"
     digest: ""
   custom:
     repository: ghcr.io/anwendt/imagebuilder-provisioner-custom
-    tag: "v0.4.0"
+    tag: "v0.4.1"
     digest: ""
   puppet:
     repository: ghcr.io/anwendt/imagebuilder-provisioner-puppet
-    tag: "v0.4.0"
+    tag: "v0.4.1"
     digest: ""
   saltstack:
     repository: ghcr.io/anwendt/imagebuilder-provisioner-saltstack
-    tag: "v0.4.0"
+    tag: "v0.4.1"
     digest: ""
 
 replicaCount: 2

@@ -443,10 +443,10 @@ Source: `pkg/plugin/platform/interface.go`
 | `file` | In-process | Go | File copy/injection |
 | `powershell` | In-process | Go | Windows provisioning |
 | `sysprep` | In-process | Go | Windows image generalisation |
-| `ansible` | Init container | OCI image | Playbook execution via SSH |
-| `chef` | Init container | OCI image | Chef cookbook convergence |
-| `puppet` | Init container | OCI image | Puppet manifest application |
-| `saltstack` | Init container | OCI image | State application |
+| `ansible` | Init container | `ansible-playbook` in OCI image | Playbook execution via SSH |
+| `chef` | Init container | `chef-client` / `chef-apply` in OCI image | Chef cookbook convergence |
+| `puppet` | Init container | `puppet` in OCI image | Puppet manifest application |
+| `saltstack` | Init container | `salt-call` / `salt-minion` in OCI image | State application |
 | `custom` | Init container | OCI image | Any tool implementing the contract |
 
 ### 7.2 Execution Order Guarantee

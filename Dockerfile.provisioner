@@ -28,10 +28,37 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 FROM debian:12-slim@sha256:67b30a61dc87758f0caf819646104f29ecbda97d920aaf5edc834128ac8493d3
 
 ARG PROVISIONER_TYPE=custom
+ARG CHEF_VERSION=18.1.0
 
 RUN apt-get update \
     && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends ansible ca-certificates openssh-client \
+    && apt-get install -y --no-install-recommends ca-certificates curl gnupg openssh-client \
+    && case "${PROVISIONER_TYPE}" in \
+      ansible) \
+        apt-get install -y --no-install-recommends ansible \
+        && ansible-playbook --version >/dev/null ;; \
+      chef) \
+        curl -fsSL https://omnitruck.chef.io/install.sh -o /tmp/install-chef.sh \
+        && sh /tmp/install-chef.sh -P chef -v "${CHEF_VERSION}" \
+        && chef-client --version >/dev/null \
+        && chef-apply --version >/dev/null \
+        && rm -f /tmp/install-chef.sh ;; \
+      puppet) \
+        apt-get install -y --no-install-recommends puppet-agent \
+        && puppet --version >/dev/null ;; \
+      saltstack) \
+        mkdir -m 755 -p /etc/apt/keyrings \
+        && curl -fsSL https://packages.broadcom.com/artifactory/api/security/keypair/SaltProjectKey/public | gpg --dearmor > /etc/apt/keyrings/salt-archive-keyring.pgp \
+        && curl -fsSL https://github.com/saltstack/salt-install-guide/releases/latest/download/salt.sources > /etc/apt/sources.list.d/salt.sources \
+        && apt-get update \
+        && apt-get install -y --no-install-recommends salt-minion \
+        && salt-call --version >/dev/null ;; \
+      custom) \
+        true ;; \
+      *) \
+        echo "unsupported PROVISIONER_TYPE=${PROVISIONER_TYPE}" >&2 \
+        && exit 1 ;; \
+    esac \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 65532 --home-dir /workspace --shell /usr/sbin/nologin nonroot
 
