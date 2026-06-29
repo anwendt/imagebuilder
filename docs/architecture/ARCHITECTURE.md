@@ -578,18 +578,17 @@ Lease name: imagebuilder-operator-leader
 
 | Layer | Technology | Version | License |
 |---|---|---|---|
-| Language | Go | 1.22+ | BSD-3-Clause |
-| Operator Framework | controller-runtime (kubebuilder) | v0.18.x | Apache 2.0 |
-| Kubernetes API | k8s.io/api, k8s.io/apimachinery, k8s.io/client-go | v0.30.x | Apache 2.0 |
-| gRPC | google.golang.org/grpc | v1.64.x | Apache 2.0 |
-| Serialisation | google.golang.org/protobuf | v1.34.x | BSD-3-Clause |
-| vSphere SDK | govmomi | latest | Apache 2.0 |
-| OpenStack SDK | gophercloud | latest | Apache 2.0 |
-| AWS SDK | aws-sdk-go-v2 | latest | Apache 2.0 |
-| Azure SDK | azure-sdk-for-go | latest | MIT |
-| GCP SDK | google-cloud-go | latest | Apache 2.0 |
-| libvirt binding | go-libvirt | latest | Apache 2.0 |
-| VM build backend | QEMU (userspace) | system | Apache 2.0 |
+| Language | Go | 1.26+ | BSD-3-Clause |
+| Operator Framework | controller-runtime (kubebuilder) | v0.24.x | Apache 2.0 |
+| Kubernetes API | k8s.io/api, k8s.io/apimachinery, k8s.io/client-go | v0.36.x | Apache 2.0 |
+| gRPC | google.golang.org/grpc | v1.81.x | Apache 2.0 |
+| Serialisation | google.golang.org/protobuf | v1.36.x | BSD-3-Clause |
+| vSphere SDK | govmomi | v0.54.x | Apache 2.0 |
+| OpenStack SDK | gophercloud/v2 | v2.12.x | Apache 2.0 |
+| AWS SDK | aws-sdk-go-v2 | v1.41.x | Apache 2.0 |
+| Azure SDK | azure-sdk-for-go | v1.21.x | MIT |
+| GCP SDK | google-cloud-go | — (planned; GCP plugin is a stub) | Apache 2.0 |
+| VM build backend | QEMU (userspace, direct exec + QMP) | system | Apache 2.0 |
 | Image assembly | diskimage-builder | system | Apache 2.0 |
 | Logging | log/slog | stdlib | BSD-3-Clause |
 
