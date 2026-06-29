@@ -1,6 +1,7 @@
 # Example: load multiple shell provisioner scripts from a Git directory.
 # Files under scripts/ubuntu are executed in lexicographic order, e.g.
-# 01-base.sh before 02-hardening.sh. Pin ref to an immutable commit SHA in production.
+# 10-basic-tools.sh before 20-hardening.sh before 30-monitoring.sh.
+# Pin ref to an immutable commit SHA in production.
 apiVersion: imagebuilder.io/v1alpha1
 kind: VMImage
 metadata:

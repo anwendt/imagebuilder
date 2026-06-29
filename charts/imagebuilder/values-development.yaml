@@ -1,0 +1,30 @@
+# Development profile for local clusters such as kind, k3d, minikube, or
+# disposable test namespaces. It intentionally disables production guardrails
+# that require extra cluster components or signed/digest-pinned provider images.
+
+replicaCount: 1
+
+leaderElection:
+  enabled: false
+
+webhook:
+  enabled: false
+  failurePolicy: Ignore
+  certManager:
+    enabled: false
+
+networkPolicy:
+  enabled: false
+  workloadNamespaces: []
+
+namespaceResourceGuardrails:
+  enabled: false
+
+providerSecurity:
+  requireMTLS: false
+  requireDigest: false
+  requireSignature: false
+  allowedRegistries: []
+
+imageSignaturePolicy:
+  enabled: false

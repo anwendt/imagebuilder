@@ -7,13 +7,12 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "enum": [true],
-          "description": "Production installs require validating webhooks to be enabled because the operator always serves admission webhooks and unsafe cross-field specs rely on webhook validation."
+          "description": "Enables validating webhooks. Production installs should keep this true; local development profiles may disable it."
         },
         "failurePolicy": {
           "type": "string",
-          "enum": ["Fail"],
-          "description": "Admission must fail closed. Kubernetes denies VMImage/ProviderConfig writes when the webhook is unavailable."
+          "enum": ["Fail", "Ignore"],
+          "description": "Admission failure behavior. Production installs should use Fail; local development may use Ignore or disable webhooks."
         },
         "timeoutSeconds": {
           "type": "integer",
@@ -27,8 +26,7 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "enum": [true],
-          "description": "Production installs require NetworkPolicies to default-deny namespace traffic and restrict provider gRPC to the operator trust boundary."
+          "description": "Renders NetworkPolicies. Production installs should keep this true; local development profiles may disable it."
         },
         "workloadNamespaces": {
           "type": "array",
@@ -46,8 +44,7 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "enum": [true],
-          "description": "Production installs require ResourceQuota and LimitRange guardrails in the operator namespace."
+          "description": "Renders ResourceQuota and LimitRange guardrails. Production installs should keep this true; local development profiles may disable it."
         },
         "resourceQuota": {
           "type": "object",
@@ -118,18 +115,15 @@
       "properties": {
         "requireMTLS": {
           "type": "boolean",
-          "enum": [true],
-          "description": "Production installs require every PlatformProvider to use spec.transport.tls.mode=Mutual."
+          "description": "Requires every PlatformProvider to use spec.transport.tls.mode=Mutual. Production installs should keep this true."
         },
         "requireDigest": {
           "type": "boolean",
-          "enum": [true],
-          "description": "Production installs require every PlatformProvider package to be digest-pinned."
+          "description": "Requires every PlatformProvider package to be digest-pinned. Production installs should keep this true."
         },
         "requireSignature": {
           "type": "boolean",
-          "enum": [true],
-          "description": "Production installs require every PlatformProvider to opt into signature verification policy."
+          "description": "Requires every PlatformProvider to opt into signature verification policy. Production installs should keep this true."
         },
         "allowedRegistries": {
           "type": "array",
@@ -147,8 +141,7 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "enum": [true],
-          "description": "Production installs require the image signature verification policy to be rendered."
+          "description": "Renders the optional Kyverno image signature verification policy. Enable only when Kyverno CRDs are installed."
         },
         "imageReferences": {
           "type": "array",

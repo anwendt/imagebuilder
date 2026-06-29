@@ -31,6 +31,7 @@ All documents are intended to support ISAE audit requirements.
 | Document | Description |
 |---|---|
 | [VMImage Authoring Guide](user-guide/vmimage.md) | Source, guest access, provisioners, targets, and artifact storage |
+| [Git-backed Provisioner Scripts](user-guide/git-provisioners.md) | Use Git repositories with ordered shell scripts for image customization |
 
 ## Operations
 

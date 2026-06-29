@@ -467,6 +467,17 @@ helm-lint: ## Lint Helm chart (requires helm)
 helm-template: ## Render Helm chart including CRDs (requires helm)
 	helm template imagebuilder charts/imagebuilder --namespace imagebuilder-system --include-crds
 
+helm-template-dev: ## Render Helm chart with development values (requires helm)
+	helm template imagebuilder charts/imagebuilder --namespace imagebuilder-system --include-crds -f charts/imagebuilder/values-development.yaml
+
+helm-package: ## Package Helm chart into dist/ (requires helm)
+	mkdir -p dist
+	helm package charts/imagebuilder --destination dist
+
+helm-push: helm-package ## Push Helm chart to OCI registry, e.g. HELM_REGISTRY=oci://ghcr.io/anwendt/charts
+	test -n "$(HELM_REGISTRY)" || (echo "HELM_REGISTRY is required, e.g. oci://ghcr.io/anwendt/charts" && exit 1)
+	helm push dist/imagebuilder-*.tgz $(HELM_REGISTRY)
+
 undeploy: ## Remove operator from the cluster
 	kubectl delete -f config/webhook/manifests.yaml --ignore-not-found
 	kubectl delete -f config/certmanager/webhook-certificate.yaml --ignore-not-found

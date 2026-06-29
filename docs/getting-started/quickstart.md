@@ -1,14 +1,14 @@
 # Quickstart
 
-This guide installs the operator and validates the API surface in a Kubernetes
-cluster. It does not require a real cloud provider account.
+This guide installs VM Image Builder from the published Helm chart and gets the
+operator ready in a Kubernetes cluster. It does not require a real cloud
+provider account.
 
 ## Prerequisites
 
-- Kubernetes cluster or `kind`
+- Kubernetes cluster
 - `kubectl`
-- Go 1.22+
-- cert-manager, if validating webhooks should run fail-closed
+- Helm 3.8 or newer with OCI registry support
 
 Optional components:
 
@@ -16,55 +16,68 @@ Optional components:
 - Kyverno for the example image signature policy
 - Dedicated build nodes with `/dev/kvm` when KVM acceleration is enabled
 
-## Build And Test Locally
+## Install
+
+For a production-like install with webhooks, network policies, resource
+guardrails, and strict provider admission defaults:
 
 ```bash
-make generate
-make manifests
-go test ./...
-make build
-make build-builder
-make build-uploader
+helm install imagebuilder oci://ghcr.io/anwendt/charts/imagebuilder \
+  --version 0.4.0 \
+  --namespace imagebuilder-system \
+  --create-namespace
 ```
 
-## Install CRDs
+For a local development cluster, use the development profile from a checkout. It
+disables webhooks, cert-manager integration, network policies, namespace quotas,
+and strict provider mTLS/digest/signature requirements:
 
 ```bash
-kubectl apply -f config/crd/
+helm install imagebuilder oci://ghcr.io/anwendt/charts/imagebuilder \
+  --version 0.4.0 \
+  --namespace imagebuilder-system \
+  --create-namespace \
+  -f charts/imagebuilder/values-development.yaml
 ```
 
-## Deploy The Operator
-
-For a production-like install with webhook TLS:
+## Verify
 
 ```bash
-kubectl apply -f config/deploy/operator.yaml
-kubectl apply -f config/policy/networkpolicies.yaml
-kubectl apply -f config/certmanager/webhook-certificate.yaml
-kubectl apply -f config/webhook/manifests.yaml
+kubectl get pods -n imagebuilder-system
+kubectl get crd | grep imagebuilder.io
 ```
 
-The operator runs in `imagebuilder-system` and exposes:
+The operator pod should become `Running`. The chart installs CRDs, RBAC,
+webhook resources, metrics Service, network policies, and the operator
+Deployment with released image tags. Kyverno is not required for the default
+install.
 
-- metrics on port `8080`
-- health checks on port `8081`
-- validating webhooks on port `9443`
-
-## Optional Observability
-
-Only apply these when the Prometheus Operator CRDs are installed:
+If Kyverno is installed and you want the example image signature policy, enable
+it explicitly:
 
 ```bash
-kubectl apply -f config/deploy/servicemonitor.yaml
-kubectl apply -f config/deploy/prometheusrule.yaml
+helm upgrade imagebuilder oci://ghcr.io/anwendt/charts/imagebuilder \
+  --version 0.4.0 \
+  --namespace imagebuilder-system \
+  --reuse-values \
+  --set imageSignaturePolicy.enabled=true
 ```
 
-## Optional Supply-Chain Policies
+## Create A Provider Configuration
 
-Only apply the Kyverno policy when Kyverno is installed:
+Real image builds need credentials and a provider. The repository includes
+ArgoCD-ready examples under `examples/argocd/`:
+
+- `azure-tomcat-resources`
+- `aws-tomcat-resources`
+- `open-telekom-cloud-ubuntu24-resources`
+- `vsphere-tomcat-resources`
+
+Start by copying the matching credentials example, fill in your secret values,
+and apply the resource set:
 
 ```bash
-kubectl apply -f config/policy/kyverno-image-signatures.yaml
+kubectl apply -f examples/argocd/azure-tomcat-resources/
 ```
 
 ## Validate A Sample Manifest
@@ -76,12 +89,51 @@ running a real build.
 kubectl apply --dry-run=server -f config/samples/vmimage-ubuntu-aws-vsphere.yaml
 ```
 
-## Run The Kind Smoke Test
+## Use Git-Backed Scripts
+
+Keep image customization scripts in a separate Git repository when multiple
+images should share the same provisioning baseline. A common layout is:
+
+```text
+image-scripts/
+└── scripts/
+    └── ubuntu/
+        ├── 10-basic-tools.sh
+        ├── 20-hardening.sh
+        └── 30-monitoring.sh
+```
+
+Reference the directory from a `shell` provisioner:
+
+```yaml
+provisioners:
+  - type: shell
+    source:
+      git:
+        url: https://github.com/yourorg/image-scripts.git
+        ref: 7f6e5d4c3b2a190817263544536271809abcdef0
+        path: scripts/ubuntu
+```
+
+The scripts are executed in lexicographic order. See
+[Git-backed provisioner scripts](../user-guide/git-provisioners.md) for a full
+public/private repository example.
+
+## Local Development
+
+Use the local chart or Makefile targets when developing from source:
+
+```bash
+make generate
+make manifests
+go test ./...
+make helm-lint
+make helm-template
+make helm-template-dev
+```
+
+For a local smoke test with `kind`:
 
 ```bash
 make test-e2e
 ```
-
-The smoke test creates or reuses a `kind` cluster, installs CRDs, deploys the
-operator, waits for rollout, and validates a sample manifest with server-side
-dry-run.

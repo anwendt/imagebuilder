@@ -223,9 +223,11 @@ provisioners:
         path: ubuntu
 ```
 
-With files `ubuntu/01-base.sh` and `ubuntu/02-hardening.sh`, `01-base.sh` runs
-first and `02-hardening.sh` runs second. Git source URLs must use HTTPS and pass
-the same SSRF host checks as image downloads.
+With files `ubuntu/10-basic-tools.sh`, `ubuntu/20-hardening.sh`, and
+`ubuntu/30-monitoring.sh`, the scripts run in that order. Git source URLs must
+use HTTPS and pass the same SSRF host checks as image downloads. A complete
+guide with script examples is available in
+[Git-backed provisioner scripts](git-provisioners.md).
 
 Private Git repositories are supported through a Secret in the `VMImage`
 namespace. Put credentials in the Secret, never in the Git URL:
@@ -237,7 +239,7 @@ metadata:
   name: private-git
 type: Opaque
 stringData:
-  token: ghp_example
+  token: "${GIT_READ_TOKEN}"
 ---
 provisioners:
   - type: shell

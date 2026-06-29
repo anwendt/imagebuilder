@@ -29,6 +29,7 @@ providers, and an Apache-2.0-compatible dependency model.
 
 - [Quickstart](docs/getting-started/quickstart.md)
 - [VMImage authoring guide](docs/user-guide/vmimage.md)
+- [Git-backed provisioner scripts](docs/user-guide/git-provisioners.md)
 - [Operations guide](docs/operations/operator.md)
 - [Security guide](docs/security/security.md)
 - [Provider SDK guide](docs/development/provider-sdk.md)
@@ -36,6 +37,36 @@ providers, and an Apache-2.0-compatible dependency model.
 - [Architecture](docs/architecture/ARCHITECTURE.md)
 - [Architecture diagrams](docs/architecture/diagrams.md)
 - [ADRs](docs/adr/README.md)
+
+## Quick Install
+
+Install the latest released chart from GHCR:
+
+```bash
+helm install imagebuilder oci://ghcr.io/anwendt/charts/imagebuilder \
+  --version 0.4.0 \
+  --namespace imagebuilder-system \
+  --create-namespace
+
+kubectl get pods -n imagebuilder-system
+```
+
+The chart installs CRDs, the operator, webhook resources, metrics Service,
+network policies, and secure default image references. Kyverno image signature
+policies are optional and can be enabled with
+`--set imageSignaturePolicy.enabled=true` when Kyverno is installed. For real
+image builds, add one or more provider configurations from `examples/argocd/`.
+
+For local clusters where you want the least friction, use the development
+profile from a checkout:
+
+```bash
+helm install imagebuilder oci://ghcr.io/anwendt/charts/imagebuilder \
+  --version 0.4.0 \
+  --namespace imagebuilder-system \
+  --create-namespace \
+  -f charts/imagebuilder/values-development.yaml
+```
 
 ## Basic Development Commands
 

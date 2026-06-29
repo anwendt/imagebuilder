@@ -25,7 +25,37 @@ Production-like deployment with webhook TLS:
 make deploy-production
 ```
 
-Helm deployment:
+Helm deployment from the published OCI chart:
+
+```bash
+helm install imagebuilder oci://ghcr.io/anwendt/charts/imagebuilder \
+  --version 0.4.0 \
+  --namespace imagebuilder-system \
+  --create-namespace
+```
+
+Development install for local clusters from a checkout:
+
+```bash
+helm install imagebuilder oci://ghcr.io/anwendt/charts/imagebuilder \
+  --version 0.4.0 \
+  --namespace imagebuilder-system \
+  --create-namespace \
+  -f charts/imagebuilder/values-development.yaml
+```
+
+Enable the optional Kyverno image signature policy only on clusters where
+Kyverno CRDs are installed:
+
+```bash
+helm install imagebuilder oci://ghcr.io/anwendt/charts/imagebuilder \
+  --version 0.4.0 \
+  --namespace imagebuilder-system \
+  --create-namespace \
+  --set imageSignaturePolicy.enabled=true
+```
+
+Helm deployment from a local checkout:
 
 ```bash
 helm install imagebuilder ./charts/imagebuilder \
@@ -288,8 +318,9 @@ Provider image signatures are fail-closed in two layers:
 - The supplied Kyverno policy in
   `config/policy/kyverno-image-signatures.yaml`, also rendered by the Helm chart
   when `imageSignaturePolicy.enabled=true`, verifies image signatures and
-  digests on imagebuilder-managed Pods. Install Kyverno before using the
-  production Helm defaults, or replace the rendered policy with an equivalent
+  digests on imagebuilder-managed Pods. This Helm value defaults to `false` so
+  the chart can be installed on clusters without Kyverno CRDs. Enable it only
+  after installing Kyverno, or replace the rendered policy with an equivalent
   Sigstore/Gatekeeper policy.
 
 ## Logs
