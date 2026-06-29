@@ -96,8 +96,8 @@ func TestHelmChartDefaultsNetworkPolicyOnAndRendersProviderBoundary(t *testing.T
 	if !ok {
 		t.Fatalf("imageSignaturePolicy values missing or malformed: %#v", parsed["imageSignaturePolicy"])
 	}
-	if imageSignaturePolicy["enabled"] != true {
-		t.Fatalf("imageSignaturePolicy.enabled = %#v, want true", imageSignaturePolicy["enabled"])
+	if imageSignaturePolicy["enabled"] != false {
+		t.Fatalf("imageSignaturePolicy.enabled = %#v, want false by default", imageSignaturePolicy["enabled"])
 	}
 
 	schemaPath := filepath.Join(repoRoot, "charts", "imagebuilder", "values.schema.json")
@@ -105,8 +105,9 @@ func TestHelmChartDefaultsNetworkPolicyOnAndRendersProviderBoundary(t *testing.T
 	if err != nil {
 		t.Fatalf("read Helm values schema: %v", err)
 	}
-	if !strings.Contains(string(schema), `"networkPolicy"`) || !strings.Contains(string(schema), `"enum": [true]`) {
-		t.Fatalf("values.schema.json must enforce networkPolicy.enabled=true")
+	if !strings.Contains(string(schema), `"networkPolicy"`) ||
+		!strings.Contains(string(schema), `Production installs should keep this true; local development profiles may disable it.`) {
+		t.Fatalf("values.schema.json must document production networkPolicy default and development override")
 	}
 	if !strings.Contains(string(schema), `"workloadNamespaces"`) || !strings.Contains(string(schema), `"uniqueItems": true`) {
 		t.Fatalf("values.schema.json must define unique networkPolicy.workloadNamespaces")
@@ -115,8 +116,8 @@ func TestHelmChartDefaultsNetworkPolicyOnAndRendersProviderBoundary(t *testing.T
 		!strings.Contains(string(schema), `"requireMTLS"`) ||
 		!strings.Contains(string(schema), `"requireDigest"`) ||
 		!strings.Contains(string(schema), `"requireSignature"`) ||
-		!strings.Contains(string(schema), `"Production installs require every PlatformProvider`) {
-		t.Fatalf("values.schema.json must enforce providerSecurity.requireMTLS=true for production")
+		!strings.Contains(string(schema), `Production installs should keep this true.`) {
+		t.Fatalf("values.schema.json must document production providerSecurity defaults")
 	}
 	if !strings.Contains(string(schema), `"provisionerImages"`) ||
 		!strings.Contains(string(schema), `"ansible"`) ||
@@ -125,8 +126,34 @@ func TestHelmChartDefaultsNetworkPolicyOnAndRendersProviderBoundary(t *testing.T
 	}
 	if !strings.Contains(string(schema), `"imageSignaturePolicy"`) ||
 		!strings.Contains(string(schema), `"keyless"`) ||
-		!strings.Contains(string(schema), `"Production installs require the image signature verification policy`) {
-		t.Fatalf("values.schema.json must enforce rendering the image signature policy")
+		!strings.Contains(string(schema), `Enable only when Kyverno CRDs are installed.`) {
+		t.Fatalf("values.schema.json must document optional image signature policy rendering")
+	}
+
+	devValuesPath := filepath.Join(repoRoot, "charts", "imagebuilder", "values-development.yaml")
+	devValues, err := os.ReadFile(devValuesPath)
+	if err != nil {
+		t.Fatalf("read development Helm values: %v", err)
+	}
+	var devParsed map[string]any
+	if err := yaml.Unmarshal(devValues, &devParsed); err != nil {
+		t.Fatalf("parse development Helm values: %v", err)
+	}
+	devNetworkPolicy, ok := devParsed["networkPolicy"].(map[string]any)
+	if !ok {
+		t.Fatalf("development networkPolicy values missing or malformed: %#v", devParsed["networkPolicy"])
+	}
+	if devNetworkPolicy["enabled"] != false {
+		t.Fatalf("development networkPolicy.enabled = %#v, want false", devNetworkPolicy["enabled"])
+	}
+	devProviderSecurity, ok := devParsed["providerSecurity"].(map[string]any)
+	if !ok {
+		t.Fatalf("development providerSecurity values missing or malformed: %#v", devParsed["providerSecurity"])
+	}
+	for _, key := range []string{"requireMTLS", "requireDigest", "requireSignature"} {
+		if devProviderSecurity[key] != false {
+			t.Fatalf("development providerSecurity.%s = %#v, want false", key, devProviderSecurity[key])
+		}
 	}
 
 	templatePath := filepath.Join(repoRoot, "charts", "imagebuilder", "templates", "networkpolicies.yaml")

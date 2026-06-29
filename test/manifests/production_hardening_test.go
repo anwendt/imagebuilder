@@ -114,8 +114,18 @@ func TestHelmChartRendersNamespaceResourceGuardrails(t *testing.T) {
 		t.Fatalf("read Helm values schema: %v", err)
 	}
 	if !strings.Contains(string(schema), `"namespaceResourceGuardrails"`) ||
-		!strings.Contains(string(schema), `"Production installs require ResourceQuota and LimitRange guardrails`) {
-		t.Fatalf("values.schema.json must enforce namespace resource guardrails")
+		!strings.Contains(string(schema), `Production installs should keep this true; local development profiles may disable it.`) {
+		t.Fatalf("values.schema.json must document production namespace guardrail default and development override")
+	}
+
+	devValuesPath := filepath.Join(repoRoot, "charts", "imagebuilder", "values-development.yaml")
+	devValues, err := os.ReadFile(devValuesPath)
+	if err != nil {
+		t.Fatalf("read development Helm values: %v", err)
+	}
+	if !strings.Contains(string(devValues), "namespaceResourceGuardrails:") ||
+		!strings.Contains(string(devValues), "enabled: false") {
+		t.Fatalf("development values must disable namespace resource guardrails")
 	}
 }
 

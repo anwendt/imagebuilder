@@ -88,10 +88,34 @@ func TestHelmChartDefaultsAdmissionFailClosed(t *testing.T) {
 		t.Fatalf("read Helm values schema: %v", err)
 	}
 	schemaText := string(schema)
-	for _, want := range []string{`"enum": [true]`, `"enum": ["Fail"]`} {
+	for _, want := range []string{
+		`"enum": ["Fail", "Ignore"]`,
+		`Production installs should keep this true; local development profiles may disable it.`,
+		`Production installs should use Fail; local development may use Ignore or disable webhooks.`,
+	} {
 		if !strings.Contains(schemaText, want) {
 			t.Fatalf("values.schema.json missing %s", want)
 		}
+	}
+
+	devValuesPath := filepath.Join(repoRoot, "charts", "imagebuilder", "values-development.yaml")
+	devValues, err := os.ReadFile(devValuesPath)
+	if err != nil {
+		t.Fatalf("read development Helm values: %v", err)
+	}
+	var devParsed map[string]any
+	if err := yaml.Unmarshal(devValues, &devParsed); err != nil {
+		t.Fatalf("parse development Helm values: %v", err)
+	}
+	devWebhook, ok := devParsed["webhook"].(map[string]any)
+	if !ok {
+		t.Fatalf("development webhook values missing or malformed: %#v", devParsed["webhook"])
+	}
+	if devWebhook["enabled"] != false {
+		t.Fatalf("development webhook.enabled = %#v, want false", devWebhook["enabled"])
+	}
+	if devWebhook["failurePolicy"] != "Ignore" {
+		t.Fatalf("development webhook.failurePolicy = %#v, want Ignore", devWebhook["failurePolicy"])
 	}
 
 	webhookTemplatePath := filepath.Join(repoRoot, "charts", "imagebuilder", "templates", "webhook.yaml")
