@@ -21,6 +21,16 @@ func TestOperatorRBACIsScopedForProduction(t *testing.T) {
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]`) {
 			t.Fatalf("%s grants write/delete verbs on CRD specs", path)
 		}
+		for _, want := range []string{
+			`resources: ["vmimages", "platformproviders"]
+    verbs: ["get", "list", "watch", "update"]`,
+			`resources: ["providerconfigs"]
+    verbs: ["get", "list", "watch"]`,
+		} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("%s missing least-privilege controller rule %q", path, want)
+			}
+		}
 		if !strings.Contains(text, `resources: ["secrets"]
     verbs: ["get"]`) {
 			t.Fatalf("%s must grant only get on Secrets", path)

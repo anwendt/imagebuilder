@@ -503,7 +503,8 @@ and does not persist fresh downloads.
 ```
 Core Operator ServiceAccount
   ClusterRole:
-    - get/list/watch/update: VMImage, PlatformProvider, ProviderConfig
+    - get/list/watch/update: VMImage, PlatformProvider (update for finalizers)
+    - get/list/watch: ProviderConfig
     - get/list/watch: Secrets (read-only, credentials)
     - create/get/list/watch/delete: Jobs (build jobs)
     - create/get/list/watch/delete: Deployments (provider pods)

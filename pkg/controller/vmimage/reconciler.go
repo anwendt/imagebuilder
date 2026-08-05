@@ -50,7 +50,7 @@ const (
 
 // VMImageReconciler reconciles VMImage resources.
 //
-// +kubebuilder:rbac:groups=imagebuilder.io,resources=vmimages,verbs=get;list;watch
+// +kubebuilder:rbac:groups=imagebuilder.io,resources=vmimages,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=imagebuilder.io,resources=vmimages/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=imagebuilder.io,resources=vmimages/finalizers,verbs=update
 // +kubebuilder:rbac:groups=imagebuilder.io,resources=providerconfigs,verbs=get;list;watch

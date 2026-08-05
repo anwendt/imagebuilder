@@ -28,7 +28,11 @@ metadata:
     imagebuilder.io/production-ready: "false"
 rules:
   - apiGroups: ["imagebuilder.io"]
-    resources: ["vmimages", "platformproviders", "providerconfigs"]
+    # Finalizers are written through normal resource updates.
+    resources: ["vmimages", "platformproviders"]
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: ["imagebuilder.io"]
+    resources: ["providerconfigs"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["imagebuilder.io"]
     resources: ["vmimages/status", "platformproviders/status", "providerconfigs/status"]

@@ -397,8 +397,11 @@ Production defaults and invariants:
 - KVM builds require dedicated build-node selectors:
   `imagebuilder.io/kvm=true` and `imagebuilder.io/dedicated=imagebuilder`.
   Build pods receive the matching `NoSchedule` toleration.
-- RBAC keeps CRD spec resources read-only (`get/list/watch`) and grants only
-  `get` on Secrets.
+- RBAC grants `update` only on controller-owned `VMImage` and
+  `PlatformProvider` resources because controller-runtime writes their
+  finalizers through the normal resource endpoint. `ProviderConfig` remains
+  read-only (`get/list/watch`); no CRD create/delete permission is granted, and
+  Secrets remain `get`-only.
 - The Helm chart renders operator-namespace `ResourceQuota` and `LimitRange`
   guardrails by default. Tenant namespaces need their own quotas sized for
   approved build concurrency and storage.

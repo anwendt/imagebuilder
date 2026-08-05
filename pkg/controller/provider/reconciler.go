@@ -49,7 +49,7 @@ const (
 
 // PlatformProviderReconciler reconciles PlatformProvider resources.
 //
-// +kubebuilder:rbac:groups=imagebuilder.io,resources=platformproviders,verbs=get;list;watch
+// +kubebuilder:rbac:groups=imagebuilder.io,resources=platformproviders,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=imagebuilder.io,resources=platformproviders/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=imagebuilder.io,resources=platformproviders/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
