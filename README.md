@@ -62,7 +62,7 @@ Install the latest released chart from GHCR:
 
 ```bash
 helm install imagebuilder oci://ghcr.io/anwendt/charts/imagebuilder \
-  --version 0.4.1 \
+  --version 0.4.2 \
   --namespace imagebuilder-system \
   --create-namespace
 
@@ -80,7 +80,7 @@ profile from a checkout:
 
 ```bash
 helm install imagebuilder oci://ghcr.io/anwendt/charts/imagebuilder \
-  --version 0.4.1 \
+  --version 0.4.2 \
   --namespace imagebuilder-system \
   --create-namespace \
   -f charts/imagebuilder/values-development.yaml

@@ -23,7 +23,7 @@ guardrails, and strict provider admission defaults:
 
 ```bash
 helm install imagebuilder oci://ghcr.io/anwendt/charts/imagebuilder \
-  --version 0.4.1 \
+  --version 0.4.2 \
   --namespace imagebuilder-system \
   --create-namespace
 ```
@@ -34,7 +34,7 @@ and strict provider mTLS/digest/signature requirements:
 
 ```bash
 helm install imagebuilder oci://ghcr.io/anwendt/charts/imagebuilder \
-  --version 0.4.1 \
+  --version 0.4.2 \
   --namespace imagebuilder-system \
   --create-namespace \
   -f charts/imagebuilder/values-development.yaml
@@ -57,7 +57,7 @@ it explicitly:
 
 ```bash
 helm upgrade imagebuilder oci://ghcr.io/anwendt/charts/imagebuilder \
-  --version 0.4.1 \
+  --version 0.4.2 \
   --namespace imagebuilder-system \
   --reuse-values \
   --set imageSignaturePolicy.enabled=true
