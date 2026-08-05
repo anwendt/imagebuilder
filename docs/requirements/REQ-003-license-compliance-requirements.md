@@ -61,7 +61,7 @@ The following table lists all approved direct dependencies with their license st
 | k8s.io/api | v0.36.x | Apache 2.0 | Kubernetes API types | Approved |
 | k8s.io/apimachinery | v0.36.x | Apache 2.0 | Kubernetes utilities | Approved |
 | k8s.io/client-go | v0.36.x | Apache 2.0 | Kubernetes client | Approved |
-| google.golang.org/grpc | v1.81.x | Apache 2.0 | gRPC provider communication | Approved |
+| google.golang.org/grpc | v1.82.x | Apache 2.0 | gRPC provider communication | Approved |
 | google.golang.org/protobuf | v1.36.x | BSD-3-Clause | Protobuf serialization | Approved |
 | github.com/vmware/govmomi | v0.54.x | Apache 2.0 | vSphere/VCF SDK | Approved |
 | github.com/gophercloud/gophercloud/v2 | v2.12.x | Apache 2.0 | OpenStack SDK | Approved |

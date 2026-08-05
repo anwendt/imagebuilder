@@ -582,7 +582,7 @@ Lease name: imagebuilder-operator-leader
 | Language | Go | 1.26+ | BSD-3-Clause |
 | Operator Framework | controller-runtime (kubebuilder) | v0.24.x | Apache 2.0 |
 | Kubernetes API | k8s.io/api, k8s.io/apimachinery, k8s.io/client-go | v0.36.x | Apache 2.0 |
-| gRPC | google.golang.org/grpc | v1.81.x | Apache 2.0 |
+| gRPC | google.golang.org/grpc | v1.82.x | Apache 2.0 |
 | Serialisation | google.golang.org/protobuf | v1.36.x | BSD-3-Clause |
 | vSphere SDK | govmomi | v0.54.x | Apache 2.0 |
 | OpenStack SDK | gophercloud/v2 | v2.12.x | Apache 2.0 |
