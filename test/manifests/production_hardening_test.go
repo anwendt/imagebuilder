@@ -32,8 +32,8 @@ func TestOperatorRBACIsScopedForProduction(t *testing.T) {
 			}
 		}
 		if !strings.Contains(text, `resources: ["secrets"]
-    verbs: ["get"]`) {
-			t.Fatalf("%s must grant only get on Secrets", path)
+    verbs: ["get", "create", "update"]`) {
+			t.Fatalf("%s must grant get/create/update on Secrets for VMImage-owned upload mTLS bundles", path)
 		}
 	}
 }

@@ -114,6 +114,93 @@ func TestAssemble_CredentialsSecretRefKeyMountsSingleCredentialsFile(t *testing.
 	}
 }
 
+func TestAssembleWithProviderConnections_AddsGRPCRoute(t *testing.T) {
+	img := &v1alpha1.VMImage{
+		ObjectMeta: metav1.ObjectMeta{Name: "ubuntu", Namespace: "default", UID: "uid"},
+		Spec: v1alpha1.VMImageSpec{
+			Build: v1alpha1.BuildSpec{ArtifactStorage: &v1alpha1.ArtifactStorageSpec{Type: "pvc"}},
+			Targets: []v1alpha1.TargetSpec{
+				{ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "aws-cfg"}, Format: "vmdk"},
+			},
+		},
+	}
+	cfg := v1alpha1.ProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "aws-cfg", Namespace: "default"},
+		Spec: v1alpha1.ProviderConfigSpec{
+			Provider:    "aws",
+			Credentials: v1alpha1.CredentialsSpec{SecretRef: v1alpha1.SecretRef{Name: "aws-secret"}},
+		},
+	}
+	job, err := uploadpod.AssembleWithProviderConnections(img, []v1alpha1.ProviderConfig{cfg}, map[string]uploadpod.ProviderConnection{
+		"aws": {Address: "provider-aws.imagebuilder-system.svc:50051"},
+	}, testScheme(t))
+	if err != nil {
+		t.Fatalf("AssembleWithProviderConnections returned error: %v", err)
+	}
+	var targets []uploadpod.TargetConfig
+	env := envMap(job.Spec.Template.Spec.Containers[0].Env)
+	if err := json.Unmarshal([]byte(env["UPLOAD_TARGETS_JSON"]), &targets); err != nil {
+		t.Fatalf("UPLOAD_TARGETS_JSON invalid: %v", err)
+	}
+	if len(targets) != 1 || targets[0].GRPC == nil {
+		t.Fatalf("targets = %#v, want one gRPC target", targets)
+	}
+	if targets[0].GRPC.Address != "provider-aws.imagebuilder-system.svc:50051" || targets[0].GRPC.TLS != nil {
+		t.Fatalf("gRPC config = %#v", targets[0].GRPC)
+	}
+	if len(job.Spec.Template.Spec.Volumes) != 2 {
+		t.Fatalf("volumes = %#v, want workspace and credentials only", job.Spec.Template.Spec.Volumes)
+	}
+}
+
+func TestAssembleWithProviderConnections_MountsMTLSSecret(t *testing.T) {
+	img := &v1alpha1.VMImage{
+		ObjectMeta: metav1.ObjectMeta{Name: "ubuntu", Namespace: "default", UID: "uid"},
+		Spec: v1alpha1.VMImageSpec{
+			Build: v1alpha1.BuildSpec{ArtifactStorage: &v1alpha1.ArtifactStorageSpec{Type: "pvc"}},
+			Targets: []v1alpha1.TargetSpec{
+				{ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "custom-cfg"}, Format: "raw"},
+			},
+		},
+	}
+	cfg := v1alpha1.ProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "custom-cfg", Namespace: "default"},
+		Spec: v1alpha1.ProviderConfigSpec{
+			Provider:    "custom",
+			Credentials: v1alpha1.CredentialsSpec{SecretRef: v1alpha1.SecretRef{Name: "custom-secret"}},
+		},
+	}
+	job, err := uploadpod.AssembleWithProviderConnections(img, []v1alpha1.ProviderConfig{cfg}, map[string]uploadpod.ProviderConnection{
+		"custom": {
+			Address:       "provider-custom.imagebuilder-system.svc:50051",
+			TLSSecretName: "imagebuilder-upload-tls-test",
+			ServerName:    "provider-custom.imagebuilder-system.svc",
+		},
+	}, testScheme(t))
+	if err != nil {
+		t.Fatalf("AssembleWithProviderConnections returned error: %v", err)
+	}
+	container := job.Spec.Template.Spec.Containers[0]
+	var targets []uploadpod.TargetConfig
+	if err := json.Unmarshal([]byte(envMap(container.Env)["UPLOAD_TARGETS_JSON"]), &targets); err != nil {
+		t.Fatalf("UPLOAD_TARGETS_JSON invalid: %v", err)
+	}
+	tlsConfig := targets[0].GRPC.TLS
+	if tlsConfig == nil || tlsConfig.ServerName != "provider-custom.imagebuilder-system.svc" ||
+		tlsConfig.CAPath != "/provider-tls/custom/ca.crt" ||
+		tlsConfig.ClientCertPath != "/provider-tls/custom/tls.crt" ||
+		tlsConfig.ClientKeyPath != "/provider-tls/custom/tls.key" {
+		t.Fatalf("TLS config = %#v", tlsConfig)
+	}
+	if len(container.VolumeMounts) != 3 || container.VolumeMounts[2].MountPath != "/provider-tls/custom" {
+		t.Fatalf("volume mounts = %#v", container.VolumeMounts)
+	}
+	volumes := job.Spec.Template.Spec.Volumes
+	if len(volumes) != 3 || volumes[2].Secret == nil || volumes[2].Secret.SecretName != "imagebuilder-upload-tls-test" {
+		t.Fatalf("volumes = %#v", volumes)
+	}
+}
+
 func TestAssemble_UploaderImageFromEnvironment(t *testing.T) {
 	t.Setenv("UPLOADER_IMAGE", "registry.example.test/imagebuilder-uploader@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
 	img := &v1alpha1.VMImage{

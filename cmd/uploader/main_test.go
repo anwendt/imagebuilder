@@ -2,12 +2,18 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"google.golang.org/grpc"
+
+	providerv1 "github.com/anwendt/imagebuilder/api/provider/v1"
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/controller/uploadpod"
 	"github.com/anwendt/imagebuilder/pkg/plugin"
@@ -173,6 +179,86 @@ func TestRun_ReportsUploadBytes(t *testing.T) {
 	}
 }
 
+func TestRun_UsesPlatformProviderGRPCService(t *testing.T) {
+	server := &uploaderGRPCServer{}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	grpcServer := grpc.NewServer()
+	providerv1.RegisterPlatformProviderServer(grpcServer, server)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(func() {
+		grpcServer.Stop()
+		_ = listener.Close()
+	})
+
+	workspace := t.TempDir()
+	artifactPath := filepath.Join(workspace, "artifact.vmdk")
+	artifactData := []byte("stream-this-artifact")
+	if err := os.WriteFile(artifactPath, artifactData, 0o600); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+	if err := writeJSON(filepath.Join(workspace, resultFileName), v1alpha1.ArtifactStatus{
+		Path:      artifactPath,
+		Format:    "vmdk",
+		Checksum:  "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		SizeBytes: int64(len(artifactData)),
+		OS:        "linux",
+		Metadata:  map[string]string{"imageName": "ubuntu-grpc"},
+	}); err != nil {
+		t.Fatalf("write build result: %v", err)
+	}
+	credentialsPath := filepath.Join(workspace, "credentials")
+	if err := os.Mkdir(credentialsPath, 0o700); err != nil {
+		t.Fatalf("mkdir credentials: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(credentialsPath, "token"), []byte("secret"), 0o600); err != nil {
+		t.Fatalf("write credentials: %v", err)
+	}
+	targetData, err := json.Marshal([]uploadpod.TargetConfig{{
+		Provider:           "external",
+		ProviderConfigName: "external-prod",
+		Region:             "eu-central-1",
+		Format:             "vmdk",
+		Tags:               map[string]string{"env": "test"},
+		CredentialsPath:    credentialsPath,
+		GRPC:               &uploadpod.GRPCConfig{Address: listener.Addr().String()},
+	}})
+	if err != nil {
+		t.Fatalf("marshal targets: %v", err)
+	}
+
+	result, err := run(context.Background(), func(key string) string {
+		switch key {
+		case "WORKSPACE_DIR":
+			return workspace
+		case "UPLOAD_TARGETS_JSON":
+			return string(targetData)
+		default:
+			return ""
+		}
+	})
+	if err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	if string(server.uploaded) != string(artifactData) {
+		t.Fatalf("uploaded data = %q, want %q", string(server.uploaded), string(artifactData))
+	}
+	if server.initialized == nil || server.initialized.GetProviderConfigName() != "external-prod" || string(server.initialized.GetCredentials()["token"]) != "secret" {
+		t.Fatalf("initial ValidateConfig request = %#v", server.initialized)
+	}
+	if server.firstChunk == nil || server.firstChunk.GetProviderConfigName() != "external-prod" || server.firstChunk.GetFormat() != "vmdk" {
+		t.Fatalf("first upload chunk = %#v", server.firstChunk)
+	}
+	if server.registered == nil || server.registered.GetProviderConfigName() != "external-prod" || server.registered.GetFormat() != "vmdk" || server.registered.GetTags()["target.tag.env"] != "test" {
+		t.Fatalf("RegisterImage request = %#v", server.registered)
+	}
+	if len(result.Images) != 1 || result.Images[0].ImageRef != "image-external-123" {
+		t.Fatalf("images = %#v", result.Images)
+	}
+}
+
 func TestFallbackUploadOperations_UsesBuildResultAndTargetMetadata(t *testing.T) {
 	workspace := t.TempDir()
 	if err := writeJSON(filepath.Join(workspace, resultFileName), v1alpha1.ArtifactStatus{
@@ -215,6 +301,61 @@ func TestFallbackUploadOperations_UsesBuildResultAndTargetMetadata(t *testing.T)
 }
 
 type uploadBytesProvider struct{}
+
+type uploaderGRPCServer struct {
+	providerv1.UnimplementedPlatformProviderServer
+	initialized *providerv1.ValidateConfigRequest
+	firstChunk  *providerv1.UploadChunk
+	registered  *providerv1.RegisterRequest
+	uploaded    []byte
+}
+
+func (s *uploaderGRPCServer) GetCapabilities(context.Context, *providerv1.Empty) (*providerv1.CapabilitiesResponse, error) {
+	return &providerv1.CapabilitiesResponse{
+		ProviderName:    "external",
+		ProviderVersion: "v1.0.0",
+		Formats:         []string{"vmdk"},
+		OsFamilies:      []string{"linux"},
+		ProtocolVersion: "v1",
+	}, nil
+}
+
+func (s *uploaderGRPCServer) ValidateConfig(_ context.Context, req *providerv1.ValidateConfigRequest) (*providerv1.ValidateConfigResponse, error) {
+	if len(req.GetCredentials()) > 0 {
+		s.initialized = req
+	}
+	return &providerv1.ValidateConfigResponse{Valid: true}, nil
+}
+
+func (s *uploaderGRPCServer) UploadArtifact(stream providerv1.PlatformProvider_UploadArtifactServer) error {
+	for {
+		chunk, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if s.firstChunk == nil {
+			s.firstChunk = chunk
+		}
+		s.uploaded = append(s.uploaded, chunk.GetData()...)
+		if chunk.GetLast() {
+			break
+		}
+	}
+	return stream.Send(&providerv1.UploadProgress{
+		BytesWritten: int64(len(s.uploaded)),
+		TotalBytes:   int64(len(s.uploaded)),
+		Phase:        "done",
+		ProviderRef:  "provider://external/upload-123",
+	})
+}
+
+func (s *uploaderGRPCServer) RegisterImage(_ context.Context, req *providerv1.RegisterRequest) (*providerv1.ImageRef, error) {
+	s.registered = req
+	return &providerv1.ImageRef{Id: "image-external-123", Location: "eu-central-1"}, nil
+}
 
 func (p *uploadBytesProvider) Name() string    { return "upload-bytes" }
 func (p *uploadBytesProvider) Version() string { return "v0.0.0-test" }

@@ -1,6 +1,7 @@
 package uploadpod
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -19,9 +20,31 @@ import (
 const (
 	workspaceMount = "/workspace"
 	workspaceVol   = "workspace"
+	providerTLSDir = "/provider-tls"
 
 	defaultUploaderImage = "ghcr.io/anwendt/imagebuilder-uploader:0.3.0"
 )
+
+type GRPCTLSConfig struct {
+	ServerName     string `json:"serverName"`
+	CAPath         string `json:"caPath"`
+	ClientCertPath string `json:"clientCertPath"`
+	ClientKeyPath  string `json:"clientKeyPath"`
+}
+
+type GRPCConfig struct {
+	Address string         `json:"address"`
+	TLS     *GRPCTLSConfig `json:"tls,omitempty"`
+}
+
+// ProviderConnection describes a PlatformProvider service reachable by the
+// upload Job. TLSSecretName refers to a controller-managed Secret in the
+// VMImage namespace containing the canonical ca.crt, tls.crt, and tls.key keys.
+type ProviderConnection struct {
+	Address       string
+	TLSSecretName string
+	ServerName    string
+}
 
 type TargetConfig struct {
 	ProviderConfigName string            `json:"providerConfigName"`
@@ -33,18 +56,27 @@ type TargetConfig struct {
 	Format             string            `json:"format"`
 	Tags               map[string]string `json:"tags,omitempty"`
 	CredentialsPath    string            `json:"credentialsPath"`
+	GRPC               *GRPCConfig       `json:"grpc,omitempty"`
 }
 
 func Assemble(img *v1alpha1.VMImage, configs []v1alpha1.ProviderConfig, scheme *runtime.Scheme) (*batchv1.Job, error) {
-	return assemble(img, configs, scheme, false)
+	return assemble(img, configs, nil, scheme, false)
+}
+
+func AssembleWithProviderConnections(img *v1alpha1.VMImage, configs []v1alpha1.ProviderConfig, connections map[string]ProviderConnection, scheme *runtime.Scheme) (*batchv1.Job, error) {
+	return assemble(img, configs, connections, scheme, false)
 }
 
 func AssembleCleanup(img *v1alpha1.VMImage, configs []v1alpha1.ProviderConfig, scheme *runtime.Scheme) (*batchv1.Job, error) {
-	return assemble(img, configs, scheme, true)
+	return assemble(img, configs, nil, scheme, true)
 }
 
-func assemble(img *v1alpha1.VMImage, configs []v1alpha1.ProviderConfig, scheme *runtime.Scheme, cleanupOnly bool) (*batchv1.Job, error) {
-	targets, err := targetConfigs(img, configs)
+func AssembleCleanupWithProviderConnections(img *v1alpha1.VMImage, configs []v1alpha1.ProviderConfig, connections map[string]ProviderConnection, scheme *runtime.Scheme) (*batchv1.Job, error) {
+	return assemble(img, configs, connections, scheme, true)
+}
+
+func assemble(img *v1alpha1.VMImage, configs []v1alpha1.ProviderConfig, connections map[string]ProviderConnection, scheme *runtime.Scheme, cleanupOnly bool) (*batchv1.Job, error) {
+	targets, err := targetConfigs(img, configs, connections)
 	if err != nil {
 		return nil, err
 	}
@@ -87,11 +119,11 @@ func assemble(img *v1alpha1.VMImage, configs []v1alpha1.ProviderConfig, scheme *
 								{Name: "UPLOAD_TARGETS_JSON", Value: string(targetData)},
 								{Name: "UPLOAD_CLEANUP_ONLY", Value: fmt.Sprintf("%t", cleanupOnly)},
 							},
-							VolumeMounts:    uploadVolumeMounts(configs),
+							VolumeMounts:    uploadVolumeMounts(configs, connections),
 							SecurityContext: restrictedSecCtx(),
 						},
 					},
-					Volumes:      uploadVolumes(img, configs),
+					Volumes:      uploadVolumes(img, configs, connections),
 					NodeSelector: img.Spec.Build.NodeSelector,
 				},
 			},
@@ -103,7 +135,7 @@ func assemble(img *v1alpha1.VMImage, configs []v1alpha1.ProviderConfig, scheme *
 	return job, nil
 }
 
-func uploadVolumeMounts(configs []v1alpha1.ProviderConfig) []corev1.VolumeMount {
+func uploadVolumeMounts(configs []v1alpha1.ProviderConfig, connections map[string]ProviderConnection) []corev1.VolumeMount {
 	mounts := []corev1.VolumeMount{{Name: workspaceVol, MountPath: workspaceMount}}
 	seen := map[string]bool{}
 	for _, cfg := range configs {
@@ -117,10 +149,23 @@ func uploadVolumeMounts(configs []v1alpha1.ProviderConfig) []corev1.VolumeMount 
 			ReadOnly:  true,
 		})
 	}
+	seenProviders := map[string]bool{}
+	for _, cfg := range configs {
+		connection, ok := connections[cfg.Spec.Provider]
+		if !ok || connection.TLSSecretName == "" || seenProviders[cfg.Spec.Provider] {
+			continue
+		}
+		seenProviders[cfg.Spec.Provider] = true
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      providerTLSVolumeName(cfg.Spec.Provider),
+			MountPath: providerTLSMountPath(cfg.Spec.Provider),
+			ReadOnly:  true,
+		})
+	}
 	return mounts
 }
 
-func uploadVolumes(img *v1alpha1.VMImage, configs []v1alpha1.ProviderConfig) []corev1.Volume {
+func uploadVolumes(img *v1alpha1.VMImage, configs []v1alpha1.ProviderConfig, connections map[string]ProviderConnection) []corev1.Volume {
 	volumes := []corev1.Volume{workspaceVolume(img)}
 	seen := map[string]bool{}
 	for _, cfg := range configs {
@@ -140,6 +185,23 @@ func uploadVolumes(img *v1alpha1.VMImage, configs []v1alpha1.ProviderConfig) []c
 			},
 		})
 	}
+	seenProviders := map[string]bool{}
+	for _, cfg := range configs {
+		connection, ok := connections[cfg.Spec.Provider]
+		if !ok || connection.TLSSecretName == "" || seenProviders[cfg.Spec.Provider] {
+			continue
+		}
+		seenProviders[cfg.Spec.Provider] = true
+		volumes = append(volumes, corev1.Volume{
+			Name: providerTLSVolumeName(cfg.Spec.Provider),
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: connection.TLSSecretName,
+					Optional:   boolPtr(false),
+				},
+			},
+		})
+	}
 	return volumes
 }
 
@@ -151,7 +213,7 @@ func credentialItems(cfg v1alpha1.ProviderConfig) []corev1.KeyToPath {
 	return []corev1.KeyToPath{{Key: key, Path: "credentials"}}
 }
 
-func targetConfigs(img *v1alpha1.VMImage, configs []v1alpha1.ProviderConfig) ([]TargetConfig, error) {
+func targetConfigs(img *v1alpha1.VMImage, configs []v1alpha1.ProviderConfig, connections map[string]ProviderConnection) ([]TargetConfig, error) {
 	byName := make(map[string]v1alpha1.ProviderConfig, len(configs))
 	for _, cfg := range configs {
 		byName[cfg.Name] = cfg
@@ -162,7 +224,7 @@ func targetConfigs(img *v1alpha1.VMImage, configs []v1alpha1.ProviderConfig) ([]
 		if !ok {
 			return nil, fmt.Errorf("provider config %q not supplied", target.ProviderConfigRef.Name)
 		}
-		targets = append(targets, TargetConfig{
+		targetConfig := TargetConfig{
 			ProviderConfigName: cfg.Name,
 			Provider:           cfg.Spec.Provider,
 			Region:             cfg.Spec.Region,
@@ -172,7 +234,20 @@ func targetConfigs(img *v1alpha1.VMImage, configs []v1alpha1.ProviderConfig) ([]
 			Format:             target.Format,
 			Tags:               target.Tags,
 			CredentialsPath:    fmt.Sprintf("/credentials/%s", cfg.Name),
-		})
+		}
+		if connection, ok := connections[cfg.Spec.Provider]; ok {
+			targetConfig.GRPC = &GRPCConfig{Address: connection.Address}
+			if connection.TLSSecretName != "" {
+				mountPath := providerTLSMountPath(cfg.Spec.Provider)
+				targetConfig.GRPC.TLS = &GRPCTLSConfig{
+					ServerName:     connection.ServerName,
+					CAPath:         mountPath + "/ca.crt",
+					ClientCertPath: mountPath + "/tls.crt",
+					ClientKeyPath:  mountPath + "/tls.key",
+				}
+			}
+		}
+		targets = append(targets, targetConfig)
 	}
 	return targets, nil
 }
@@ -215,6 +290,15 @@ func uploaderImage(img *v1alpha1.VMImage) string {
 
 func credentialVolumeName(providerConfigName string) string {
 	return fmt.Sprintf("credentials-%s", providerConfigName)
+}
+
+func providerTLSVolumeName(providerName string) string {
+	digest := sha256.Sum256([]byte(providerName))
+	return fmt.Sprintf("provider-tls-%x", digest[:6])
+}
+
+func providerTLSMountPath(providerName string) string {
+	return fmt.Sprintf("%s/%s", providerTLSDir, providerName)
 }
 
 func jobLabels(img *v1alpha1.VMImage) map[string]string {

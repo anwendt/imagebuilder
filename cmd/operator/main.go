@@ -126,6 +126,7 @@ func main() {
 		MaxConcurrentBuilds:        maxConcurrentBuilds,
 		MaxConcurrentBuildsPerNode: maxConcurrentBuildsPerNode,
 		SchedulerNamespace:         schedulerNamespace,
+		ProviderNamespace:          providerNamespace,
 	}).SetupWithManager(mgr); err != nil {
 		slog.Error("unable to create VMImage controller", slog.Any("error", err))
 		os.Exit(1)

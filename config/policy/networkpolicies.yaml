@@ -79,6 +79,17 @@ spec:
       ports:
         - port: 50051
           protocol: TCP
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: imagebuilder-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/managed-by: imagebuilder
+              imagebuilder.io/job-kind: upload
+      ports:
+        - port: 50051
+          protocol: TCP
   egress:
     - ports:
         - port: 443
@@ -113,6 +124,19 @@ spec:
   egress:
     - ports:
         - port: 443
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: imagebuilder-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/managed-by: imagebuilder
+            matchExpressions:
+              - key: imagebuilder.io/provider-name
+                operator: Exists
+      ports:
+        - port: 50051
           protocol: TCP
     - to:
         - namespaceSelector:

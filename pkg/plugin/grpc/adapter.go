@@ -293,6 +293,7 @@ func (a *Adapter) Upload(ctx context.Context, artifact *platform.BuildArtifact) 
 
 	return &platform.UploadResult{
 		ProviderRef: providerRef,
+		Metadata:    cloneStringMap(artifact.Metadata),
 	}, nil
 }
 
@@ -303,6 +304,7 @@ func (a *Adapter) Register(ctx context.Context, result *platform.UploadResult) (
 		ProviderRef:        result.ProviderRef,
 		ImageName:          imageName,
 		ProviderConfigName: result.Metadata["providerConfigName"],
+		Format:             result.Metadata["format"],
 	}
 	for k, v := range result.Metadata {
 		if k != "imageName" && k != "providerConfigName" {
@@ -445,6 +447,7 @@ func streamArtifact(stream providerv1.PlatformProvider_UploadArtifactClient, art
 				chunk.TotalSizeBytes = artifact.SizeBytes
 				chunk.OsFamily = string(artifact.OS)
 				chunk.Metadata = artifact.Metadata
+				chunk.ProviderConfigName = artifact.Metadata["providerConfigName"]
 				first = false
 			}
 			if err := stream.Send(chunk); err != nil {
@@ -526,6 +529,17 @@ func grpcMarketplaceRef(ref *v1alpha1.MarketplaceRef) *providerv1.MarketplaceRef
 		Sku:       ref.SKU,
 		Version:   ref.Version,
 	}
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func grpcRemoteProvisionerSource(source *v1alpha1.ProvisionerSourceSpec) *providerv1.RemoteProvisionerSource {

@@ -15,6 +15,7 @@ package vmimage
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -43,9 +44,11 @@ import (
 )
 
 const (
-	finalizerName       = "imagebuilder.io/cleanup"
-	defaultBuildTimeout = 2 * time.Hour
-	requeueAfter        = 15 * time.Second
+	finalizerName            = "imagebuilder.io/cleanup"
+	defaultBuildTimeout      = 2 * time.Hour
+	requeueAfter             = 15 * time.Second
+	defaultProviderNamespace = "imagebuilder-system"
+	providerGRPCPort         = 50051
 )
 
 // VMImageReconciler reconciles VMImage resources.
@@ -54,13 +57,14 @@ const (
 // +kubebuilder:rbac:groups=imagebuilder.io,resources=vmimages/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=imagebuilder.io,resources=vmimages/finalizers,verbs=update
 // +kubebuilder:rbac:groups=imagebuilder.io,resources=providerconfigs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=imagebuilder.io,resources=platformproviders,verbs=get
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;delete
-// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;create;update
 type VMImageReconciler struct {
 	client.Client
 	Scheme                     *runtime.Scheme
@@ -69,6 +73,7 @@ type VMImageReconciler struct {
 	MaxConcurrentBuilds        int
 	MaxConcurrentBuildsPerNode int
 	SchedulerNamespace         string
+	ProviderNamespace          string
 	log                        *slog.Logger
 }
 
@@ -506,7 +511,11 @@ func (r *VMImageReconciler) reconcileUploading(ctx context.Context, img *v1alpha
 		if err != nil {
 			return r.setFailed(ctx, img, fmt.Sprintf("provider lookup failed: %v", err))
 		}
-		job, err := uploadpod.Assemble(img, configs, r.Scheme)
+		connections, err := r.providerConnectionsForTargets(ctx, img, configs)
+		if err != nil {
+			return r.setFailed(ctx, img, fmt.Sprintf("provider connection setup failed: %v", err))
+		}
+		job, err := uploadpod.AssembleWithProviderConnections(img, configs, connections, r.Scheme)
 		if err != nil {
 			return r.setFailed(ctx, img, fmt.Sprintf("assemble upload job: %v", err))
 		}
@@ -720,6 +729,141 @@ func (r *VMImageReconciler) providerConfigsForTargets(ctx context.Context, img *
 		configs = append(configs, *cfg)
 	}
 	return configs, nil
+}
+
+func (r *VMImageReconciler) providerConnectionsForTargets(ctx context.Context, img *v1alpha1.VMImage, configs []v1alpha1.ProviderConfig) (map[string]uploadpod.ProviderConnection, error) {
+	connections := map[string]uploadpod.ProviderConnection{}
+	for _, cfg := range configs {
+		providerName := cfg.Spec.Provider
+		if _, exists := connections[providerName]; exists {
+			continue
+		}
+		pp := &v1alpha1.PlatformProvider{}
+		if err := r.Get(ctx, types.NamespacedName{Name: providerName}, pp); err != nil {
+			if apierrors.IsNotFound(err) {
+				// No external provider is installed for this provider name. Keep the
+				// legacy in-process uploader route for backward compatibility.
+				continue
+			}
+			return nil, fmt.Errorf("get PlatformProvider %q: %w", providerName, err)
+		}
+		if pp.Status.Phase != "Healthy" {
+			return nil, fmt.Errorf("PlatformProvider %q is not healthy (phase %q)", providerName, pp.Status.Phase)
+		}
+		if pp.Status.Capabilities == nil || pp.Status.Capabilities.ProviderName != providerName {
+			return nil, fmt.Errorf("PlatformProvider %q has no matching capability handshake", providerName)
+		}
+
+		providerNamespace := r.ProviderNamespace
+		if providerNamespace == "" {
+			providerNamespace = pp.Namespace
+		}
+		if providerNamespace == "" {
+			providerNamespace = defaultProviderNamespace
+		}
+		connection := uploadpod.ProviderConnection{
+			Address: fmt.Sprintf("provider-%s.%s.svc:%d", pp.Name, providerNamespace, providerGRPCPort),
+		}
+		if pp.Spec.Transport != nil && pp.Spec.Transport.TLS != nil &&
+			pp.Spec.Transport.TLS.Mode != "" && pp.Spec.Transport.TLS.Mode != "Disabled" {
+			if pp.Spec.Transport.TLS.Mode != "Mutual" {
+				return nil, fmt.Errorf("PlatformProvider %q uses unsupported TLS mode %q", providerName, pp.Spec.Transport.TLS.Mode)
+			}
+			secretName, err := r.ensureUploadClientTLSSecret(ctx, img, pp, providerNamespace)
+			if err != nil {
+				return nil, fmt.Errorf("prepare mTLS for PlatformProvider %q: %w", providerName, err)
+			}
+			serverName := pp.Spec.Transport.TLS.ServerName
+			if serverName == "" {
+				serverName = fmt.Sprintf("provider-%s.%s.svc", pp.Name, providerNamespace)
+			}
+			connection.TLSSecretName = secretName
+			connection.ServerName = serverName
+		}
+		connections[providerName] = connection
+	}
+	return connections, nil
+}
+
+func (r *VMImageReconciler) ensureUploadClientTLSSecret(ctx context.Context, img *v1alpha1.VMImage, pp *v1alpha1.PlatformProvider, providerNamespace string) (string, error) {
+	tlsSpec := pp.Spec.Transport.TLS
+	if tlsSpec.CASecretRef == nil || tlsSpec.ClientCertificateSecretRef == nil {
+		return "", fmt.Errorf("mTLS requires caSecretRef and clientCertificateSecretRef")
+	}
+	if tlsSpec.CASecretRef.Namespace != providerNamespace || tlsSpec.ClientCertificateSecretRef.Namespace != providerNamespace {
+		return "", fmt.Errorf("mTLS source Secrets must be in provider namespace %q", providerNamespace)
+	}
+	ca, err := r.providerTLSSecretValue(ctx, tlsSpec.CASecretRef, providerTLSCAKey(tlsSpec.CASecretRef))
+	if err != nil {
+		return "", fmt.Errorf("load CA bundle: %w", err)
+	}
+	cert, err := r.providerTLSSecretValue(ctx, tlsSpec.ClientCertificateSecretRef, providerTLSCertKey(tlsSpec.ClientCertificateSecretRef))
+	if err != nil {
+		return "", fmt.Errorf("load client certificate: %w", err)
+	}
+	key, err := r.providerTLSSecretValue(ctx, tlsSpec.ClientCertificateSecretRef, providerTLSKeyKey(tlsSpec.ClientCertificateSecretRef))
+	if err != nil {
+		return "", fmt.Errorf("load client key: %w", err)
+	}
+
+	name := uploadClientTLSSecretName(img, pp.Name)
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: img.Namespace}}
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
+		secret.Labels = map[string]string{
+			"app.kubernetes.io/managed-by":  "imagebuilder",
+			"imagebuilder.io/vmimage":       img.Name,
+			"imagebuilder.io/provider-name": pp.Name,
+		}
+		secret.Type = corev1.SecretTypeTLS
+		secret.Data = map[string][]byte{
+			"ca.crt":  append([]byte(nil), ca...),
+			"tls.crt": append([]byte(nil), cert...),
+			"tls.key": append([]byte(nil), key...),
+		}
+		return controllerutil.SetControllerReference(img, secret, r.Scheme)
+	})
+	if err != nil {
+		return "", fmt.Errorf("reconcile upload client TLS Secret %s/%s: %w", img.Namespace, name, err)
+	}
+	return name, nil
+}
+
+func (r *VMImageReconciler) providerTLSSecretValue(ctx context.Context, ref *v1alpha1.ProviderTLSSecretRef, key string) ([]byte, error) {
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ref.Namespace}, secret); err != nil {
+		return nil, err
+	}
+	value := secret.Data[key]
+	if len(value) == 0 {
+		return nil, fmt.Errorf("Secret %s/%s key %q is empty or missing", ref.Namespace, ref.Name, key)
+	}
+	return append([]byte(nil), value...), nil
+}
+
+func providerTLSCAKey(ref *v1alpha1.ProviderTLSSecretRef) string {
+	if ref.CAKey != "" {
+		return ref.CAKey
+	}
+	return "ca.crt"
+}
+
+func providerTLSCertKey(ref *v1alpha1.ProviderTLSSecretRef) string {
+	if ref.CertKey != "" {
+		return ref.CertKey
+	}
+	return "tls.crt"
+}
+
+func providerTLSKeyKey(ref *v1alpha1.ProviderTLSSecretRef) string {
+	if ref.KeyKey != "" {
+		return ref.KeyKey
+	}
+	return "tls.key"
+}
+
+func uploadClientTLSSecretName(img *v1alpha1.VMImage, providerName string) string {
+	digest := sha256.Sum256([]byte(img.Namespace + "/" + img.Name + "/" + providerName))
+	return fmt.Sprintf("imagebuilder-upload-tls-%x", digest[:8])
 }
 
 func (r *VMImageReconciler) initProviderForTarget(ctx context.Context, namespace string, target v1alpha1.TargetSpec, providerPlugin platform.Plugin) error {
@@ -1102,7 +1246,13 @@ func (r *VMImageReconciler) cleanupLocalUpload(ctx context.Context, img *v1alpha
 	cleanupJob := &batchv1.Job{}
 	err = r.Get(ctx, types.NamespacedName{Name: cleanupJobName, Namespace: img.Namespace}, cleanupJob)
 	if apierrors.IsNotFound(err) {
-		job, err := uploadpod.AssembleCleanup(img, configs, r.Scheme)
+		connections, err := r.providerConnectionsForTargets(ctx, img, configs)
+		if err != nil {
+			cleanupErr := fmt.Errorf("prepare provider connections for upload cleanup: %w", err)
+			r.markCleanupFailure(ctx, img, "upload-register", "UploadCleanupFailed", cleanupErr)
+			return false, cleanupErr
+		}
+		job, err := uploadpod.AssembleCleanupWithProviderConnections(img, configs, connections, r.Scheme)
 		if err != nil {
 			cleanupErr := fmt.Errorf("assemble upload cleanup job: %w", err)
 			r.markCleanupFailure(ctx, img, "upload-register", "UploadCleanupFailed", cleanupErr)

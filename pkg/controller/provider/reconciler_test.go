@@ -352,6 +352,15 @@ func TestProviderReconcile_MutualTLSMountsProviderServerSecrets(t *testing.T) {
 	}
 	container := dep.Spec.Template.Spec.Containers[0]
 	env := envMap(container.Env)
+	if env["TMPDIR"] != "/var/lib/imagebuilder/uploads" {
+		t.Fatalf("provider TMPDIR = %q", env["TMPDIR"])
+	}
+	if len(dep.Spec.Template.Spec.Volumes) == 0 || dep.Spec.Template.Spec.Volumes[0].Name != "provider-upload-tmp" || dep.Spec.Template.Spec.Volumes[0].EmptyDir == nil {
+		t.Fatalf("provider upload temporary volume = %#v", dep.Spec.Template.Spec.Volumes)
+	}
+	if len(container.VolumeMounts) == 0 || container.VolumeMounts[0].Name != "provider-upload-tmp" || container.VolumeMounts[0].MountPath != "/var/lib/imagebuilder/uploads" || container.VolumeMounts[0].ReadOnly {
+		t.Fatalf("provider upload temporary mount = %#v", container.VolumeMounts)
+	}
 	if env["PROVIDER_GRPC_TLS_MODE"] != "Mutual" ||
 		env["PROVIDER_GRPC_TLS_CERT_FILE"] != "/var/run/imagebuilder/provider-tls/tls.crt" ||
 		env["PROVIDER_GRPC_TLS_KEY_FILE"] != "/var/run/imagebuilder/provider-tls/tls.key" ||

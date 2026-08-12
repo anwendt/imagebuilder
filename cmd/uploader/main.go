@@ -15,6 +15,7 @@ import (
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/controller/uploadpod"
 	"github.com/anwendt/imagebuilder/pkg/plugin"
+	plugingrpc "github.com/anwendt/imagebuilder/pkg/plugin/grpc"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
 	"github.com/anwendt/imagebuilder/pkg/security/netguard"
 
@@ -87,10 +88,11 @@ func run(ctx context.Context, getenv func(string) string) (runResult, error) {
 	images := make([]v1alpha1.ImageStatus, 0, len(targets))
 	operations := make([]v1alpha1.UploadOperationStatus, 0, len(targets))
 	for _, target := range targets {
-		providerPlugin, err := plugin.Default().Get(target.Provider)
+		providerPlugin, closeProvider, err := providerPluginForTarget(ctx, target)
 		if err != nil {
-			return runResult{}, fmt.Errorf("get provider %q: %w", target.Provider, err)
+			return runResult{}, err
 		}
+		defer closeProvider()
 		secretData, err := readSecretData(target.CredentialsPath)
 		if err != nil {
 			return runResult{}, fmt.Errorf("read credentials for %q: %w", target.ProviderConfigName, err)
@@ -116,11 +118,18 @@ func run(ctx context.Context, getenv func(string) string) (runResult, error) {
 		if err := providerPlugin.Validate(ctx, targetSpec); err != nil {
 			return runResult{}, fmt.Errorf("validate provider %q: %w", target.Provider, err)
 		}
+		targetArtifact := *artifact
+		targetArtifact.Metadata = cloneStringMap(artifact.Metadata)
+		if targetArtifact.Metadata == nil {
+			targetArtifact.Metadata = map[string]string{}
+		}
+		targetArtifact.Metadata["providerConfigName"] = target.ProviderConfigName
+		targetArtifact.Metadata["format"] = target.Format
 		uploadStarted := time.Now()
-		uploadResult, err := providerPlugin.Upload(ctx, artifact)
+		uploadResult, err := providerPlugin.Upload(ctx, &targetArtifact)
 		uploadMilliseconds := time.Since(uploadStarted).Milliseconds()
 		if err != nil {
-			_ = providerPlugin.Cleanup(ctx, artifact)
+			_ = providerPlugin.Cleanup(ctx, &targetArtifact)
 			return runResult{}, fmt.Errorf("upload provider %q: %w", target.Provider, err)
 		}
 		if uploadResult.Metadata == nil {
@@ -138,18 +147,18 @@ func run(ctx context.Context, getenv func(string) string) (runResult, error) {
 			ProviderRef:        uploadResult.ProviderRef,
 			Metadata:           cloneStringMap(uploadResult.Metadata),
 		}); err != nil {
-			_ = providerPlugin.Cleanup(ctx, artifact)
+			_ = providerPlugin.Cleanup(ctx, &targetArtifact)
 			return runResult{}, fmt.Errorf("record upload operation for provider %q: %w", target.Provider, err)
 		}
 		registerStarted := time.Now()
 		imageRef, err := providerPlugin.Register(ctx, uploadResult)
 		registerMilliseconds := time.Since(registerStarted).Milliseconds()
 		if err != nil {
-			_ = providerPlugin.Cleanup(ctx, artifact)
+			_ = providerPlugin.Cleanup(ctx, &targetArtifact)
 			return runResult{}, fmt.Errorf("register provider %q: %w", target.Provider, err)
 		}
 		if imageRef == nil || imageRef.ID == "" {
-			_ = providerPlugin.Cleanup(ctx, artifact)
+			_ = providerPlugin.Cleanup(ctx, &targetArtifact)
 			return runResult{}, fmt.Errorf("provider %q returned empty image reference", target.Provider)
 		}
 		uploadResult.Metadata["imageRef"] = imageRef.ID
@@ -217,10 +226,11 @@ func cleanupUploadedArtifacts(ctx context.Context, workspace string, getenv func
 		if op.Provider != "" && op.Provider != target.Provider {
 			return runResult{}, fmt.Errorf("cleanup operation provider %q does not match ProviderConfig %q provider %q", op.Provider, op.ProviderConfigName, target.Provider)
 		}
-		providerPlugin, err := plugin.Default().Get(target.Provider)
+		providerPlugin, closeProvider, err := providerPluginForTarget(ctx, target)
 		if err != nil {
-			return runResult{}, fmt.Errorf("get provider %q: %w", target.Provider, err)
+			return runResult{}, err
 		}
+		defer closeProvider()
 		secretData, err := readSecretData(target.CredentialsPath)
 		if err != nil {
 			return runResult{}, fmt.Errorf("read credentials for %q: %w", target.ProviderConfigName, err)
@@ -252,6 +262,59 @@ func cleanupUploadedArtifacts(ctx context.Context, workspace string, getenv func
 		}
 	}
 	return runResult{}, nil
+}
+
+func providerPluginForTarget(ctx context.Context, target uploadpod.TargetConfig) (platform.Plugin, func(), error) {
+	if target.GRPC == nil {
+		providerPlugin, err := plugin.Default().Get(target.Provider)
+		if err != nil {
+			return nil, func() {}, fmt.Errorf("get provider %q: %w", target.Provider, err)
+		}
+		return providerPlugin, func() {}, nil
+	}
+	if target.GRPC.Address == "" {
+		return nil, func() {}, fmt.Errorf("gRPC address for provider %q is required", target.Provider)
+	}
+	tlsConfig, err := providerTLSConfig(target.GRPC.TLS)
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("load gRPC TLS config for provider %q: %w", target.Provider, err)
+	}
+	adapter := plugingrpc.NewAdapterWithTLS(target.GRPC.Address, tlsConfig)
+	if err := adapter.Connect(ctx); err != nil {
+		return nil, func() {}, fmt.Errorf("connect to PlatformProvider %q at %s: %w", target.Provider, target.GRPC.Address, err)
+	}
+	if adapter.Name() != target.Provider {
+		_ = adapter.Close()
+		return nil, func() {}, fmt.Errorf("PlatformProvider at %s reported name %q, want %q", target.GRPC.Address, adapter.Name(), target.Provider)
+	}
+	return adapter, func() { _ = adapter.Close() }, nil
+}
+
+func providerTLSConfig(config *uploadpod.GRPCTLSConfig) (*plugingrpc.ProviderTLSConfig, error) {
+	if config == nil {
+		return nil, nil
+	}
+	if config.CAPath == "" || config.ClientCertPath == "" || config.ClientKeyPath == "" {
+		return nil, fmt.Errorf("CA, client certificate, and client key paths are required")
+	}
+	ca, err := os.ReadFile(config.CAPath) // #nosec G304 -- Paths are injected by the trusted controller into the upload Job.
+	if err != nil {
+		return nil, fmt.Errorf("read CA bundle: %w", err)
+	}
+	cert, err := os.ReadFile(config.ClientCertPath) // #nosec G304 -- Paths are injected by the trusted controller into the upload Job.
+	if err != nil {
+		return nil, fmt.Errorf("read client certificate: %w", err)
+	}
+	key, err := os.ReadFile(config.ClientKeyPath) // #nosec G304 -- Paths are injected by the trusted controller into the upload Job.
+	if err != nil {
+		return nil, fmt.Errorf("read client key: %w", err)
+	}
+	return &plugingrpc.ProviderTLSConfig{
+		ServerName: config.ServerName,
+		CABundle:   ca,
+		ClientCert: cert,
+		ClientKey:  key,
+	}, nil
 }
 
 func validateProviderEndpoint(ctx context.Context, target uploadpod.TargetConfig) error {

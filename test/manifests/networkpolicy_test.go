@@ -42,8 +42,13 @@ func TestNetworkPoliciesRestrictProviderGRPCToOperator(t *testing.T) {
 	if !selectsProviderPods(provider) {
 		t.Fatalf("provider policy does not select provider pods: %#v", provider.Spec.PodSelector)
 	}
-	if !ingressOnlyAllowsOperatorGRPC(provider) {
-		t.Fatalf("provider policy must allow only operator ingress on TCP/50051: %#v", provider.Spec.Ingress)
+	if !ingressAllowsOperatorAndUploadGRPC(provider) {
+		t.Fatalf("provider policy must allow operator and managed upload Job ingress on TCP/50051: %#v", provider.Spec.Ingress)
+	}
+
+	jobs := policies["imagebuilder-build-upload-jobs"]
+	if jobs == nil || !egressAllowsProviderGRPC(jobs) {
+		t.Fatalf("build/upload policy must allow egress to provider gRPC on 50051: %#v", jobs)
 	}
 }
 
@@ -283,18 +288,25 @@ func selectsProviderPods(policy *networkingv1.NetworkPolicy) bool {
 	return false
 }
 
-func ingressOnlyAllowsOperatorGRPC(policy *networkingv1.NetworkPolicy) bool {
-	if len(policy.Spec.Ingress) != 1 {
+func ingressAllowsOperatorAndUploadGRPC(policy *networkingv1.NetworkPolicy) bool {
+	if len(policy.Spec.Ingress) != 2 {
 		return false
 	}
-	ingress := policy.Spec.Ingress[0]
-	if len(ingress.From) != 1 || ingress.From[0].PodSelector == nil {
-		return false
+	operatorAllowed := false
+	uploadAllowed := false
+	for _, ingress := range policy.Spec.Ingress {
+		if len(ingress.From) != 1 || ingress.From[0].PodSelector == nil || !hasSingleTCPPort(ingress.Ports, 50051) {
+			continue
+		}
+		labels := ingress.From[0].PodSelector.MatchLabels
+		if labels["app.kubernetes.io/name"] == "imagebuilder-operator" {
+			operatorAllowed = true
+		}
+		if labels["app.kubernetes.io/managed-by"] == "imagebuilder" && labels["imagebuilder.io/job-kind"] == "upload" {
+			uploadAllowed = true
+		}
 	}
-	if ingress.From[0].PodSelector.MatchLabels["app.kubernetes.io/name"] != "imagebuilder-operator" {
-		return false
-	}
-	return hasSingleTCPPort(ingress.Ports, 50051)
+	return operatorAllowed && uploadAllowed
 }
 
 func egressAllowsProviderGRPC(policy *networkingv1.NetworkPolicy) bool {

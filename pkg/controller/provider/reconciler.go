@@ -45,6 +45,8 @@ const (
 	defaultProviderNamespace  = "imagebuilder-system"
 	providerTLSMountPath      = "/var/run/imagebuilder/provider-tls"
 	providerClientCAMountPath = "/var/run/imagebuilder/provider-client-ca"
+	providerUploadTempPath    = "/var/lib/imagebuilder/uploads"
+	providerUploadTempVolume  = "provider-upload-tmp"
 )
 
 // PlatformProviderReconciler reconciles PlatformProvider resources.
@@ -198,8 +200,20 @@ func (r *PlatformProviderReconciler) buildDeployment(pp *v1alpha1.PlatformProvid
 			},
 		},
 	}
+	container.Env = append(container.Env, corev1.EnvVar{Name: "TMPDIR", Value: providerUploadTempPath})
 	container.Env = append(container.Env, pp.Spec.Env...)
-	var volumes []corev1.Volume
+	container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+		Name:      providerUploadTempVolume,
+		MountPath: providerUploadTempPath,
+	})
+	volumes := []corev1.Volume{
+		{
+			Name: providerUploadTempVolume,
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		},
+	}
 	if tlsSpec := providerMutualTLS(pp); tlsSpec != nil {
 		container.Env = append(container.Env,
 			corev1.EnvVar{Name: "PROVIDER_GRPC_TLS_MODE", Value: "Mutual"},

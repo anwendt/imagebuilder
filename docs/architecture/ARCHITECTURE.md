@@ -226,10 +226,10 @@ providers by name when processing targets.
 
 6. Controller creates a Kubernetes Job with:
    - Init containers for each provisioner
-   - Main container for artifact upload
-   - emptyDir volume /workspace shared between all containers
+  - Main builder container
+  - A PVC-backed `/workspace` when a separate upload Job is required
    - Optional PVC volume /cache when spec.build.cache.ref is configured
-   - Environment references to ProviderConfig secrets (injected, not copied)
+  - No platform credentials in the builder container
 
 7. Build Engine (QEMU/diskimage-builder/SDK):
    - Reuses a verified checksum-addressed source cache entry when present
@@ -248,11 +248,22 @@ providers by name when processing targets.
 9. Controller detects Job completion
    Sets status.phase = Uploading
 
-10. Artifact uploader (main container):
+10. Controller creates a separate artifact upload Job:
     For each target:
-      a. Calls provider.UploadArtifact() via gRPC (streaming)
-      b. Calls provider.RegisterImage() with provider-specific metadata
-      c. Provider returns ImageRef (AMI ID, OVA path, template UUID, etc.)
+      a. Resolves a healthy `PlatformProvider` to its managed ClusterIP Service
+      b. Mounts the referenced `ProviderConfig` credentials into the upload Pod
+      c. Calls `ValidateConfig()` and streams the artifact with `UploadArtifact()`
+         directly from the upload Pod to the provider over gRPC
+      d. Calls `RegisterImage()` with provider-specific metadata
+      e. Provider returns ImageRef (AMI ID, OVA path, template UUID, etc.)
+
+    When no matching `PlatformProvider` CR exists, the uploader retains the
+    built-in provider path for backward compatibility. With provider mTLS,
+    the controller creates a VMImage-owned client TLS Secret in the workload
+    namespace and mounts it read-only into the upload Pod. Provider Pods keep
+    their root filesystem read-only and spool incoming streams to a dedicated
+    writable `emptyDir` mounted at `/var/lib/imagebuilder/uploads` before the
+    provider-specific cloud SDK consumes the artifact.
 
 11. Controller updates VMImage.status:
     - status.phase = Ready
@@ -505,7 +516,7 @@ Core Operator ServiceAccount
   ClusterRole:
     - get/list/watch/update: VMImage, PlatformProvider (update for finalizers)
     - get/list/watch: ProviderConfig
-    - get/list/watch: Secrets (read-only, credentials)
+    - get/create/update: Secrets (read credentials and reconcile VMImage-owned upload mTLS bundles)
     - create/get/list/watch/delete: Jobs (build jobs)
     - create/get/list/watch/delete: Deployments (provider pods)
     - create/patch: Events

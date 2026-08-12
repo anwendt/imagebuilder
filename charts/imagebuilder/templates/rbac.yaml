@@ -28,7 +28,7 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get"]
+    verbs: ["get", "create", "update"]
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["create", "delete"]

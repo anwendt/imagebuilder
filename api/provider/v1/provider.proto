@@ -22,8 +22,8 @@ package imagebuilder.provider.v1;
 option go_package = "github.com/anwendt/imagebuilder/api/provider/v1;providerv1";
 
 // PlatformProvider is the gRPC service that every external provider pod must implement.
-// The operator connects to the provider via a Unix socket at /var/run/provider/plugin.sock
-// inside the provider pod (shared via emptyDir volume between operator sidecar and provider).
+// The operator and upload Jobs connect to the provider's controller-managed
+// ClusterIP Service over TCP, optionally protected by mutual TLS.
 service PlatformProvider {
   // GetCapabilities is called once after the provider pod becomes ready.
   // The operator uses the response to populate PlatformProvider.status.capabilities

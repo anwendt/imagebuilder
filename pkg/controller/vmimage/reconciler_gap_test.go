@@ -10,6 +10,7 @@ package vmimage_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -25,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
+	"github.com/anwendt/imagebuilder/pkg/controller/uploadpod"
 	"github.com/anwendt/imagebuilder/pkg/controller/vmimage"
 	"github.com/anwendt/imagebuilder/pkg/plugin"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
@@ -767,6 +769,139 @@ func TestReconcile_Uploading_CreatesUploadJob(t *testing.T) {
 	job := &batchv1.Job{}
 	if err := c.Get(context.Background(), types.NamespacedName{Name: "upload-pipeline-upload", Namespace: "default"}, job); err != nil {
 		t.Fatalf("upload job was not created: %v", err)
+	}
+}
+
+func TestReconcile_Uploading_UsesHealthyPlatformProviderService(t *testing.T) {
+	provCfg := &v1alpha1.ProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "custom-cfg", Namespace: "default"},
+		Spec: v1alpha1.ProviderConfigSpec{
+			Provider:    "custom",
+			Credentials: v1alpha1.CredentialsSpec{SecretRef: v1alpha1.SecretRef{Name: "custom-secret"}},
+		},
+	}
+	platformProvider := &v1alpha1.PlatformProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "custom"},
+		Status: v1alpha1.PlatformProviderStatus{
+			Phase: "Healthy",
+			Capabilities: &v1alpha1.ProviderCapabilities{
+				ProviderName:    "custom",
+				ProviderVersion: "v1.0.0",
+				Formats:         []string{"raw"},
+				OSFamilies:      []string{"linux"},
+				ProtocolVersion: "v1",
+			},
+		},
+	}
+	img := newImg("upload-grpc", "default", v1alpha1.PhaseUploading)
+	img.Finalizers = []string{"imagebuilder.io/cleanup"}
+	img.Spec.Targets = []v1alpha1.TargetSpec{{
+		ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "custom-cfg"},
+		Format:            "raw",
+	}}
+	img.Status.BuildArtifact = &v1alpha1.ArtifactStatus{Path: "/workspace/artifact.raw", Format: "raw", SizeBytes: 42, OS: "linux"}
+	img.Spec.Build.ArtifactStorage = &v1alpha1.ArtifactStorageSpec{Type: "pvc"}
+
+	s := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img, provCfg, platformProvider).Build()
+	r := &vmimage.VMImageReconciler{
+		Client:            c,
+		Scheme:            s,
+		Registry:          plugin.Default(),
+		ProviderNamespace: "imagebuilder-system",
+	}
+	reconcileOnce(t, r, "upload-grpc", "default")
+
+	job := &batchv1.Job{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "upload-grpc-upload", Namespace: "default"}, job); err != nil {
+		t.Fatalf("upload job was not created: %v", err)
+	}
+	var targets []uploadpod.TargetConfig
+	if err := json.Unmarshal([]byte(envValue(job.Spec.Template.Spec.Containers[0].Env, "UPLOAD_TARGETS_JSON")), &targets); err != nil {
+		t.Fatalf("parse UPLOAD_TARGETS_JSON: %v", err)
+	}
+	if len(targets) != 1 || targets[0].GRPC == nil || targets[0].GRPC.Address != "provider-custom.imagebuilder-system.svc:50051" {
+		t.Fatalf("targets = %#v, want direct PlatformProvider route", targets)
+	}
+}
+
+func TestReconcile_Uploading_MaterializesProviderMTLSSecret(t *testing.T) {
+	provCfg := &v1alpha1.ProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "custom-cfg", Namespace: "workloads"},
+		Spec: v1alpha1.ProviderConfigSpec{
+			Provider:    "custom",
+			Credentials: v1alpha1.CredentialsSpec{SecretRef: v1alpha1.SecretRef{Name: "custom-secret"}},
+		},
+	}
+	platformProvider := &v1alpha1.PlatformProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "custom"},
+		Spec: v1alpha1.PlatformProviderSpec{
+			Transport: &v1alpha1.ProviderTransportSpec{TLS: &v1alpha1.ProviderTransportTLSSpec{
+				Mode:       "Mutual",
+				ServerName: "custom.internal.test",
+				CASecretRef: &v1alpha1.ProviderTLSSecretRef{
+					Name: "provider-ca", Namespace: "imagebuilder-system", CAKey: "root.pem",
+				},
+				ClientCertificateSecretRef: &v1alpha1.ProviderTLSSecretRef{
+					Name: "provider-client", Namespace: "imagebuilder-system", CertKey: "client.pem", KeyKey: "client-key.pem",
+				},
+			}},
+		},
+		Status: v1alpha1.PlatformProviderStatus{
+			Phase: "Healthy",
+			Capabilities: &v1alpha1.ProviderCapabilities{
+				ProviderName: "custom", ProviderVersion: "v1.0.0", ProtocolVersion: "v1",
+			},
+		},
+	}
+	caSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "provider-ca", Namespace: "imagebuilder-system"},
+		Data:       map[string][]byte{"root.pem": []byte("ca-data")},
+	}
+	clientSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "provider-client", Namespace: "imagebuilder-system"},
+		Data: map[string][]byte{
+			"client.pem":     []byte("cert-data"),
+			"client-key.pem": []byte("key-data"),
+		},
+	}
+	img := newImg("upload-mtls", "workloads", v1alpha1.PhaseUploading)
+	img.Finalizers = []string{"imagebuilder.io/cleanup"}
+	img.Spec.Targets = []v1alpha1.TargetSpec{{ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "custom-cfg"}, Format: "raw"}}
+	img.Status.BuildArtifact = &v1alpha1.ArtifactStatus{Path: "/workspace/artifact.raw", Format: "raw", SizeBytes: 42, OS: "linux"}
+	img.Spec.Build.ArtifactStorage = &v1alpha1.ArtifactStorageSpec{Type: "pvc"}
+
+	s := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(
+		img, provCfg, platformProvider, caSecret, clientSecret,
+	).Build()
+	r := &vmimage.VMImageReconciler{Client: c, Scheme: s, Registry: plugin.Default(), ProviderNamespace: "imagebuilder-system"}
+	reconcileOnce(t, r, "upload-mtls", "workloads")
+
+	job := &batchv1.Job{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "upload-mtls-upload", Namespace: "workloads"}, job); err != nil {
+		t.Fatalf("upload job was not created: %v", err)
+	}
+	var targets []uploadpod.TargetConfig
+	if err := json.Unmarshal([]byte(envValue(job.Spec.Template.Spec.Containers[0].Env, "UPLOAD_TARGETS_JSON")), &targets); err != nil {
+		t.Fatalf("parse UPLOAD_TARGETS_JSON: %v", err)
+	}
+	if len(targets) != 1 || targets[0].GRPC == nil || targets[0].GRPC.TLS == nil || targets[0].GRPC.TLS.ServerName != "custom.internal.test" {
+		t.Fatalf("targets = %#v, want mTLS PlatformProvider route", targets)
+	}
+	if len(job.Spec.Template.Spec.Volumes) != 3 || job.Spec.Template.Spec.Volumes[2].Secret == nil {
+		t.Fatalf("upload Job volumes = %#v", job.Spec.Template.Spec.Volumes)
+	}
+	materialized := &corev1.Secret{}
+	secretName := job.Spec.Template.Spec.Volumes[2].Secret.SecretName
+	if err := c.Get(context.Background(), types.NamespacedName{Name: secretName, Namespace: "workloads"}, materialized); err != nil {
+		t.Fatalf("materialized mTLS Secret not found: %v", err)
+	}
+	if string(materialized.Data["ca.crt"]) != "ca-data" || string(materialized.Data["tls.crt"]) != "cert-data" || string(materialized.Data["tls.key"]) != "key-data" {
+		t.Fatalf("materialized Secret data = %#v", materialized.Data)
+	}
+	if len(materialized.OwnerReferences) != 1 || materialized.OwnerReferences[0].UID != img.UID {
+		t.Fatalf("materialized Secret owner references = %#v", materialized.OwnerReferences)
 	}
 }
 
