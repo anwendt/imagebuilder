@@ -948,6 +948,12 @@ spec:
                   - providerConfig
                   type: object
                 type: array
+              nextRemoteRetryTime:
+                description: |-
+                  NextRemoteRetryTime is the earliest time at which the controller will call
+                  the remote provider again after a transient error.
+                format: date-time
+                type: string
               observedGeneration:
                 description: |-
                   ObservedGeneration is the metadata generation for which this status was
@@ -980,6 +986,13 @@ spec:
                   RemoteBuildRef is the provider-specific operation reference for a remote build.
                   It is intentionally opaque and must not contain secrets.
                 type: string
+              remoteRetryCount:
+                description: |-
+                  RemoteRetryCount is the number of consecutive transient provider errors
+                  for the current remote build. It resets after a successful provider call.
+                format: int32
+                minimum: 0
+                type: integer
               scheduledNodeName:
                 description: |-
                   ScheduledNodeName is the concrete Kubernetes node selected by the

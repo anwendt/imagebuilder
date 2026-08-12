@@ -1306,6 +1306,10 @@ func (in *VMImageStatus) DeepCopyInto(out *VMImageStatus) {
 		*out = new(string)
 		**out = **in
 	}
+	if in.NextRemoteRetryTime != nil {
+		in, out := &in.NextRemoteRetryTime, &out.NextRemoteRetryTime
+		*out = (*in).DeepCopy()
+	}
 	if in.BuildLeaseRefs != nil {
 		in, out := &in.BuildLeaseRefs, &out.BuildLeaseRefs
 		*out = make([]string, len(*in))

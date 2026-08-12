@@ -30,6 +30,7 @@ import (
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/plugin"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
+	providererrors "github.com/anwendt/imagebuilder/pkg/provider/errors"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -419,7 +420,7 @@ func (p *Plugin) ReconcileRemoteBuild(ctx context.Context, req *platform.RemoteB
 			GuestAccess:        req.GuestAccess,
 		})
 		if err != nil {
-			return nil, err
+			return nil, classifyAzureRemoteError(err)
 		}
 		result := &platform.RemoteBuildResult{
 			OperationRef: state.OperationRef,
@@ -472,7 +473,7 @@ func (p *Plugin) ReconcileRemoteBuild(ctx context.Context, req *platform.RemoteB
 	}
 	ref, err := p.client.RegisterImage(ctx, input)
 	if err != nil {
-		return nil, fmt.Errorf("azure plugin: register remote source image: %w", err)
+		return nil, fmt.Errorf("azure plugin: register remote source image: %w", classifyAzureRemoteError(err))
 	}
 	return &platform.RemoteBuildResult{
 		OperationRef: "azure:" + sourceType + ":" + sourceRef,
@@ -493,6 +494,17 @@ func (p *Plugin) ReconcileRemoteBuild(ctx context.Context, req *platform.RemoteB
 			ResultRef: ref.ID,
 		},
 	}, nil
+}
+
+func classifyAzureRemoteError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var responseError *azcore.ResponseError
+	if errors.As(err, &responseError) && (responseError.StatusCode == http.StatusRequestTimeout || responseError.StatusCode == http.StatusTooManyRequests || responseError.StatusCode >= 500) {
+		return providererrors.Transient(err, 0)
+	}
+	return providererrors.Classify(err)
 }
 
 func (p *Plugin) CleanupRemoteBuild(ctx context.Context, req *platform.RemoteBuildRequest) error {

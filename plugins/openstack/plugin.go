@@ -10,6 +10,7 @@ import (
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/plugin"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
+	providererrors "github.com/anwendt/imagebuilder/pkg/provider/errors"
 )
 
 func init() {
@@ -272,7 +273,7 @@ func (p *Plugin) ReconcileRemoteBuild(ctx context.Context, req *platform.RemoteB
 		GuestAccess:        req.GuestAccess,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("openstack plugin: reconcile remote build: %w", err)
+		return nil, fmt.Errorf("openstack plugin: reconcile remote build: %w", providererrors.Classify(err))
 	}
 	if state == nil {
 		return nil, fmt.Errorf("openstack plugin: remote build client returned nil state")

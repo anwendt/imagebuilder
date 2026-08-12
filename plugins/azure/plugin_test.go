@@ -7,9 +7,19 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
+	providererrors "github.com/anwendt/imagebuilder/pkg/provider/errors"
 )
+
+func TestClassifyAzureRemoteError_RateLimitIsTransient(t *testing.T) {
+	err := classifyAzureRemoteError(&azcore.ResponseError{StatusCode: 429, ErrorCode: "TooManyRequests"})
+	if !providererrors.IsTransient(err) {
+		t.Fatalf("Azure 429 was not classified as transient: %v", err)
+	}
+}
 
 func validConfig() platform.PluginConfig {
 	return platform.PluginConfig{

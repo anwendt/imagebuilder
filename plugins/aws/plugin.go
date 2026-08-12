@@ -33,6 +33,7 @@ import (
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/plugin"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
+	providererrors "github.com/anwendt/imagebuilder/pkg/provider/errors"
 )
 
 func init() {
@@ -307,7 +308,8 @@ func (p *AWSPlugin) ReconcileRemoteBuild(ctx context.Context, req *platform.Remo
 		return nil, fmt.Errorf("aws plugin: remote build source providerRef is required")
 	}
 	if req.SourceType == "snapshot" {
-		return p.reconcileSnapshotImage(ctx, req)
+		result, err := p.reconcileSnapshotImage(ctx, req)
+		return result, providererrors.Classify(err)
 	}
 
 	client := p.remoteClient
@@ -336,7 +338,7 @@ func (p *AWSPlugin) ReconcileRemoteBuild(ctx context.Context, req *platform.Remo
 		Timeout:           req.Timeout,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("aws plugin: reconcile remote build: %w", err)
+		return nil, fmt.Errorf("aws plugin: reconcile remote build: %w", providererrors.Classify(err))
 	}
 	if state == nil {
 		return nil, fmt.Errorf("aws plugin: remote build client returned nil state")

@@ -25,6 +25,7 @@ import (
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/plugin"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
+	providererrors "github.com/anwendt/imagebuilder/pkg/provider/errors"
 )
 
 func init() {
@@ -345,7 +346,7 @@ func (p *Plugin) ReconcileRemoteBuild(ctx context.Context, req *platform.RemoteB
 		GuestAccess:        req.GuestAccess,
 	})
 	if err != nil {
-		return nil, err
+		return nil, providererrors.Classify(err)
 	}
 	result := &platform.RemoteBuildResult{
 		OperationRef: state.OperationRef,

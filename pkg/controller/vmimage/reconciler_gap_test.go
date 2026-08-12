@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
@@ -30,6 +31,7 @@ import (
 	"github.com/anwendt/imagebuilder/pkg/controller/vmimage"
 	"github.com/anwendt/imagebuilder/pkg/plugin"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
+	providererrors "github.com/anwendt/imagebuilder/pkg/provider/errors"
 )
 
 // ---------------------------------------------------------------------------
@@ -308,6 +310,124 @@ func TestReconcile_RemoteBuild_ProviderUnsupported_SetsFailed(t *testing.T) {
 	}
 	if got := conditionReason(updated, "Failed"); got != "RemoteBuildUnsupported" {
 		t.Fatalf("Failed reason = %q, want RemoteBuildUnsupported", got)
+	}
+}
+
+func TestReconcile_RemoteBuild_TransientErrorRetriesWithoutCleanup(t *testing.T) {
+	img, provCfg := remoteTestImage("remote-transient")
+	providerPlugin := &fakeRemoteBuildPlugin{
+		fakeRegistryPlugin: fakeRegistryPlugin{name: "aws"},
+		remoteErr:          providererrors.Transient(errors.New("provider throttled"), 0),
+	}
+	r, c := remoteTestReconciler(t, img, provCfg, providerPlugin)
+
+	reconcileOnce(t, r, img.Name, img.Namespace) // initialize remote build status
+	result := reconcileOnce(t, r, img.Name, img.Namespace)
+	if result.RequeueAfter != 15*time.Second {
+		t.Fatalf("retry delay = %s, want 15s", result.RequeueAfter)
+	}
+	updated := &v1alpha1.VMImage{}
+	c.Get(context.Background(), types.NamespacedName{Name: img.Name, Namespace: img.Namespace}, updated) //nolint:errcheck
+	if updated.Status.Phase == v1alpha1.PhaseFailed {
+		t.Fatalf("transient error made VMImage terminal: %#v", updated.Status)
+	}
+	if updated.Status.RemoteRetryCount != 1 || updated.Status.NextRemoteRetryTime == nil {
+		t.Fatalf("retry status = count %d next %#v", updated.Status.RemoteRetryCount, updated.Status.NextRemoteRetryTime)
+	}
+	if got := conditionReason(updated, "RemoteBuildRetrying"); got != "TransientProviderError" {
+		t.Fatalf("RemoteBuildRetrying reason = %q", got)
+	}
+	if providerPlugin.cleanupCalls != 0 {
+		t.Fatalf("cleanup calls = %d, want 0 for transient error", providerPlugin.cleanupCalls)
+	}
+
+	result = reconcileOnce(t, r, img.Name, img.Namespace)
+	if result.RequeueAfter <= 0 || providerPlugin.remoteCalls != 1 {
+		t.Fatalf("backoff gate result=%+v remoteCalls=%d", result, providerPlugin.remoteCalls)
+	}
+}
+
+func TestReconcile_RemoteBuild_TransientInitErrorRetries(t *testing.T) {
+	img, provCfg := remoteTestImage("remote-init-transient")
+	providerPlugin := &fakeRemoteBuildPlugin{
+		fakeRegistryPlugin: fakeRegistryPlugin{
+			name:    "aws",
+			initErr: providererrors.Transient(errors.New("validation endpoint unavailable"), 0),
+		},
+	}
+	r, c := remoteTestReconciler(t, img, provCfg, providerPlugin)
+	reconcileOnce(t, r, img.Name, img.Namespace)
+	result := reconcileOnce(t, r, img.Name, img.Namespace)
+	if result.RequeueAfter != 15*time.Second {
+		t.Fatalf("retry delay = %s, want 15s", result.RequeueAfter)
+	}
+	updated := &v1alpha1.VMImage{}
+	c.Get(context.Background(), types.NamespacedName{Name: img.Name, Namespace: img.Namespace}, updated) //nolint:errcheck
+	if updated.Status.Phase == v1alpha1.PhaseFailed || updated.Status.RemoteRetryCount != 1 {
+		t.Fatalf("transient init status = %#v", updated.Status)
+	}
+	if providerPlugin.remoteCalls != 0 || providerPlugin.cleanupCalls != 0 {
+		t.Fatalf("remoteCalls=%d cleanupCalls=%d", providerPlugin.remoteCalls, providerPlugin.cleanupCalls)
+	}
+}
+
+func TestReconcile_RemoteBuild_TransientBackoffIncreasesAndRecovers(t *testing.T) {
+	img, provCfg := remoteTestImage("remote-recovery")
+	providerPlugin := &fakeRemoteBuildPlugin{
+		fakeRegistryPlugin: fakeRegistryPlugin{name: "aws"},
+		remoteErr:          providererrors.Transient(errors.New("temporary outage"), 0),
+	}
+	r, c := remoteTestReconciler(t, img, provCfg, providerPlugin)
+	reconcileOnce(t, r, img.Name, img.Namespace)
+	reconcileOnce(t, r, img.Name, img.Namespace)
+
+	updated := &v1alpha1.VMImage{}
+	c.Get(context.Background(), types.NamespacedName{Name: img.Name, Namespace: img.Namespace}, updated) //nolint:errcheck
+	past := metav1.NewTime(time.Now().Add(-time.Second))
+	updated.Status.NextRemoteRetryTime = &past
+	if err := c.Status().Update(context.Background(), updated); err != nil {
+		t.Fatalf("make retry due: %v", err)
+	}
+	result := reconcileOnce(t, r, img.Name, img.Namespace)
+	if result.RequeueAfter != 30*time.Second {
+		t.Fatalf("second retry delay = %s, want 30s", result.RequeueAfter)
+	}
+
+	c.Get(context.Background(), types.NamespacedName{Name: img.Name, Namespace: img.Namespace}, updated) //nolint:errcheck
+	past = metav1.NewTime(time.Now().Add(-time.Second))
+	updated.Status.NextRemoteRetryTime = &past
+	if err := c.Status().Update(context.Background(), updated); err != nil {
+		t.Fatalf("make recovery retry due: %v", err)
+	}
+	providerPlugin.remoteErr = nil
+	providerPlugin.result = &platform.RemoteBuildResult{Phase: platform.RemoteBuildPhaseBooting, Message: "recovered"}
+	result = reconcileOnce(t, r, img.Name, img.Namespace)
+	if result.RequeueAfter != 15*time.Second {
+		t.Fatalf("progress requeue = %s, want 15s", result.RequeueAfter)
+	}
+	c.Get(context.Background(), types.NamespacedName{Name: img.Name, Namespace: img.Namespace}, updated) //nolint:errcheck
+	if updated.Status.RemoteRetryCount != 0 || updated.Status.NextRemoteRetryTime != nil {
+		t.Fatalf("retry state was not reset: count %d next %#v", updated.Status.RemoteRetryCount, updated.Status.NextRemoteRetryTime)
+	}
+	if got := conditionReason(updated, "RemoteBuildRetrying"); got != "RemoteBuildRecovered" {
+		t.Fatalf("recovery reason = %q", got)
+	}
+}
+
+func TestReconcile_RemoteBuild_TerminalErrorFailsAndCleansUp(t *testing.T) {
+	img, provCfg := remoteTestImage("remote-terminal")
+	providerPlugin := &fakeRemoteBuildPlugin{
+		fakeRegistryPlugin: fakeRegistryPlugin{name: "aws"},
+		remoteErr:          errors.New("invalid source image"),
+	}
+	r, c := remoteTestReconciler(t, img, provCfg, providerPlugin)
+	reconcileOnce(t, r, img.Name, img.Namespace)
+	reconcileOnce(t, r, img.Name, img.Namespace)
+
+	updated := &v1alpha1.VMImage{}
+	c.Get(context.Background(), types.NamespacedName{Name: img.Name, Namespace: img.Namespace}, updated) //nolint:errcheck
+	if updated.Status.Phase != v1alpha1.PhaseFailed || providerPlugin.cleanupCalls != 1 {
+		t.Fatalf("terminal result phase=%q cleanupCalls=%d", updated.Status.Phase, providerPlugin.cleanupCalls)
 	}
 }
 
@@ -952,8 +1072,37 @@ func TestReconcile_Uploading_UploadJobFailed_SetsFailed(t *testing.T) {
 // Fake plugin for registry (minimal — only Name() matters)
 // ---------------------------------------------------------------------------
 
+func remoteTestImage(name string) (*v1alpha1.VMImage, *v1alpha1.ProviderConfig) {
+	providerConfig := &v1alpha1.ProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "aws-cfg", Namespace: "default"},
+		Spec:       v1alpha1.ProviderConfigSpec{Provider: "aws"},
+	}
+	img := newImg(name, "default", v1alpha1.PhasePending)
+	img.Finalizers = []string{"imagebuilder.io/cleanup"}
+	img.Spec.Build.Mode = v1alpha1.BuildModeRemote
+	img.Spec.Source.URL = ""
+	img.Spec.Source.ProviderRef = "ami-0123456789abcdef0"
+	img.Spec.Targets = []v1alpha1.TargetSpec{{
+		ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: providerConfig.Name},
+		Format:            "ami",
+	}}
+	return img, providerConfig
+}
+
+func remoteTestReconciler(t *testing.T, img *v1alpha1.VMImage, providerConfig *v1alpha1.ProviderConfig, providerPlugin *fakeRemoteBuildPlugin) (*vmimage.VMImageReconciler, client.Client) {
+	t.Helper()
+	registry := plugin.NewRegistry(slog.Default())
+	if err := registry.Register(providerPlugin); err != nil {
+		t.Fatalf("register provider: %v", err)
+	}
+	scheme := testScheme(t)
+	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img, providerConfig).Build()
+	return &vmimage.VMImageReconciler{Client: kubeClient, Scheme: scheme, Registry: registry}, kubeClient
+}
+
 type fakeRegistryPlugin struct {
 	name           string
+	initErr        error
 	validateErr    error
 	validateCalls  int
 	uploadResult   *platform.UploadResult
@@ -970,7 +1119,7 @@ func (p *fakeRegistryPlugin) Name() string                                      
 func (p *fakeRegistryPlugin) Version() string                                       { return "v0.0.1" }
 func (p *fakeRegistryPlugin) SupportedFormats() []platform.ImageFormat              { return nil }
 func (p *fakeRegistryPlugin) SupportedOS() []platform.OSFamily                      { return nil }
-func (p *fakeRegistryPlugin) Init(_ context.Context, _ platform.PluginConfig) error { return nil }
+func (p *fakeRegistryPlugin) Init(_ context.Context, _ platform.PluginConfig) error { return p.initErr }
 func (p *fakeRegistryPlugin) Validate(_ context.Context, _ v1alpha1.TargetSpec) error {
 	p.validateCalls++
 	return p.validateErr

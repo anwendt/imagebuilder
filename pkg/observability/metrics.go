@@ -66,6 +66,11 @@ var (
 		Help: "VMImage failures classified by phase, reason, and provider.",
 	}, []string{"phase", "reason", "provider"})
 
+	RemoteBuildRetriesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "imagebuilder_remote_build_retries_total",
+		Help: "Transient remote provider errors retried by provider.",
+	}, []string{"provider"})
+
 	CleanupFailuresTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "imagebuilder_cleanup_failures_total",
 		Help: "Cleanup failures classified by cleanup scope, reason, and provider.",
@@ -85,6 +90,7 @@ func Register() {
 			ActiveBuilds,
 			ProviderHealthy,
 			FailuresTotal,
+			RemoteBuildRetriesTotal,
 			CleanupFailuresTotal,
 		)
 	})

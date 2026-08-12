@@ -80,6 +80,27 @@ ValidateConfig receives:
 Return an error when credentials or configuration are invalid. The SDK maps that
 to `ValidateConfigResponse{valid:false}`.
 
+## Remote-build error classification
+
+`ReconcileRemoteBuild` errors are terminal by default. External providers must
+mark errors as transient only when repeating the same idempotent request is
+safe, for example throttling, temporary service unavailability, or a transport
+timeout:
+
+```go
+return sdk.RemoteBuildResult{}, sdk.TransientError(err, 30*time.Second)
+```
+
+Pass a zero duration to use the core controller's exponential backoff. Use
+`sdk.TerminalError(err)` to override generic timeout classification when a
+timeout represents a completed, non-repeatable provider operation. The SDK
+maps transient errors to gRPC `Unavailable`; the core persists retry count and
+next retry time and stops retrying when the VMImage build timeout expires.
+
+Do not mark invalid configuration, unsupported input, authentication or
+authorization failures, missing source resources, or failed guest provisioner
+execution as transient.
+
 ## UploadArtifact
 
 The SDK exposes the streamed artifact as an `io.Reader`:

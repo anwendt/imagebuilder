@@ -10,10 +10,13 @@ import (
 	"os"
 
 	providerv1 "github.com/anwendt/imagebuilder/api/provider/v1"
+	providererrors "github.com/anwendt/imagebuilder/pkg/provider/errors"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 type Server struct {
@@ -201,7 +204,17 @@ func (s *Server) ReconcileRemoteBuild(ctx context.Context, req *providerv1.Remot
 	}
 	result, err := remoteProvider.ReconcileRemoteBuild(ctx, remoteBuildInputFromProto(req))
 	if err != nil {
-		return nil, err
+		if providererrors.IsTransient(err) {
+			retryStatus := status.New(codes.Unavailable, "provider remote build is temporarily unavailable")
+			if retryAfter := providererrors.RetryAfter(err); retryAfter > 0 {
+				withDetails, detailErr := retryStatus.WithDetails(&errdetails.RetryInfo{RetryDelay: durationpb.New(retryAfter)})
+				if detailErr == nil {
+					retryStatus = withDetails
+				}
+			}
+			return nil, retryStatus.Err()
+		}
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
 	resp := &providerv1.RemoteBuildResponse{
 		OperationRef: result.OperationRef,

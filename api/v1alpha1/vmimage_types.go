@@ -774,6 +774,17 @@ type VMImageStatus struct {
 	// +optional
 	RemoteBuildRef *string `json:"remoteBuildRef,omitempty"`
 
+	// RemoteRetryCount is the number of consecutive transient provider errors
+	// for the current remote build. It resets after a successful provider call.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	RemoteRetryCount int32 `json:"remoteRetryCount,omitempty"`
+
+	// NextRemoteRetryTime is the earliest time at which the controller will call
+	// the remote provider again after a transient error.
+	// +optional
+	NextRemoteRetryTime *metav1.Time `json:"nextRemoteRetryTime,omitempty"`
+
 	// BuildLeaseRefs references scheduler leases held while the build job is active.
 	// Values are namespace/name strings.
 	// +optional

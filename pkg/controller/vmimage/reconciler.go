@@ -42,12 +42,14 @@ import (
 	"github.com/anwendt/imagebuilder/pkg/observability"
 	"github.com/anwendt/imagebuilder/pkg/plugin"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
+	providererrors "github.com/anwendt/imagebuilder/pkg/provider/errors"
 )
 
 const (
 	finalizerName            = "imagebuilder.io/cleanup"
 	defaultBuildTimeout      = 2 * time.Hour
 	requeueAfter             = 15 * time.Second
+	remoteRetryMaxDelay      = 5 * time.Minute
 	defaultProviderNamespace = "imagebuilder-system"
 	providerGRPCPort         = 50051
 )
@@ -205,6 +207,9 @@ func (r *VMImageReconciler) reconcileSpecGeneration(ctx context.Context, img *v1
 
 func (r *VMImageReconciler) reconcilePending(ctx context.Context, img *v1alpha1.VMImage, log *slog.Logger) (ctrl.Result, error) {
 	log.Info("reconciling pending vmimage")
+	if buildMode(img) == v1alpha1.BuildModeRemote {
+		return r.reconcileRemoteBuild(ctx, img, log)
+	}
 
 	// Validate all referenced providers are healthy.
 	for _, target := range img.Spec.Targets {
@@ -226,10 +231,6 @@ func (r *VMImageReconciler) reconcilePending(ctx context.Context, img *v1alpha1.
 			return r.setFailed(ctx, img, fmt.Sprintf("provider %q rejected target %q: %v", providerName, target.ProviderConfigRef.Name, err))
 		}
 	}
-	if buildMode(img) == v1alpha1.BuildModeRemote {
-		return r.reconcileRemoteBuild(ctx, img, log)
-	}
-
 	if err := r.ensureArtifactStorage(ctx, img); err != nil {
 		return r.setFailed(ctx, img, fmt.Sprintf("prepare artifact storage: %v", err))
 	}
@@ -433,10 +434,6 @@ func (r *VMImageReconciler) reconcileRemoteBuild(ctx context.Context, img *v1alp
 	if !ok || !supportsBuildMode(remotePlugin.SupportedBuildModes(), v1alpha1.BuildModeRemote) {
 		return r.setFailedWithReason(ctx, img, "RemoteBuildUnsupported", fmt.Sprintf("provider %q does not advertise remote build support", providerName))
 	}
-	if err := r.initProviderForTarget(ctx, img.Namespace, target, providerPlugin); err != nil {
-		return r.setFailedWithReason(ctx, img, "RemoteBuildConfigInvalid", fmt.Sprintf("provider %q config %q rejected: %v", providerName, target.ProviderConfigRef.Name, err))
-	}
-
 	if img.Status.StartTime == nil {
 		now := metav1.Now()
 		img.Status.Phase = v1alpha1.PhaseBuilding
@@ -467,6 +464,18 @@ func (r *VMImageReconciler) reconcileRemoteBuild(ctx context.Context, img *v1alp
 		}
 		return r.setFailedWithReason(ctx, img, "RemoteBuildTimedOut", fmt.Sprintf("remote build timed out after %s", timeout))
 	}
+	if img.Status.NextRemoteRetryTime != nil {
+		untilRetry := time.Until(img.Status.NextRemoteRetryTime.Time)
+		if untilRetry > 0 {
+			return ctrl.Result{RequeueAfter: untilRetry}, nil
+		}
+	}
+	if err := r.initProviderForTarget(ctx, img.Namespace, target, providerPlugin); err != nil {
+		if providererrors.IsTransient(err) {
+			return r.retryRemoteBuild(ctx, img, providerName, err, timeout, log)
+		}
+		return r.setFailedWithReason(ctx, img, "RemoteBuildConfigInvalid", fmt.Sprintf("provider %q config %q rejected: %v", providerName, target.ProviderConfigRef.Name, err))
+	}
 
 	req, err := r.remoteBuildRequest(ctx, img, target)
 	if err != nil {
@@ -474,12 +483,21 @@ func (r *VMImageReconciler) reconcileRemoteBuild(ctx context.Context, img *v1alp
 	}
 	result, err := remotePlugin.ReconcileRemoteBuild(ctx, req)
 	if err != nil {
+		if providererrors.IsTransient(err) {
+			return r.retryRemoteBuild(ctx, img, providerName, err, timeout, log)
+		}
 		setRemoteFailureSteps(img, "RemoteBuildFailed", err.Error())
 		observability.FailuresTotal.WithLabelValues("RemoteBuild", "RemoteBuildFailed", providerName).Inc()
 		if cleanupErr := r.cleanupRemoteBuild(ctx, img); cleanupErr != nil {
 			return ctrl.Result{}, fmt.Errorf("cleanup remote build after provider failure: %w", cleanupErr)
 		}
 		return r.setFailedWithReason(ctx, img, "RemoteBuildFailed", fmt.Sprintf("provider %q remote build failed: %v", providerName, err))
+	}
+	if img.Status.RemoteRetryCount > 0 || img.Status.NextRemoteRetryTime != nil {
+		img.Status.RemoteRetryCount = 0
+		img.Status.NextRemoteRetryTime = nil
+		setCondition(img, "RemoteBuildRetrying", metav1.ConditionFalse, "RemoteBuildRecovered", "Remote provider communication recovered")
+		r.recordEvent(img, corev1.EventTypeNormal, "RemoteBuildRecovered", "Remote provider %q communication recovered", providerName)
 	}
 	if result == nil {
 		return r.setFailedWithReason(ctx, img, "RemoteBuildFailed", fmt.Sprintf("provider %q returned an empty remote build result", providerName))
@@ -549,6 +567,52 @@ func (r *VMImageReconciler) reconcileRemoteBuild(ctx context.Context, img *v1alp
 	r.recordEvent(img, corev1.EventTypeNormal, "Ready", "Remote image registered on provider %q", providerName)
 	log.Info("remote vmimage is ready", slog.String("provider", providerName))
 	return ctrl.Result{}, nil
+}
+
+func (r *VMImageReconciler) retryRemoteBuild(ctx context.Context, img *v1alpha1.VMImage, providerName string, providerErr error, timeout time.Duration, log *slog.Logger) (ctrl.Result, error) {
+	img.Status.RemoteRetryCount++
+	delay := remoteRetryDelay(img.Status.RemoteRetryCount)
+	if requested := providererrors.RetryAfter(providerErr); requested > delay {
+		delay = requested
+	}
+	if delay > remoteRetryMaxDelay {
+		delay = remoteRetryMaxDelay
+	}
+	if remaining := timeout - time.Since(img.Status.StartTime.Time); delay > remaining {
+		delay = remaining
+	}
+	if delay < time.Second {
+		delay = time.Second
+	}
+	nextRetry := metav1.NewTime(time.Now().Add(delay))
+	img.Status.NextRemoteRetryTime = &nextRetry
+	setCondition(img, "RemoteBuildRetrying", metav1.ConditionTrue, "TransientProviderError", "Remote provider is temporarily unavailable; reconciliation will retry")
+	observability.RemoteBuildRetriesTotal.WithLabelValues(providerName).Inc()
+	if err := r.Status().Update(ctx, img); err != nil {
+		return ctrl.Result{}, fmt.Errorf("update transient remote build retry status: %w", err)
+	}
+	r.recordEvent(img, corev1.EventTypeWarning, "RemoteBuildRetrying", "Remote provider %q is temporarily unavailable; retry %d in %s", providerName, img.Status.RemoteRetryCount, delay)
+	log.Warn("transient remote provider error; retrying",
+		slog.String("provider", providerName),
+		slog.Int("retry", int(img.Status.RemoteRetryCount)),
+		slog.Duration("retryAfter", delay),
+		slog.Any("error", providerErr))
+	return ctrl.Result{RequeueAfter: delay}, nil
+}
+
+func remoteRetryDelay(retryCount int32) time.Duration {
+	if retryCount <= 1 {
+		return requeueAfter
+	}
+	shift := retryCount - 1
+	if shift > 5 {
+		shift = 5
+	}
+	delay := requeueAfter * time.Duration(1<<shift)
+	if delay > remoteRetryMaxDelay {
+		return remoteRetryMaxDelay
+	}
+	return delay
 }
 
 // ---------------------------------------------------------------------------

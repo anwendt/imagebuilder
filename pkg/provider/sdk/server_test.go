@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
 	"net"
@@ -17,9 +18,12 @@ import (
 	"time"
 
 	providerv1 "github.com/anwendt/imagebuilder/api/provider/v1"
+	providererrors "github.com/anwendt/imagebuilder/pkg/provider/errors"
 	"github.com/anwendt/imagebuilder/pkg/provider/sdk"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -159,6 +163,31 @@ func TestServer_ImplementsProviderContract(t *testing.T) {
 	}
 }
 
+func TestServer_RemoteBuildErrorClassification(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		err        error
+		code       codes.Code
+		retryAfter time.Duration
+	}{
+		{name: "transient", err: sdk.TransientError(errors.New("temporarily busy"), 42*time.Second), code: codes.Unavailable, retryAfter: 42 * time.Second},
+		{name: "terminal", err: errors.New("invalid source"), code: codes.FailedPrecondition},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider := &fakeProvider{remoteErr: test.err}
+			client, cleanup := startServer(t, provider)
+			defer cleanup()
+			_, err := client.ReconcileRemoteBuild(context.Background(), &providerv1.RemoteBuildRequest{BuildId: "build-123"})
+			if status.Code(err) != test.code {
+				t.Fatalf("gRPC code = %s, want %s (error %v)", status.Code(err), test.code, err)
+			}
+			if got := providererrors.RetryAfter(err); got != test.retryAfter {
+				t.Fatalf("retryAfter = %s, want %s", got, test.retryAfter)
+			}
+		})
+	}
+}
+
 func startServer(t *testing.T, provider sdk.Provider) (providerv1.PlatformProviderClient, func()) {
 	t.Helper()
 	listener := bufconn.Listen(1024 * 1024)
@@ -271,6 +300,7 @@ type fakeProvider struct {
 	uploaded      bytes.Buffer
 	remoteInput   sdk.RemoteBuildInput
 	remoteCleanup sdk.RemoteBuildInput
+	remoteErr     error
 }
 
 func (p *fakeProvider) Capabilities(context.Context) (sdk.Capabilities, error) {
@@ -311,6 +341,9 @@ func (p *fakeProvider) HealthCheck(context.Context) (string, error) {
 
 func (p *fakeProvider) ReconcileRemoteBuild(_ context.Context, input sdk.RemoteBuildInput) (sdk.RemoteBuildResult, error) {
 	p.remoteInput = input
+	if p.remoteErr != nil {
+		return sdk.RemoteBuildResult{}, p.remoteErr
+	}
 	return sdk.RemoteBuildResult{
 		OperationRef: "provider://operation/123",
 		Phase:        "Ready",

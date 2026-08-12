@@ -280,6 +280,15 @@ providers by name when processing targets.
     - status.conditions updated with human-readable error
     - Kubernetes Event emitted
 
+  Remote providers classify transport outages, throttling, timeouts, and
+  temporary service failures as transient. The controller keeps the build in
+  progress, persists `remoteRetryCount` and `nextRemoteRetryTime`, and retries
+  with exponential backoff from 15 seconds up to 5 minutes. Retries remain
+  bounded by `spec.build.timeout`; transient errors do not trigger provider
+  cleanup or terminal failure metrics. Validation, authorization, unsupported
+  operations, and unknown errors remain terminal and retain fail-and-cleanup
+  behavior. A successful provider call resets the consecutive retry state.
+
 13. To rebuild Ready or Failed resources:
     - User changes spec.build.revision, optionally with other spec changes
     - Controller clears attempt-local status and returns to Pending

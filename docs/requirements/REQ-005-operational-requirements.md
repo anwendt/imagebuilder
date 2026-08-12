@@ -43,6 +43,7 @@ and supports ISAE audit traceability.
 | | `imagebuilder_active_builds` — current concurrent builds gauge | |
 | | `imagebuilder_provider_health{provider="..."}` — provider health gauge | |
 | | `imagebuilder_upload_bytes_total{provider="..."}` — bytes uploaded per provider | |
+| | `imagebuilder_remote_build_retries_total{provider="..."}` — transient remote-provider errors retried | |
 | OR-009 | The operator SHALL provide a Kubernetes liveness probe (`/healthz`) and readiness probe (`/readyz`) on port :8081. | Must |
 | OR-010 | Alert rules SHALL be definable as PrometheusRule CRs for: build failure rate > 10 % over 1 h; provider unhealthy > 5 min; no successful builds in 24 h. | Should |
 
@@ -65,6 +66,7 @@ and supports ISAE audit traceability.
 |---|---|---|
 | OR-015 | VMImage CRD instances (desired state) SHALL be recoverable via standard Kubernetes etcd backup/restore. | Must |
 | OR-016 | A failed build SHALL leave the VMImage in `Failed` phase with a human-readable reason in `.status.conditions`. The resource SHALL be retryable declaratively by changing `.spec.build.revision`, or by deleting and re-creating it. | Must |
+| OR-016A | Transient remote-provider errors SHALL be retried with persistent bounded exponential backoff until `spec.build.timeout`. They SHALL NOT make the VMImage terminal, trigger provider cleanup, or increment terminal failure metrics. Unknown and explicitly terminal errors SHALL fail closed. | Must |
 | OR-017 | Provider configuration (ProviderConfig) SHALL be recoverable from Kubernetes etcd backup. Credentials (Secrets) SHALL be recoverable from the Secret backup or external secret store. | Must |
 | OR-026 | Direct provider-native source operations, such as AWS AMI registration from an EBS snapshot, SHALL document which source artifacts are user-owned and therefore excluded from automated cleanup. | Must |
 
