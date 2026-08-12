@@ -82,6 +82,9 @@ func (r *VMImage) validate() (admission.Warnings, error) {
 	default:
 		errs = append(errs, fmt.Errorf("spec.build.mode must be local or remote"))
 	}
+	if buildMode == BuildModeLocal && effectiveArtifactStorageType(r.Spec.Build) != "pvc" {
+		errs = append(errs, fmt.Errorf("spec.build.artifactStorage.type must be pvc for local builds"))
+	}
 	if r.Spec.Source.Type == "snapshot" {
 		if buildMode != BuildModeRemote {
 			errs = append(errs, fmt.Errorf("spec.source.type snapshot requires spec.build.mode remote"))
@@ -175,6 +178,13 @@ func (r *VMImage) validate() (admission.Warnings, error) {
 		return nil, joinErrors(errs)
 	}
 	return nil, nil
+}
+
+func effectiveArtifactStorageType(build BuildSpec) string {
+	if build.ArtifactStorage == nil || build.ArtifactStorage.Type == "" {
+		return "pvc"
+	}
+	return build.ArtifactStorage.Type
 }
 
 func validateOSSpec(os OSSpec) error {

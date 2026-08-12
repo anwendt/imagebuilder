@@ -157,7 +157,7 @@ provider components.
 |---|---|---|
 | TF-016 | The operator process SHALL be stateless. All persistent state (build status, provider capabilities) is stored in Kubernetes etcd via the API server. | Must |
 | TF-017 | The operator SHALL NOT use in-memory session state that would be lost on pod restart. The plugin registry is rebuilt from PlatformProvider CRD status on startup. | Must |
-| TF-018 | Build artifacts (disk images) SHALL be stored on external volumes (`emptyDir` for ephemeral, PVC or object storage for caching), not in the operator process memory. | Must |
+| TF-018 | Build artifacts (disk images) SHALL be stored on external volumes. Local builds use PVC-backed workspaces so the build and upload Jobs can exchange the artifact; source caches may use separate PVCs. Artifacts SHALL NOT be stored in operator process memory. | Must |
 
 ### Factor VII — Port Binding
 

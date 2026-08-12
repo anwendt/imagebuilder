@@ -46,6 +46,60 @@ func TestVMImageWebhook_ValidCreate_NoURL(t *testing.T) {
 	}
 }
 
+func TestVMImageWebhook_LocalBuild_DefaultsArtifactStorageToPVC(t *testing.T) {
+	img := &VMImage{
+		Spec: VMImageSpec{
+			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
+			Source: validMarketplaceSource(),
+			Targets: []TargetSpec{
+				{ProviderConfigRef: ProviderConfigRef{Name: "aws-cfg"}, Format: "vmdk"},
+			},
+		},
+	}
+	if got := effectiveArtifactStorageType(img.Spec.Build); got != "pvc" {
+		t.Fatalf("effective artifact storage type = %q, want pvc", got)
+	}
+	if _, err := img.ValidateCreate(); err != nil {
+		t.Fatalf("local build without explicit artifactStorage should be admitted with PVC default: %v", err)
+	}
+}
+
+func TestVMImageWebhook_LocalBuild_RejectsEmptyDirArtifactStorage(t *testing.T) {
+	img := &VMImage{
+		Spec: VMImageSpec{
+			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
+			Source: validMarketplaceSource(),
+			Build:  BuildSpec{ArtifactStorage: &ArtifactStorageSpec{Type: "emptyDir"}},
+			Targets: []TargetSpec{
+				{ProviderConfigRef: ProviderConfigRef{Name: "aws-cfg"}, Format: "vmdk"},
+			},
+		},
+	}
+	_, err := img.ValidateCreate()
+	if err == nil || !strings.Contains(err.Error(), "spec.build.artifactStorage.type must be pvc for local builds") {
+		t.Fatalf("ValidateCreate error = %v, want local-build PVC requirement", err)
+	}
+}
+
+func TestVMImageWebhook_RemoteBuild_AllowsEmptyDirArtifactStorage(t *testing.T) {
+	img := &VMImage{
+		Spec: VMImageSpec{
+			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
+			Source: SourceSpec{Type: "cloud-image", ProviderRef: "ami-0123456789abcdef0"},
+			Build: BuildSpec{
+				Mode:            BuildModeRemote,
+				ArtifactStorage: &ArtifactStorageSpec{Type: "emptyDir"},
+			},
+			Targets: []TargetSpec{
+				{ProviderConfigRef: ProviderConfigRef{Name: "aws-cfg"}, Format: "ami"},
+			},
+		},
+	}
+	if _, err := img.ValidateCreate(); err != nil {
+		t.Fatalf("remote build should not require PVC artifact storage: %v", err)
+	}
+}
+
 func TestVMImageWebhook_MarketplaceSource_RequiresReference(t *testing.T) {
 	img := &VMImage{
 		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},

@@ -56,10 +56,12 @@ spec:
                 description: Build controls build-job behaviour
                 properties:
                   artifactStorage:
+                    default:
+                      type: pvc
                     description: |-
                       ArtifactStorage controls where build artifacts and workspace files are stored.
-                      Defaults to emptyDir for ephemeral development builds. Use pvc for shared or
-                      block storage backed builds.
+                      Defaults to a per-build PVC. Local builds require PVC storage because the
+                      build and upload Jobs exchange the artifact through this workspace.
                     properties:
                       pvc:
                         description: PVC configures persistent workspace storage.
@@ -102,7 +104,7 @@ spec:
                             type: string
                         type: object
                       type:
-                        default: emptyDir
+                        default: pvc
                         description: Type is the workspace storage strategy.
                         enum:
                         - emptyDir

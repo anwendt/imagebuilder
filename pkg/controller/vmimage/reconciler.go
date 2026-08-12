@@ -679,12 +679,17 @@ func artifactPVCAccessMode(img *v1alpha1.VMImage) string {
 }
 
 func usesArtifactPVC(img *v1alpha1.VMImage) bool {
-	return img.Spec.Build.ArtifactStorage != nil &&
+	if buildMode(img) == v1alpha1.BuildModeRemote && img.Spec.Build.ArtifactStorage == nil {
+		return false
+	}
+	return img.Spec.Build.ArtifactStorage == nil ||
+		img.Spec.Build.ArtifactStorage.Type == "" ||
 		img.Spec.Build.ArtifactStorage.Type == "pvc"
 }
 
 func usesExistingArtifactPVC(img *v1alpha1.VMImage) bool {
 	return usesArtifactPVC(img) &&
+		img.Spec.Build.ArtifactStorage != nil &&
 		img.Spec.Build.ArtifactStorage.PVC != nil &&
 		img.Spec.Build.ArtifactStorage.PVC.ClaimName != ""
 }

@@ -79,7 +79,7 @@ intended to be verifiable through code review, automated scanning, and ISAE audi
 | AS-019 | Threat modelling SHALL be conducted before implementing each major feature (new provider, new provisioner type, new API field). The threat model SHALL be documented and reviewed. | Must |
 | AS-020 | The principle of **fail-secure** SHALL apply: if the operator cannot verify a provider's identity (gRPC handshake fails) or a source image's integrity (checksum mismatch), the build MUST be aborted. | Must |
 | AS-021 | The operator SHALL implement **rate limiting** on VMImage build admission to prevent resource exhaustion (denial of service via excessive build requests). | Should |
-| AS-022 | Build isolation SHALL be enforced: one VMImage build SHALL NOT be able to access the workspace volume of another concurrent build. Each build Job uses a unique `emptyDir` volume. | Must |
+| AS-022 | Build isolation SHALL be enforced: one VMImage build SHALL NOT be able to access the workspace volume of another concurrent build. Each local build uses a unique per-build PVC unless an explicitly managed existing claim is referenced. | Must |
 | AS-023 | The init-container filesystem contract under `/workspace/provisioners/step-N/` SHALL use restrictive file permissions. `config.json` is written with mode `0600` (owner read/write only). | Must |
 
 ### A05:2021 — Security Misconfiguration

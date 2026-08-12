@@ -381,20 +381,35 @@ func TestAssemble_InitContainer_MissingImage_ReturnsError(t *testing.T) {
 // Workspace volume
 // ---------------------------------------------------------------------------
 
-func TestAssemble_WorkspaceVolume(t *testing.T) {
+func TestAssemble_WorkspaceVolume_DefaultsToPVC(t *testing.T) {
 	job, err := buildpod.Assemble(baseImage(), newScheme(t))
 	if err != nil {
 		t.Fatalf("Assemble failed: %v", err)
 	}
 	var found bool
 	for _, v := range job.Spec.Template.Spec.Volumes {
-		if v.Name == "workspace" && v.EmptyDir != nil {
+		if v.Name == "workspace" && v.PersistentVolumeClaim != nil && v.PersistentVolumeClaim.ClaimName == "ubuntu-2404-workspace" {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("workspace emptyDir volume not found in job spec")
+		t.Error("default workspace PVC volume not found in job spec")
 	}
+}
+
+func TestAssemble_WorkspaceVolume_ExplicitEmptyDir(t *testing.T) {
+	img := baseImage()
+	img.Spec.Build.ArtifactStorage = &v1alpha1.ArtifactStorageSpec{Type: "emptyDir"}
+	job, err := buildpod.Assemble(img, newScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble failed: %v", err)
+	}
+	for _, v := range job.Spec.Template.Spec.Volumes {
+		if v.Name == "workspace" && v.EmptyDir != nil {
+			return
+		}
+	}
+	t.Fatal("explicit workspace emptyDir volume not found in job spec")
 }
 
 func TestAssemble_WorkspaceVolume_UsesArtifactPVC(t *testing.T) {

@@ -424,8 +424,9 @@ type BuildSpec struct {
 	Cache *SourceCacheSpec `json:"cache,omitempty"`
 
 	// ArtifactStorage controls where build artifacts and workspace files are stored.
-	// Defaults to emptyDir for ephemeral development builds. Use pvc for shared or
-	// block storage backed builds.
+	// Defaults to a per-build PVC. Local builds require PVC storage because the
+	// build and upload Jobs exchange the artifact through this workspace.
+	// +kubebuilder:default:={type:pvc}
 	// +optional
 	ArtifactStorage *ArtifactStorageSpec `json:"artifactStorage,omitempty"`
 
@@ -637,7 +638,7 @@ type GuestCredentialInjectionSpec struct {
 type ArtifactStorageSpec struct {
 	// Type is the workspace storage strategy.
 	// +kubebuilder:validation:Enum=emptyDir;pvc
-	// +kubebuilder:default=emptyDir
+	// +kubebuilder:default=pvc
 	// +optional
 	Type string `json:"type,omitempty"`
 

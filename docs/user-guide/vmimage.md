@@ -278,7 +278,11 @@ Sigstore Policy Controller.
 
 ## Artifact Storage
 
-Upload jobs require PVC-backed artifact storage:
+Local builds default to PVC-backed artifact storage. Admission rejects
+`artifactStorage.type: emptyDir` for local builds because the build and upload
+Jobs must share the completed artifact. Omitting `artifactStorage` creates a
+per-build PVC with the standard defaults (20Gi, `ReadWriteOnce`, retention
+policy `Never`). Configure it explicitly to override those defaults:
 
 ```yaml
 build:

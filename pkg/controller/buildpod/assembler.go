@@ -525,7 +525,8 @@ func WorkspaceClaimName(img *v1alpha1.VMImage) string {
 }
 
 func usesArtifactPVC(img *v1alpha1.VMImage) bool {
-	return img.Spec.Build.ArtifactStorage != nil &&
+	return img.Spec.Build.ArtifactStorage == nil ||
+		img.Spec.Build.ArtifactStorage.Type == "" ||
 		img.Spec.Build.ArtifactStorage.Type == "pvc"
 }
 
