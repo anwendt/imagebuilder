@@ -87,7 +87,7 @@ func Assemble(img *v1alpha1.VMImage, scheme *runtime.Scheme) (*batchv1.Job, erro
 					Containers:     []corev1.Container{mainContainer},
 					Volumes:        volumes,
 					NodeSelector:   img.Spec.Build.NodeSelector,
-					NodeName:       img.Status.ScheduledNodeName,
+					Affinity:       buildAffinity(),
 					Tolerations:    buildTolerations(img),
 					// AS-028: do not mount a service account token — the build pod
 					// has no API server access; mounting a token is a needless attack surface.
@@ -114,6 +114,26 @@ func Assemble(img *v1alpha1.VMImage, scheme *runtime.Scheme) (*batchv1.Job, erro
 	}
 
 	return job, nil
+}
+
+func buildAffinity() *corev1.Affinity {
+	return &corev1.Affinity{
+		PodAntiAffinity: &corev1.PodAntiAffinity{
+			PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
+				{
+					Weight: 100,
+					PodAffinityTerm: corev1.PodAffinityTerm{
+						LabelSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+							"app.kubernetes.io/managed-by": "imagebuilder",
+							"imagebuilder.io/job-kind":     "build",
+						}},
+						NamespaceSelector: &metav1.LabelSelector{},
+						TopologyKey:       corev1.LabelHostname,
+					},
+				},
+			},
+		},
+	}
 }
 
 // ---------------------------------------------------------------------------

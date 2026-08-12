@@ -458,7 +458,7 @@ go-licenses report ./... > NOTICE
 ## Not Yet Decided / TODO
 
 - [x] Image caching strategy (PVC-backed source cache with checksum keys, TTL invalidation, checksum-mismatch refetch, and retention policy)
-- [x] Parallelization of builds (global and max concurrent builds per node via Lease scheduler)
+- [x] Parallelization of builds (global admission via Leases; node placement and spreading via kube-scheduler)
 - [x] Webhook validation for VMImage, ProviderConfig, and PlatformProvider specs
 - [x] OCI signing policy for provider/imagebuilder images (Kyverno/Sigstore policy hooks)
 - [x] Metrics (Prometheus) — build duration, queue time, active builds, provider health, upload/register duration, upload throughput, failures, cleanup failures

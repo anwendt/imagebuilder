@@ -67,6 +67,7 @@ and supports ISAE audit traceability.
 | OR-015 | VMImage CRD instances (desired state) SHALL be recoverable via standard Kubernetes etcd backup/restore. | Must |
 | OR-016 | A failed build SHALL leave the VMImage in `Failed` phase with a human-readable reason in `.status.conditions`. The resource SHALL be retryable declaratively by changing `.spec.build.revision`, or by deleting and re-creating it. | Must |
 | OR-016A | Transient remote-provider errors SHALL be retried with persistent bounded exponential backoff until `spec.build.timeout`. They SHALL NOT make the VMImage terminal, trigger provider cleanup, or increment terminal failure metrics. Unknown and explicitly terminal errors SHALL fail closed. | Must |
+| OR-016B | The operator MAY gate global build admission with Kubernetes Leases, but SHALL NOT set Pod `spec.nodeName` or otherwise bypass kube-scheduler. Build placement SHALL use native resources, node selectors, tolerations, and affinity preferences. | Must |
 | OR-017 | Provider configuration (ProviderConfig) SHALL be recoverable from Kubernetes etcd backup. Credentials (Secrets) SHALL be recoverable from the Secret backup or external secret store. | Must |
 | OR-026 | Direct provider-native source operations, such as AWS AMI registration from an EBS snapshot, SHALL document which source artifacts are user-owned and therefore excluded from automated cleanup. | Must |
 

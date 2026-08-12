@@ -102,7 +102,6 @@ imageSignaturePolicy:
     subject: https://github.com/*
 
 maxConcurrentBuilds: 3
-maxConcurrentBuildsPerNode: 1
 logLevel: info
 
 # proxy:

@@ -55,9 +55,6 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
-  - apiGroups: [""]
-    resources: ["nodes"]
-    verbs: ["get", "list", "watch"]
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -153,7 +150,6 @@ spec:
           args:
             - --leader-elect=true
             - --max-concurrent-builds=3
-            - --max-concurrent-builds-per-node=1
             - --scheduler-namespace=imagebuilder-system
             - --provider-namespace=imagebuilder-system
             - --require-provider-mtls=false

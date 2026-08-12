@@ -64,20 +64,18 @@ const (
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
-// +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;create;update
 type VMImageReconciler struct {
 	client.Client
-	Scheme                     *runtime.Scheme
-	Registry                   *plugin.Registry
-	Recorder                   record.EventRecorder
-	MaxConcurrentBuilds        int
-	MaxConcurrentBuildsPerNode int
-	SchedulerNamespace         string
-	ProviderNamespace          string
-	log                        *slog.Logger
+	Scheme              *runtime.Scheme
+	Registry            *plugin.Registry
+	Recorder            record.EventRecorder
+	MaxConcurrentBuilds int
+	SchedulerNamespace  string
+	ProviderNamespace   string
+	log                 *slog.Logger
 }
 
 func (r *VMImageReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -249,7 +247,8 @@ func (r *VMImageReconciler) reconcilePending(ctx context.Context, img *v1alpha1.
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 	img.Status.BuildLeaseRefs = acquisition.Refs
-	img.Status.ScheduledNodeName = acquisition.NodeName
+	// Clear the legacy direct-binding hint. kube-scheduler owns node selection.
+	img.Status.ScheduledNodeName = ""
 
 	// Assemble and create the build Job.
 	job, err := buildpod.Assemble(img, r.Scheme)

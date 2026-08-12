@@ -488,12 +488,11 @@ func TestReconcile_Pending_QueuesWhenGlobalBuildLimitReached(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img, lease).Build()
 	recorder := record.NewFakeRecorder(10)
 	r := &vmimage.VMImageReconciler{
-		Client:                     c,
-		Scheme:                     s,
-		Registry:                   plugin.Default(),
-		Recorder:                   recorder,
-		MaxConcurrentBuilds:        1,
-		MaxConcurrentBuildsPerNode: -1,
+		Client:              c,
+		Scheme:              s,
+		Registry:            plugin.Default(),
+		Recorder:            recorder,
+		MaxConcurrentBuilds: 1,
 	}
 
 	result := reconcileOnce(t, r, "queued-global", "default")
@@ -512,85 +511,33 @@ func TestReconcile_Pending_QueuesWhenGlobalBuildLimitReached(t *testing.T) {
 	requireEvent(t, recorder, "BuildQueued")
 }
 
-func TestReconcile_Pending_QueuesWhenNodeBuildLimitReached(t *testing.T) {
-	img := newImg("queued-node", "default", v1alpha1.PhasePending)
-	img.Finalizers = []string{"imagebuilder.io/cleanup"}
-	img.Spec.Build.NodeSelector = map[string]string{"kubernetes.io/hostname": "node-a"}
-	holder := "default/other/test-uid"
-	duration := int32(3600)
-	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "node-a",
-			Labels: map[string]string{"kubernetes.io/hostname": "node-a"},
-		},
-	}
-	lease := &coordinationv1.Lease{
-		ObjectMeta: metav1.ObjectMeta{Name: "imagebuilder-build-node-66570ff05a207404-0", Namespace: "default"},
-		Spec: coordinationv1.LeaseSpec{
-			HolderIdentity:       &holder,
-			LeaseDurationSeconds: &duration,
-		},
-	}
-
-	s := testScheme(t)
-	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img, node, lease).Build()
-	r := &vmimage.VMImageReconciler{
-		Client:                     c,
-		Scheme:                     s,
-		Registry:                   plugin.Default(),
-		MaxConcurrentBuilds:        -1,
-		MaxConcurrentBuildsPerNode: 1,
-	}
-
-	reconcileOnce(t, r, "queued-node", "default")
-
-	job := &batchv1.Job{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "queued-node-build", Namespace: "default"}, job); err == nil {
-		t.Fatal("build job should not be created while node slot is occupied")
-	}
-	updated := &v1alpha1.VMImage{}
-	c.Get(context.Background(), types.NamespacedName{Name: "queued-node", Namespace: "default"}, updated) //nolint:errcheck
-	if step, ok := stepStatus(updated, "Build"); !ok || step.Reason != "BuildQueued" {
-		t.Fatalf("Build step = %#v, ok=%v, want BuildQueued", step, ok)
-	}
-}
-
-func TestReconcile_Pending_SchedulesBuildOntoConcreteNode(t *testing.T) {
-	img := newImg("scheduled-node", "default", v1alpha1.PhasePending)
+func TestReconcile_Pending_DelegatesNodePlacementToKubeScheduler(t *testing.T) {
+	img := newImg("native-scheduler", "default", v1alpha1.PhasePending)
 	img.Finalizers = []string{"imagebuilder.io/cleanup"}
 	img.Spec.Build.NodeSelector = map[string]string{"imagebuilder.io/build-node": "true"}
-	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "node-a",
-			Labels: map[string]string{
-				"imagebuilder.io/build-node": "true",
-			},
-		},
-	}
 
 	s := testScheme(t)
-	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img, node).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img).Build()
 	r := &vmimage.VMImageReconciler{
-		Client:                     c,
-		Scheme:                     s,
-		Registry:                   plugin.Default(),
-		MaxConcurrentBuilds:        -1,
-		MaxConcurrentBuildsPerNode: 1,
+		Client:              c,
+		Scheme:              s,
+		Registry:            plugin.Default(),
+		MaxConcurrentBuilds: -1,
 	}
 
-	reconcileOnce(t, r, "scheduled-node", "default")
+	reconcileOnce(t, r, img.Name, img.Namespace)
 
 	updated := &v1alpha1.VMImage{}
-	c.Get(context.Background(), types.NamespacedName{Name: "scheduled-node", Namespace: "default"}, updated) //nolint:errcheck
-	if updated.Status.ScheduledNodeName != "node-a" {
-		t.Fatalf("scheduledNodeName = %q, want node-a", updated.Status.ScheduledNodeName)
+	c.Get(context.Background(), types.NamespacedName{Name: img.Name, Namespace: img.Namespace}, updated) //nolint:errcheck
+	if updated.Status.ScheduledNodeName != "" {
+		t.Fatalf("scheduledNodeName = %q, want empty", updated.Status.ScheduledNodeName)
 	}
 	job := &batchv1.Job{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "scheduled-node-build", Namespace: "default"}, job); err != nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "native-scheduler-build", Namespace: "default"}, job); err != nil {
 		t.Fatalf("expected build job: %v", err)
 	}
-	if job.Spec.Template.Spec.NodeName != "node-a" {
-		t.Fatalf("job nodeName = %q, want node-a", job.Spec.Template.Spec.NodeName)
+	if job.Spec.Template.Spec.NodeName != "" || job.Spec.Template.Spec.Affinity == nil {
+		t.Fatalf("job scheduling spec = nodeName %q affinity %#v", job.Spec.Template.Spec.NodeName, job.Spec.Template.Spec.Affinity)
 	}
 }
 

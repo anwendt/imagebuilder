@@ -12,7 +12,8 @@ kubectl get leases -n imagebuilder-system
 Common causes:
 
 - `--max-concurrent-builds` reached.
-- `--max-concurrent-builds-per-node` reached.
+- kube-scheduler cannot currently satisfy resources, node selectors, taints,
+  PVC topology, or other scheduling constraints.
 - stale Lease after an interrupted operator; expired Leases are reused.
 
 ## Build Job Fails

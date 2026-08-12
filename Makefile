@@ -84,8 +84,7 @@ build-provider-openstack: ## Build the standalone OpenStack PlatformProvider bin
 run: generate manifests ## Run the operator locally (uses current kubeconfig context)
 	$(GO) run ./cmd/operator/ \
 		--leader-elect=false \
-		--max-concurrent-builds=2 \
-		--max-concurrent-builds-per-node=1
+		--max-concurrent-builds=2
 
 docker-build: ## Build the operator Docker image
 	docker build -t $(OPERATOR_IMAGE):$(IMAGE_TAG) .

@@ -38,6 +38,34 @@ func TestOperatorRBACIsScopedForProduction(t *testing.T) {
 	}
 }
 
+func TestOperatorDelegatesNodePlacementToKubeScheduler(t *testing.T) {
+	for _, path := range []string{
+		filepath.Join(repoRoot, "charts", "imagebuilder", "templates", "rbac.yaml"),
+		filepath.Join(repoRoot, "config", "deploy", "operator.yaml"),
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if strings.Contains(string(data), `resources: ["nodes"]`) {
+			t.Fatalf("%s must not grant Node access for custom placement", path)
+		}
+	}
+
+	for _, path := range []string{
+		filepath.Join(repoRoot, "charts", "imagebuilder", "templates", "deployment.yaml"),
+		filepath.Join(repoRoot, "config", "deploy", "operator.yaml"),
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if strings.Contains(string(data), "--max-concurrent-builds-per-node") {
+			t.Fatalf("%s still configures the removed custom per-node scheduler", path)
+		}
+	}
+}
+
 func TestStaticDeployManifestIsClearlyDevelopmentOnly(t *testing.T) {
 	path := filepath.Join(repoRoot, "config", "deploy", "operator.yaml")
 	data, err := os.ReadFile(path)

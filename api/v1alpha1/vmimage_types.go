@@ -790,8 +790,10 @@ type VMImageStatus struct {
 	// +optional
 	BuildLeaseRefs []string `json:"buildLeaseRefs,omitempty"`
 
-	// ScheduledNodeName is the concrete Kubernetes node selected by the
-	// imagebuilder scheduler for the build Job.
+	// ScheduledNodeName is retained for backward compatibility with older
+	// controller versions that performed direct node binding. New controllers
+	// leave it empty and delegate final placement to kube-scheduler.
+	// Deprecated: do not use for placement decisions.
 	// +optional
 	ScheduledNodeName string `json:"scheduledNodeName,omitempty"`
 }

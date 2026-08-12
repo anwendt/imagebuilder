@@ -87,8 +87,7 @@ for production chart installs.
 | `--health-probe-bind-address` | `:8081` | Health and readiness endpoint. |
 | `--leader-elect` | `false` | Enables HA leader election. |
 | `--max-concurrent-builds` | `3` | Global parallel build limit. |
-| `--max-concurrent-builds-per-node` | `1` | Per-node build limit. |
-| `--scheduler-namespace` | `$POD_NAMESPACE` | Namespace used for Lease objects. |
+| `--scheduler-namespace` | `$POD_NAMESPACE` | Namespace used for global build-admission Lease objects. |
 | `--provider-namespace` | `$POD_NAMESPACE` | Namespace used for PlatformProvider Deployments and Services. |
 | `--require-provider-mtls` | `false` | Reject PlatformProvider resources unless `spec.transport.tls.mode=Mutual`. |
 | `--require-provider-digest` | `false` | Reject PlatformProvider packages that are not pinned by digest. |
@@ -158,13 +157,20 @@ reach reconciliation.
 
 ## Build Scheduling
 
-The operator uses Kubernetes Leases to protect the cluster from too many
-parallel QEMU processes.
+The operator uses global Kubernetes Leases to protect the cluster from too many
+parallel QEMU processes, but it does not perform node binding.
 
 - Global slots enforce `--max-concurrent-builds`.
-- Node slots enforce `--max-concurrent-builds-per-node`.
 - A queued image reports `BuildQueued` in status and emits a Kubernetes Event.
 - Slots are released after build success, failure, timeout, or deletion.
+- Build Pods leave `spec.nodeName` empty. The standard kube-scheduler evaluates
+  resources, taints/tolerations, node selectors, affinity, preemption, and node
+  availability before binding.
+- Preferred pod anti-affinity spreads Image Builder build Pods across
+  `kubernetes.io/hostname` when cluster capacity permits. It is deliberately a
+  soft preference so a small cluster can still schedule multiple builds.
+- Use `spec.build.resources`, node allocatable capacity, taints, and
+  `nodeSelector` to express hard node capacity and placement constraints.
 
 KVM builds are treated as a dedicated-node workload. When
 `spec.build.security.enableKVM=true`, admission requires:

@@ -233,6 +233,9 @@ providers by name when processing targets.
   - A PVC-backed `/workspace` when a separate upload Job is required
    - Optional PVC volume /cache when spec.build.cache.ref is configured
   - No platform credentials in the builder container
+    - No direct `nodeName` binding. The standard kube-scheduler applies resource
+      feasibility, node selectors, KVM tolerations, preemption, and final node
+      scoring. Preferred pod anti-affinity spreads builds across hostnames.
 
 7. Build Engine (QEMU/diskimage-builder/SDK):
    - Reuses a verified checksum-addressed source cache entry when present

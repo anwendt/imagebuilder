@@ -221,7 +221,7 @@ func TestAssemble_RestartPolicyNever(t *testing.T) {
 	}
 }
 
-func TestAssemble_UsesScheduledNodeName(t *testing.T) {
+func TestAssemble_DelegatesPlacementToKubeScheduler(t *testing.T) {
 	img := baseImage()
 	img.Spec.Build.NodeSelector = map[string]string{"imagebuilder.io/build-node": "true"}
 	img.Status.ScheduledNodeName = "node-a"
@@ -230,11 +230,22 @@ func TestAssemble_UsesScheduledNodeName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Assemble failed: %v", err)
 	}
-	if job.Spec.Template.Spec.NodeName != "node-a" {
-		t.Fatalf("nodeName = %q, want node-a", job.Spec.Template.Spec.NodeName)
+	if job.Spec.Template.Spec.NodeName != "" {
+		t.Fatalf("nodeName = %q, want empty so kube-scheduler performs binding", job.Spec.Template.Spec.NodeName)
 	}
 	if job.Spec.Template.Spec.NodeSelector["imagebuilder.io/build-node"] != "true" {
 		t.Fatalf("nodeSelector = %#v", job.Spec.Template.Spec.NodeSelector)
+	}
+	affinity := job.Spec.Template.Spec.Affinity
+	if affinity == nil || affinity.PodAntiAffinity == nil || len(affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution) != 1 {
+		t.Fatalf("pod anti-affinity = %#v", affinity)
+	}
+	term := affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution[0]
+	if term.Weight != 100 || term.PodAffinityTerm.TopologyKey != corev1.LabelHostname || term.PodAffinityTerm.NamespaceSelector == nil {
+		t.Fatalf("anti-affinity term = %#v", term)
+	}
+	if term.PodAffinityTerm.LabelSelector.MatchLabels["imagebuilder.io/job-kind"] != "build" {
+		t.Fatalf("anti-affinity selector = %#v", term.PodAffinityTerm.LabelSelector)
 	}
 }
 

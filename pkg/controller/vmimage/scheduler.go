@@ -2,15 +2,11 @@ package vmimage
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -20,9 +16,8 @@ import (
 )
 
 const (
-	defaultMaxConcurrentBuilds        = 3
-	defaultMaxConcurrentBuildsPerNode = 1
-	defaultBuildLeaseDurationSeconds  = int32(6 * 60 * 60)
+	defaultMaxConcurrentBuilds       = 3
+	defaultBuildLeaseDurationSeconds = int32(6 * 60 * 60)
 
 	buildLeasePrefix = "imagebuilder-build"
 )
@@ -31,19 +26,16 @@ type buildSlotAcquisition struct {
 	Acquired bool
 	Reason   string
 	Refs     []string
-	NodeName string
 }
 
 func (r *VMImageReconciler) acquireBuildSlots(ctx context.Context, img *v1alpha1.VMImage) (buildSlotAcquisition, error) {
 	if len(img.Status.BuildLeaseRefs) > 0 {
-		return buildSlotAcquisition{Acquired: true, Refs: img.Status.BuildLeaseRefs, NodeName: img.Status.ScheduledNodeName}, nil
+		return buildSlotAcquisition{Acquired: true, Refs: img.Status.BuildLeaseRefs}, nil
 	}
 
 	namespace := r.schedulerNamespace(img)
 	holder := leaseHolder(img)
 	globalMax := r.maxConcurrentBuilds()
-	nodeMax := r.maxConcurrentBuildsPerNode()
-
 	var refs []string
 	if globalMax > 0 {
 		ref, ok, err := r.acquireLeaseSlot(ctx, namespace, "global", "", globalMax, holder, img)
@@ -56,77 +48,12 @@ func (r *VMImageReconciler) acquireBuildSlots(ctx context.Context, img *v1alpha1
 		refs = append(refs, ref)
 	}
 
-	if nodeMax > 0 {
-		nodeName, ref, ok, err := r.acquireNodeLeaseSlot(ctx, namespace, nodeMax, holder, img)
-		if err != nil {
-			_ = r.releaseBuildSlots(ctx, refs, holder)
-			return buildSlotAcquisition{}, err
-		}
-		if !ok {
-			_ = r.releaseBuildSlots(ctx, refs, holder)
-			return buildSlotAcquisition{Reason: fmt.Sprintf("node build concurrency limit %d reached for selector %q", nodeMax, nodeSelectorKey(img.Spec.Build.NodeSelector))}, nil
-		}
-		refs = append(refs, ref)
-		return buildSlotAcquisition{Acquired: true, Refs: refs, NodeName: nodeName}, nil
-	}
-
 	return buildSlotAcquisition{Acquired: true, Refs: refs}, nil
-}
-
-func (r *VMImageReconciler) acquireNodeLeaseSlot(ctx context.Context, namespace string, max int, holder string, img *v1alpha1.VMImage) (string, string, bool, error) {
-	nodes, err := r.matchingBuildNodes(ctx, img.Spec.Build.NodeSelector)
-	if err != nil {
-		return "", "", false, err
-	}
-	if len(nodes) == 0 {
-		nodeKey := nodeSelectorKey(img.Spec.Build.NodeSelector)
-		ref, ok, err := r.acquireLeaseSlot(ctx, namespace, "node", nodeKey, max, holder, img)
-		return "", ref, ok, err
-	}
-	for _, node := range nodes {
-		ref, ok, err := r.acquireLeaseSlot(ctx, namespace, "node", node.Name, max, holder, img)
-		if err != nil {
-			return "", "", false, err
-		}
-		if ok {
-			return node.Name, ref, true, nil
-		}
-	}
-	return "", "", false, nil
-}
-
-func (r *VMImageReconciler) matchingBuildNodes(ctx context.Context, selector map[string]string) ([]corev1.Node, error) {
-	nodes := &corev1.NodeList{}
-	if err := r.List(ctx, nodes); err != nil {
-		return nil, fmt.Errorf("list nodes for build scheduling: %w", err)
-	}
-	matches := make([]corev1.Node, 0, len(nodes.Items))
-	for _, node := range nodes.Items {
-		if node.Spec.Unschedulable {
-			continue
-		}
-		if nodeMatchesSelector(node, selector) {
-			matches = append(matches, node)
-		}
-	}
-	sort.Slice(matches, func(i, j int) bool {
-		return matches[i].Name < matches[j].Name
-	})
-	return matches, nil
-}
-
-func nodeMatchesSelector(node corev1.Node, selector map[string]string) bool {
-	for key, want := range selector {
-		if node.Labels[key] != want {
-			return false
-		}
-	}
-	return true
 }
 
 func (r *VMImageReconciler) acquireLeaseSlot(ctx context.Context, namespace, scope, key string, max int, holder string, img *v1alpha1.VMImage) (string, bool, error) {
 	for slot := 0; slot < max; slot++ {
-		name := leaseName(scope, key, slot)
+		name := globalLeaseName(slot)
 		existing := &coordinationv1.Lease{}
 		err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, existing)
 		if apierrors.IsNotFound(err) {
@@ -261,16 +188,6 @@ func (r *VMImageReconciler) maxConcurrentBuilds() int {
 	return r.MaxConcurrentBuilds
 }
 
-func (r *VMImageReconciler) maxConcurrentBuildsPerNode() int {
-	if r.MaxConcurrentBuildsPerNode < 0 {
-		return 0
-	}
-	if r.MaxConcurrentBuildsPerNode == 0 {
-		return defaultMaxConcurrentBuildsPerNode
-	}
-	return r.MaxConcurrentBuildsPerNode
-}
-
 func buildLease(namespace, name, scope, key string, slot int, holder string, img *v1alpha1.VMImage) *coordinationv1.Lease {
 	now := metav1.NewMicroTime(time.Now())
 	duration := defaultBuildLeaseDurationSeconds
@@ -321,12 +238,8 @@ func leaseHolder(img *v1alpha1.VMImage) string {
 	return fmt.Sprintf("%s/%s/%s", img.Namespace, img.Name, img.UID)
 }
 
-func leaseName(scope, key string, slot int) string {
-	if scope == "global" {
-		return fmt.Sprintf("%s-global-%d", buildLeasePrefix, slot)
-	}
-	sum := sha256.Sum256([]byte(key))
-	return fmt.Sprintf("%s-node-%s-%d", buildLeasePrefix, hex.EncodeToString(sum[:])[:16], slot)
+func globalLeaseName(slot int) string {
+	return fmt.Sprintf("%s-global-%d", buildLeasePrefix, slot)
 }
 
 func leaseRef(namespace, name string) string {
@@ -358,22 +271,6 @@ func buildLeaseExpired(lease *coordinationv1.Lease, now time.Time) bool {
 		return false
 	}
 	return now.After(lastRenew.Add(time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second))
-}
-
-func nodeSelectorKey(selector map[string]string) string {
-	if len(selector) == 0 {
-		return "any"
-	}
-	keys := make([]string, 0, len(selector))
-	for key := range selector {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, key := range keys {
-		parts = append(parts, key+"="+selector[key])
-	}
-	return strings.Join(parts, ",")
 }
 
 var _ client.Object = &coordinationv1.Lease{}

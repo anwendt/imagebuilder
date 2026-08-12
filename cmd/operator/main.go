@@ -55,26 +55,26 @@ func init() {
 
 func main() {
 	var (
-		metricsAddr                string
-		probeAddr                  string
-		leaderElect                bool
-		maxConcurrentBuilds        int
-		maxConcurrentBuildsPerNode int
-		schedulerNamespace         string
-		providerNamespace          string
-		requireProviderMTLS        bool
-		requireProviderDigest      bool
-		requireProviderSignature   bool
-		allowedProviderRegistries  string
-		logLevel                   string
+		metricsAddr               string
+		probeAddr                 string
+		leaderElect               bool
+		maxConcurrentBuilds       int
+		deprecatedMaxPerNode      int
+		schedulerNamespace        string
+		providerNamespace         string
+		requireProviderMTLS       bool
+		requireProviderDigest     bool
+		requireProviderSignature  bool
+		allowedProviderRegistries string
+		logLevel                  string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "Metrics endpoint address")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Health probe endpoint address")
 	flag.BoolVar(&leaderElect, "leader-elect", false, "Enable leader election for HA deployments")
 	flag.IntVar(&maxConcurrentBuilds, "max-concurrent-builds", 3, "Maximum parallel build jobs")
-	flag.IntVar(&maxConcurrentBuildsPerNode, "max-concurrent-builds-per-node", 1, "Maximum parallel build jobs per node selector")
-	flag.StringVar(&schedulerNamespace, "scheduler-namespace", os.Getenv("POD_NAMESPACE"), "Namespace used for build slot Leases; defaults to each VMImage namespace when empty")
+	flag.IntVar(&deprecatedMaxPerNode, "max-concurrent-builds-per-node", 1, "Deprecated and ignored; kube-scheduler owns node placement")
+	flag.StringVar(&schedulerNamespace, "scheduler-namespace", os.Getenv("POD_NAMESPACE"), "Namespace used for global build slot Leases; defaults to each VMImage namespace when empty")
 	flag.StringVar(&providerNamespace, "provider-namespace", os.Getenv("POD_NAMESPACE"), "Namespace used for PlatformProvider Deployments and Services")
 	flag.BoolVar(&requireProviderMTLS, "require-provider-mtls", false, "Require all PlatformProvider resources to use spec.transport.tls.mode=Mutual")
 	flag.BoolVar(&requireProviderDigest, "require-provider-digest", false, "Require all PlatformProvider package references to be digest-pinned")
@@ -83,6 +83,7 @@ func main() {
 	// OR-012: log level must be configurable at runtime without redeployment.
 	flag.StringVar(&logLevel, "log-level", "info", "Log level: debug, info, warn, error")
 	flag.Parse()
+	_ = deprecatedMaxPerNode
 	allowedProviderRegistryList := splitCSV(allowedProviderRegistries)
 	imagebuilderv1alpha1.SetPlatformProviderAdmissionPolicy(imagebuilderv1alpha1.PlatformProviderAdmissionPolicy{
 		RequireMTLS:       requireProviderMTLS,
@@ -120,13 +121,12 @@ func main() {
 	}
 
 	if err = (&vmimagecontroller.VMImageReconciler{
-		Client:                     mgr.GetClient(),
-		Scheme:                     mgr.GetScheme(),
-		Registry:                   registry,
-		MaxConcurrentBuilds:        maxConcurrentBuilds,
-		MaxConcurrentBuildsPerNode: maxConcurrentBuildsPerNode,
-		SchedulerNamespace:         schedulerNamespace,
-		ProviderNamespace:          providerNamespace,
+		Client:              mgr.GetClient(),
+		Scheme:              mgr.GetScheme(),
+		Registry:            registry,
+		MaxConcurrentBuilds: maxConcurrentBuilds,
+		SchedulerNamespace:  schedulerNamespace,
+		ProviderNamespace:   providerNamespace,
 	}).SetupWithManager(mgr); err != nil {
 		slog.Error("unable to create VMImage controller", slog.Any("error", err))
 		os.Exit(1)
