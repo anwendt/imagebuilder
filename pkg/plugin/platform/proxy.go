@@ -1,29 +1,26 @@
 package platform
 
 import (
-	"os"
+	"net/http"
+	"net/url"
 	"strings"
+
+	"golang.org/x/net/http/httpproxy"
 )
 
-// ApplyProxyEnvironment applies provider-level proxy settings from
-// ProviderConfig.spec.extra to the current provider process.
-//
-// Provider implementations use the standard Go HTTP transport stacks of their
-// SDKs. Those stacks consult HTTP_PROXY, HTTPS_PROXY, and NO_PROXY, so setting
-// both upper- and lower-case variants makes ProviderConfig proxy examples work
-// without provider-specific transport plumbing.
-func ApplyProxyEnvironment(extra map[string]string) {
-	setProxyEnv("HTTP_PROXY", "http_proxy", extraValue(extra, "httpProxy"))
-	setProxyEnv("HTTPS_PROXY", "https_proxy", extraValue(extra, "httpsProxy"))
-	setProxyEnv("NO_PROXY", "no_proxy", extraValue(extra, "noProxy"))
-}
-
-func setProxyEnv(upper, lower, value string) {
-	if strings.TrimSpace(value) == "" {
-		return
+// HTTPClient returns a ProviderConfig-scoped HTTP client. It never mutates
+// process environment, so concurrent provider instances cannot overwrite each
+// other's proxy routing.
+func HTTPClient(extra map[string]string) (*http.Client, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	config := httpproxy.Config{
+		HTTPProxy:  extraValue(extra, "httpProxy"),
+		HTTPSProxy: extraValue(extra, "httpsProxy"),
+		NoProxy:    extraValue(extra, "noProxy"),
 	}
-	_ = os.Setenv(upper, value)
-	_ = os.Setenv(lower, value)
+	proxy := config.ProxyFunc()
+	transport.Proxy = func(req *http.Request) (*url.URL, error) { return proxy(req.URL) }
+	return &http.Client{Transport: transport}, nil
 }
 
 func extraValue(extra map[string]string, key string) string {

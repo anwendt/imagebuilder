@@ -59,7 +59,7 @@ Go's concurrency model introduces race conditions and deadlocks as common vulner
 
 | ID | SEI CERT Rule | Go Requirement | Tooling | Priority |
 |---|---|---|---|---|
-| CERT-CON-01 | CON00-J | Shared mutable state (the plugin registry, build status cache) SHALL be protected by `sync.RWMutex` or accessed exclusively through channels. | `go test -race`, `go vet` | Must |
+| CERT-CON-01 | CON00-J | Shared mutable state (the plugin registry, build status cache) SHALL be protected by `sync.RWMutex` or accessed exclusively through channels. Built-in provider credentials, parsed ProviderConfig, and SDK clients SHALL be isolated in factory-created instances and SHALL NOT be stored on global registry prototypes. | `go test -race`, `go vet` | Must |
 | CERT-CON-02 | CON01-J | The Go race detector (`-race`) SHALL be enabled for all tests (`go test -race ./...`). The build SHALL fail if any race condition is detected. | `go test -race` in CI | Must |
 | CERT-CON-03 | CON02-J | Goroutines SHALL have defined lifetimes and SHALL be bounded by a `context.Context`. Goroutine leaks SHALL be detected using `goleak` in tests. | `goleak` | Must |
 | CERT-CON-04 | CON06-J | `sync.Mutex` and `sync.RWMutex` SHALL NOT be copied after first use. Mutex-containing structs SHALL be passed by pointer. | `go vet` (copylocks) | Must |

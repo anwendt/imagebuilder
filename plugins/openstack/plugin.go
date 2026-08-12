@@ -13,7 +13,7 @@ import (
 )
 
 func init() {
-	if err := plugin.Register(&Plugin{}); err != nil {
+	if err := plugin.RegisterFactory(&Plugin{}, func() platform.Plugin { return &Plugin{} }); err != nil {
 		panic(fmt.Sprintf("openstack plugin: %v", err))
 	}
 }
@@ -103,7 +103,6 @@ func (p *Plugin) SupportedBuildModes() []string {
 
 func (p *Plugin) Init(ctx context.Context, cfg platform.PluginConfig) error {
 	p.log = slog.Default().With(slog.String("plugin", p.Name()))
-	platform.ApplyProxyEnvironment(cfg.Extra)
 	p.config = openStackConfig{
 		providerConfigName: cfg.ProviderConfigName,
 		region:             cfg.Region,

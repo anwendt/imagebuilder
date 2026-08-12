@@ -96,6 +96,11 @@ func loadAWSConfig(ctx context.Context, cfg awsConfig) (awssdk.Config, error) {
 	options := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(cfg.region),
 	}
+	httpClient, err := platform.HTTPClient(cfg.extraConfig)
+	if err != nil {
+		return awssdk.Config{}, fmt.Errorf("configure provider proxy: %w", err)
+	}
+	options = append(options, awsconfig.WithHTTPClient(httpClient))
 	if cfg.accessKeyID != "" && cfg.secretAccessKey != "" {
 		options = append(options, awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
 			cfg.accessKeyID,

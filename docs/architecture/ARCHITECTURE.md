@@ -452,6 +452,15 @@ type Plugin interface {
 
 Source: `pkg/plugin/platform/interface.go`
 
+Built-in provider packages register an immutable capability prototype plus a
+factory. Every ProviderConfig-bound validation, upload, registration, cleanup,
+or remote-build reconciliation requests a fresh provider instance and calls
+`Init` exactly once. Credentials, parsed configuration, and SDK clients are
+therefore never stored on the global registry prototype or shared between
+concurrent VMImages. External gRPC adapters remain shared because the gRPC
+client connection is concurrency-safe and the provider process isolates its
+state by `providerConfigName`.
+
 ---
 
 ## 7. Provisioner System

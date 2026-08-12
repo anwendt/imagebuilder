@@ -39,11 +39,19 @@ func newGophercloudClient(ctx context.Context, cfg openStackConfig) (*gopherclou
 		ApplicationCredentialSecret: cfg.appCredSecret,
 		AllowReauth:                 true,
 	}
-	provider, err := gcopenstack.AuthenticatedClient(ctx, auth)
+	provider, err := gcopenstack.NewClient(auth.IdentityEndpoint)
 	if err != nil {
+		return nil, fmt.Errorf("create provider client: %w", err)
+	}
+	httpClient, err := platform.HTTPClient(cfg.extraConfig)
+	if err != nil {
+		return nil, fmt.Errorf("configure provider proxy: %w", err)
+	}
+	httpClient.Timeout = 60 * time.Second
+	provider.HTTPClient = *httpClient
+	if err := gcopenstack.Authenticate(ctx, provider, auth); err != nil {
 		return nil, fmt.Errorf("authenticate: %w", err)
 	}
-	provider.HTTPClient = http.Client{Timeout: 60 * time.Second}
 	endpoint := gophercloud.EndpointOpts{Region: cfg.region}
 	imageClient, err := gcopenstack.NewImageV2(provider, endpoint)
 	if err != nil {

@@ -11,12 +11,14 @@ import (
 )
 
 func init() {
-	if err := plugin.Register(&Plugin{}); err != nil {
+	if err := plugin.RegisterFactory(&Plugin{}, func() platform.Plugin { return &Plugin{} }); err != nil {
 		panic(fmt.Sprintf("gcp plugin: %v", err))
 	}
 }
 
-type Plugin struct{}
+type Plugin struct {
+	instance byte
+}
 
 var _ platform.RemoteBuildCleanupPlugin = (*Plugin)(nil)
 

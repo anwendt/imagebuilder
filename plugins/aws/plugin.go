@@ -36,7 +36,7 @@ import (
 )
 
 func init() {
-	if err := plugin.Register(&AWSPlugin{}); err != nil {
+	if err := plugin.RegisterFactory(&AWSPlugin{}, func() platform.Plugin { return &AWSPlugin{} }); err != nil {
 		panic(fmt.Sprintf("aws plugin: failed to register: %v", err))
 	}
 }
@@ -107,7 +107,6 @@ func (p *AWSPlugin) SupportedBuildModes() []string {
 
 func (p *AWSPlugin) Init(ctx context.Context, cfg platform.PluginConfig) error {
 	p.log = slog.Default().With(slog.String("plugin", p.Name()))
-	platform.ApplyProxyEnvironment(cfg.Extra)
 
 	creds := cfg.SecretData
 	p.config = awsConfig{

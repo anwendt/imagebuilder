@@ -52,7 +52,7 @@ type Plugin interface {
 
 	// Lifecycle
 
-	// Init is called once when the provider is registered.
+	// Init is called exactly once for an operation instance.
 	// cfg contains the resolved ProviderConfig (credentials already loaded from Secret).
 	Init(ctx context.Context, cfg PluginConfig) error
 

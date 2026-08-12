@@ -44,7 +44,7 @@ const (
 
 func init() {
 	registerAzureMetrics()
-	if err := plugin.Register(&Plugin{}); err != nil {
+	if err := plugin.RegisterFactory(&Plugin{}, func() platform.Plugin { return &Plugin{} }); err != nil {
 		panic(fmt.Sprintf("azure plugin: %v", err))
 	}
 }
@@ -144,7 +144,6 @@ func (p *Plugin) SupportedBuildModes() []string {
 
 func (p *Plugin) Init(ctx context.Context, cfg platform.PluginConfig) error {
 	p.log = slog.Default().With(slog.String("plugin", p.Name()))
-	platform.ApplyProxyEnvironment(cfg.Extra)
 	p.config = config{
 		providerConfigName: cfg.ProviderConfigName,
 		subscriptionID:     firstNonEmpty(secretString(cfg.SecretData, "subscriptionId"), cfg.Extra["subscriptionId"]),
@@ -538,6 +537,7 @@ type sdkClient struct {
 	tokenCredential azcore.TokenCredential
 	sharedKey       *azblob.SharedKeyCredential
 	storageURL      string
+	httpClient      *http.Client
 }
 
 func newAzureClient(ctx context.Context, cfg config) (client, error) {
@@ -580,6 +580,10 @@ func newAzureClient(ctx context.Context, cfg config) (client, error) {
 		sharedKey:       sharedKey,
 		storageURL:      storageURL,
 	}
+	client.httpClient, err = platform.HTTPClient(cfg.extraConfig)
+	if err != nil {
+		return nil, fmt.Errorf("configure provider proxy: %w", err)
+	}
 	if err := client.HealthCheck(ctx); err != nil {
 		return nil, err
 	}
@@ -587,7 +591,10 @@ func newAzureClient(ctx context.Context, cfg config) (client, error) {
 }
 
 func tokenCredential(cfg config) (azcore.TokenCredential, error) {
-	options := credentialClientOptions(cfg)
+	options, err := credentialClientOptions(cfg)
+	if err != nil {
+		return nil, err
+	}
 	switch cfg.authMode {
 	case "", "clientsecret":
 		credential, err := azidentity.NewClientSecretCredential(cfg.tenantID, cfg.clientID, cfg.clientSecret, options)
@@ -621,16 +628,25 @@ func tokenCredential(cfg config) (azcore.TokenCredential, error) {
 	}
 }
 
-func credentialClientOptions(cfg config) *azidentity.ClientSecretCredentialOptions {
+func credentialClientOptions(cfg config) (*azidentity.ClientSecretCredentialOptions, error) {
 	options := &azidentity.ClientSecretCredentialOptions{}
+	client, err := platform.HTTPClient(cfg.extraConfig)
+	if err != nil {
+		return nil, fmt.Errorf("configure provider proxy: %w", err)
+	}
+	options.ClientOptions.Transport = client
 	authorityHost := firstNonEmpty(cfg.authorityHost, defaultAuthorityHost(cfg.cloudName))
 	if authorityHost != "" {
 		options.Cloud.ActiveDirectoryAuthorityHost = ensureTrailingSlash(authorityHost)
 	}
-	return options
+	return options, nil
 }
 
 func armClientOptions(cfg config) (*arm.ClientOptions, error) {
+	httpClient, err := platform.HTTPClient(cfg.extraConfig)
+	if err != nil {
+		return nil, fmt.Errorf("configure provider proxy: %w", err)
+	}
 	endpoint := firstNonEmpty(cfg.armEndpoint, defaultARMEndpoint(cfg.cloudName))
 	if endpoint == "" {
 		return nil, nil
@@ -643,6 +659,7 @@ func armClientOptions(cfg config) (*arm.ClientOptions, error) {
 	endpoint = strings.TrimRight(endpoint, "/")
 	return &arm.ClientOptions{
 		ClientOptions: policy.ClientOptions{
+			Transport: httpClient,
 			Cloud: cloud.Configuration{
 				ActiveDirectoryAuthorityHost: authorityHost,
 				Services: map[cloud.ServiceName]cloud.ServiceConfiguration{
@@ -657,6 +674,11 @@ func armClientOptions(cfg config) (*arm.ClientOptions, error) {
 }
 
 func blobClient(cfg config, tokenCredential azcore.TokenCredential) (*azblob.Client, *azblob.SharedKeyCredential, string, error) {
+	httpClient, err := platform.HTTPClient(cfg.extraConfig)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("configure provider proxy: %w", err)
+	}
+	options := &azblob.ClientOptions{ClientOptions: policy.ClientOptions{Transport: httpClient}}
 	endpoint := cfg.storageEndpoint
 	if strings.HasPrefix(strings.ToLower(endpoint), "http://") {
 		return nil, nil, "", fmt.Errorf("insecure Azure Storage endpoint is not supported")
@@ -670,13 +692,13 @@ func blobClient(cfg config, tokenCredential azcore.TokenCredential) (*azblob.Cli
 		if err != nil {
 			return nil, nil, "", fmt.Errorf("create Azure Storage shared key credential: %w", err)
 		}
-		client, err := azblob.NewClientWithSharedKeyCredential(endpoint, credential, nil)
+		client, err := azblob.NewClientWithSharedKeyCredential(endpoint, credential, options)
 		if err != nil {
 			return nil, nil, "", fmt.Errorf("create Azure Blob client: %w", err)
 		}
 		return client, credential, endpoint, nil
 	}
-	client, err := azblob.NewClient(endpoint, tokenCredential, nil)
+	client, err := azblob.NewClient(endpoint, tokenCredential, options)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("create Azure Blob client: %w", err)
 	}
@@ -754,14 +776,15 @@ func (c *sdkClient) uploadPageBlob(ctx context.Context, container, blobName stri
 
 func (c *sdkClient) pageBlobClient(container, blobName string) (*pageblob.Client, error) {
 	blobURL := c.blobURL(container, blobName)
+	options := &pageblob.ClientOptions{ClientOptions: policy.ClientOptions{Transport: c.httpClient}}
 	if c.sharedKey != nil {
-		client, err := pageblob.NewClientWithSharedKeyCredential(blobURL, c.sharedKey, nil)
+		client, err := pageblob.NewClientWithSharedKeyCredential(blobURL, c.sharedKey, options)
 		if err != nil {
 			return nil, fmt.Errorf("create page blob client: %w", err)
 		}
 		return client, nil
 	}
-	client, err := pageblob.NewClient(blobURL, c.tokenCredential, nil)
+	client, err := pageblob.NewClient(blobURL, c.tokenCredential, options)
 	if err != nil {
 		return nil, fmt.Errorf("create page blob client: %w", err)
 	}

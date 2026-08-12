@@ -215,7 +215,7 @@ func (r *VMImageReconciler) reconcilePending(ctx context.Context, img *v1alpha1.
 		if !r.Registry.Supports(providerName) {
 			return r.setFailed(ctx, img, fmt.Sprintf("provider %q is not installed or not healthy", providerName))
 		}
-		providerPlugin, err := r.Registry.Get(providerName)
+		providerPlugin, err := r.Registry.New(providerName)
 		if err != nil {
 			return r.setFailed(ctx, img, fmt.Sprintf("provider %q is not installed or not healthy: %v", providerName, err))
 		}
@@ -425,7 +425,7 @@ func (r *VMImageReconciler) reconcileRemoteBuild(ctx context.Context, img *v1alp
 	if err != nil {
 		return r.setFailed(ctx, img, fmt.Sprintf("provider lookup failed: %v", err))
 	}
-	providerPlugin, err := r.Registry.Get(providerName)
+	providerPlugin, err := r.Registry.New(providerName)
 	if err != nil {
 		return r.setFailedWithReason(ctx, img, "RemoteBuildUnsupported", fmt.Sprintf("provider %q is not installed or not healthy: %v", providerName, err))
 	}
@@ -1358,7 +1358,7 @@ func (r *VMImageReconciler) cleanupRemoteBuild(ctx context.Context, img *v1alpha
 		r.markCleanupFailure(ctx, img, "remote-build", "RemoteBuildCleanupFailed", cleanupErr)
 		return cleanupErr
 	}
-	providerPlugin, err := r.Registry.Get(providerName)
+	providerPlugin, err := r.Registry.New(providerName)
 	if err != nil {
 		cleanupErr := fmt.Errorf("get provider %q: %w", providerName, err)
 		r.markCleanupFailure(ctx, img, "remote-build", "RemoteBuildCleanupFailed", cleanupErr)

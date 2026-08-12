@@ -266,7 +266,7 @@ func cleanupUploadedArtifacts(ctx context.Context, workspace string, getenv func
 
 func providerPluginForTarget(ctx context.Context, target uploadpod.TargetConfig) (platform.Plugin, func(), error) {
 	if target.GRPC == nil {
-		providerPlugin, err := plugin.Default().Get(target.Provider)
+		providerPlugin, err := plugin.Default().New(target.Provider)
 		if err != nil {
 			return nil, func() {}, fmt.Errorf("get provider %q: %w", target.Provider, err)
 		}

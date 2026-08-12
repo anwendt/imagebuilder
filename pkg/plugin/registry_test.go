@@ -7,6 +7,7 @@ package plugin_test
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"testing"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
@@ -19,8 +20,9 @@ import (
 // ---------------------------------------------------------------------------
 
 type fakePlugin struct {
-	name    string
-	version string
+	name               string
+	version            string
+	providerConfigName string
 }
 
 func (p *fakePlugin) Name() string    { return p.name }
@@ -31,7 +33,10 @@ func (p *fakePlugin) SupportedFormats() []platform.ImageFormat {
 func (p *fakePlugin) SupportedOS() []platform.OSFamily {
 	return []platform.OSFamily{platform.OSFamilyLinux}
 }
-func (p *fakePlugin) Init(_ context.Context, _ platform.PluginConfig) error   { return nil }
+func (p *fakePlugin) Init(_ context.Context, cfg platform.PluginConfig) error {
+	p.providerConfigName = cfg.ProviderConfigName
+	return nil
+}
 func (p *fakePlugin) Validate(_ context.Context, _ v1alpha1.TargetSpec) error { return nil }
 func (p *fakePlugin) Upload(_ context.Context, _ *platform.BuildArtifact) (*platform.UploadResult, error) {
 	return &platform.UploadResult{}, nil
@@ -75,6 +80,85 @@ func TestRegistry_Register_Duplicate_ReturnsError(t *testing.T) {
 	}
 	if err := r.Register(p); err == nil {
 		t.Error("second Register with same name should return error, got nil")
+	}
+}
+
+func TestRegistry_FactoryReturnsConfigIsolatedInstances(t *testing.T) {
+	r := newRegistry()
+	if err := r.RegisterFactory(
+		&fakePlugin{name: "aws", version: "v1"},
+		func() platform.Plugin { return &fakePlugin{name: "aws", version: "v1"} },
+	); err != nil {
+		t.Fatalf("RegisterFactory: %v", err)
+	}
+
+	firstPlugin, err := r.New("aws")
+	if err != nil {
+		t.Fatalf("New first: %v", err)
+	}
+	secondPlugin, err := r.New("aws")
+	if err != nil {
+		t.Fatalf("New second: %v", err)
+	}
+	first := firstPlugin.(*fakePlugin)
+	second := secondPlugin.(*fakePlugin)
+	if first == second {
+		t.Fatal("factory returned the same mutable plugin instance")
+	}
+	if err := first.Init(context.Background(), platform.PluginConfig{ProviderConfigName: "prod"}); err != nil {
+		t.Fatalf("Init first: %v", err)
+	}
+	if err := second.Init(context.Background(), platform.PluginConfig{ProviderConfigName: "dev"}); err != nil {
+		t.Fatalf("Init second: %v", err)
+	}
+	if first.providerConfigName != "prod" || second.providerConfigName != "dev" {
+		t.Fatalf("provider configs leaked: first=%q second=%q", first.providerConfigName, second.providerConfigName)
+	}
+	prototype, err := r.Get("aws")
+	if err != nil {
+		t.Fatalf("Get prototype: %v", err)
+	}
+	if prototype.(*fakePlugin).providerConfigName != "" {
+		t.Fatalf("capability prototype was mutated: %#v", prototype)
+	}
+}
+
+func TestRegistry_FactoryConcurrentNewReturnsUniqueInstances(t *testing.T) {
+	r := newRegistry()
+	if err := r.RegisterFactory(
+		&fakePlugin{name: "aws", version: "v1"},
+		func() platform.Plugin { return &fakePlugin{name: "aws", version: "v1"} },
+	); err != nil {
+		t.Fatalf("RegisterFactory: %v", err)
+	}
+
+	const count = 32
+	instances := make(chan *fakePlugin, count)
+	var wg sync.WaitGroup
+	for i := 0; i < count; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			instance, err := r.New("aws")
+			if err != nil {
+				t.Errorf("New: %v", err)
+				return
+			}
+			instances <- instance.(*fakePlugin)
+		}()
+	}
+	wg.Wait()
+	close(instances)
+
+	seen := map[*fakePlugin]bool{}
+	for instance := range instances {
+		if seen[instance] {
+			t.Fatal("factory reused an instance across concurrent calls")
+		}
+		seen[instance] = true
+	}
+	if len(seen) != count {
+		t.Fatalf("unique instances = %d, want %d", len(seen), count)
 	}
 }
 

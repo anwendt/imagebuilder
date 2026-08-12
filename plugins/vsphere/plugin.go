@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"path"
 	"path/filepath"
@@ -15,8 +16,10 @@ import (
 	"github.com/vmware/govmomi/find"
 	"github.com/vmware/govmomi/object"
 	"github.com/vmware/govmomi/ovf/importer"
+	"github.com/vmware/govmomi/session"
 	"github.com/vmware/govmomi/vapi/library"
 	"github.com/vmware/govmomi/vapi/rest"
+	"github.com/vmware/govmomi/vim25"
 	"github.com/vmware/govmomi/vim25/soap"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
@@ -25,7 +28,7 @@ import (
 )
 
 func init() {
-	if err := plugin.Register(&Plugin{}); err != nil {
+	if err := plugin.RegisterFactory(&Plugin{}, func() platform.Plugin { return &Plugin{} }); err != nil {
 		panic(fmt.Sprintf("vsphere plugin: %v", err))
 	}
 }
@@ -124,7 +127,6 @@ func (p *Plugin) SupportedBuildModes() []string {
 
 func (p *Plugin) Init(ctx context.Context, cfg platform.PluginConfig) error {
 	p.log = slog.Default().With(slog.String("plugin", p.Name()))
-	platform.ApplyProxyEnvironment(cfg.Extra)
 	p.config = config{
 		providerConfigName: cfg.ProviderConfigName,
 		endpoint:           strings.TrimSpace(cfg.Endpoint),
@@ -401,9 +403,27 @@ func newGovmomiClient(ctx context.Context, cfg config) (client, error) {
 		return nil, fmt.Errorf("parse endpoint: %w", err)
 	}
 	u.User = url.UserPassword(cfg.username, cfg.password)
-	vc, err := govmomi.NewClient(ctx, u, cfg.insecure)
+	soapClient := soap.NewClient(u, cfg.insecure)
+	httpClient, err := platform.HTTPClient(cfg.extraConfig)
+	if err != nil {
+		return nil, fmt.Errorf("configure provider proxy: %w", err)
+	}
+	scopedTransport, ok := httpClient.Transport.(*http.Transport)
+	if !ok {
+		return nil, fmt.Errorf("provider proxy transport has unexpected type %T", httpClient.Transport)
+	}
+	soapTransport, ok := soapClient.Client.Transport.(*http.Transport)
+	if !ok {
+		return nil, fmt.Errorf("vSphere SOAP transport has unexpected type %T", soapClient.Client.Transport)
+	}
+	soapTransport.Proxy = scopedTransport.Proxy
+	vimClient, err := vim25.NewClient(ctx, soapClient)
 	if err != nil {
 		return nil, fmt.Errorf("connect to vCenter: %w", err)
+	}
+	vc := &govmomi.Client{Client: vimClient, SessionManager: session.NewManager(vimClient)}
+	if err := vc.Login(ctx, u.User); err != nil {
+		return nil, fmt.Errorf("login to vCenter: %w", err)
 	}
 	finder := find.NewFinder(vc.Client, true)
 	return &govmomiClient{
