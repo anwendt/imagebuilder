@@ -335,6 +335,60 @@ func TestVMImageWebhook_ValidUpdate_AcceptsValidSpec(t *testing.T) {
 	}
 }
 
+func TestVMImageWebhook_TerminalUpdateRequiresRevisionChange(t *testing.T) {
+	old := &VMImage{
+		Spec: VMImageSpec{
+			OS:      OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
+			Source:  validMarketplaceSource(),
+			Build:   BuildSpec{Revision: "v1"},
+			Targets: []TargetSpec{{ProviderConfigRef: ProviderConfigRef{Name: "aws-cfg"}, Format: "vmdk"}},
+		},
+		Status: VMImageStatus{Phase: PhaseReady},
+	}
+	updated := old.DeepCopy()
+	updated.Spec.OS.Version = "24.10"
+	_, err := updated.ValidateUpdate(old)
+	if err == nil || !strings.Contains(err.Error(), "must change spec.build.revision") {
+		t.Fatalf("ValidateUpdate error = %v, want revision requirement", err)
+	}
+}
+
+func TestVMImageWebhook_TerminalRevisionChangeRequestsRebuild(t *testing.T) {
+	old := &VMImage{
+		Spec: VMImageSpec{
+			OS:      OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
+			Source:  validMarketplaceSource(),
+			Build:   BuildSpec{Revision: "v1"},
+			Targets: []TargetSpec{{ProviderConfigRef: ProviderConfigRef{Name: "aws-cfg"}, Format: "vmdk"}},
+		},
+		Status: VMImageStatus{Phase: PhaseFailed},
+	}
+	updated := old.DeepCopy()
+	updated.Spec.Build.Revision = "v2"
+	updated.Spec.OS.Version = "24.10"
+	if _, err := updated.ValidateUpdate(old); err != nil {
+		t.Fatalf("terminal update with new revision should be admitted: %v", err)
+	}
+}
+
+func TestVMImageWebhook_ActiveBuildSpecIsImmutable(t *testing.T) {
+	old := &VMImage{
+		Spec: VMImageSpec{
+			OS:      OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
+			Source:  validMarketplaceSource(),
+			Build:   BuildSpec{Revision: "v1"},
+			Targets: []TargetSpec{{ProviderConfigRef: ProviderConfigRef{Name: "aws-cfg"}, Format: "vmdk"}},
+		},
+		Status: VMImageStatus{Phase: PhaseBuilding},
+	}
+	updated := old.DeepCopy()
+	updated.Spec.Build.Revision = "v2"
+	_, err := updated.ValidateUpdate(old)
+	if err == nil || !strings.Contains(err.Error(), "spec cannot be changed while VMImage phase is") {
+		t.Fatalf("ValidateUpdate error = %v, want active-build immutability", err)
+	}
+}
+
 func TestVMImageWebhook_SourceCacheSpec_Valid(t *testing.T) {
 	img := &VMImage{
 		Spec: VMImageSpec{

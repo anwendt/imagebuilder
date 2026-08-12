@@ -102,6 +102,7 @@ type SourceSpec struct {
 	// Special tokens (Packer-compatible):
 	//   <enter>   — Enter/Return key
 	//   <tab>     — Tab key
+
 	//   <esc>     — Escape key
 	//   <up> <down> <left> <right> — cursor keys
 	//   <wait>    — wait 1 second before next key
@@ -394,6 +395,14 @@ type ProviderConfigRef struct {
 }
 
 type BuildSpec struct {
+	// Revision is an opaque, user-controlled rebuild token. Change it after a
+	// VMImage reaches Ready or Failed to start a new build for the updated spec.
+	// Spec changes while a build is active are rejected, and terminal spec
+	// changes must include a revision change.
+	// +kubebuilder:validation:MaxLength=128
+	// +optional
+	Revision string `json:"revision,omitempty"`
+
 	// Mode selects where the build is executed. local uses the Kubernetes build
 	// Job and local backend. remote delegates the build lifecycle to a provider
 	// that advertises remote build support. Defaults to local.
@@ -690,6 +699,17 @@ type ResourceRequirements struct {
 
 // VMImageStatus defines the observed state of VMImage
 type VMImageStatus struct {
+	// ObservedGeneration is the metadata generation for which this status was
+	// produced. A lower value means the current spec has not been accepted by
+	// the controller yet.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// ObservedRevision is the spec.build.revision represented by this status.
+	// Change spec.build.revision on a terminal VMImage to request a rebuild.
+	// +optional
+	ObservedRevision string `json:"observedRevision,omitempty"`
+
 	// Phase is the current lifecycle phase
 	// +kubebuilder:validation:Enum=Pending;Building;Provisioning;Uploading;Ready;Failed
 	Phase string `json:"phase,omitempty"`

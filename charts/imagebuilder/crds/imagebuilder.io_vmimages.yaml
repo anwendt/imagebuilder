@@ -312,6 +312,14 @@ spec:
                       storage:
                         type: string
                     type: object
+                  revision:
+                    description: |-
+                      Revision is an opaque, user-controlled rebuild token. Change it after a
+                      VMImage reaches Ready or Failed to start a new build for the updated spec.
+                      Spec changes while a build is active are rejected, and terminal spec
+                      changes must include a revision change.
+                    maxLength: 128
+                    type: string
                   security:
                     description: |-
                       Security configures build-container security exceptions. Defaults are
@@ -563,15 +571,7 @@ spec:
                 description: Source describes where to get the base image from
                 properties:
                   bootCommand:
-                    description: |-
-                      BootCommand is a sequence of key strokes sent to the VM over VNC/SPICE
-                      immediately after power-on to navigate the boot menu or installer dialog.
-                      Only valid when type=iso. The build engine (QEMU) emulates each entry as
-                      a key-press event.
-
-                      Special tokens (Packer-compatible):
-                        <enter>   — Enter/Return key
-                        <tab>     — Tab key
+                    description: |2-
                         <esc>     — Escape key
                         <up> <down> <left> <right> — cursor keys
                         <wait>    — wait 1 second before next key
@@ -948,6 +948,18 @@ spec:
                   - providerConfig
                   type: object
                 type: array
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the metadata generation for which this status was
+                  produced. A lower value means the current spec has not been accepted by
+                  the controller yet.
+                format: int64
+                type: integer
+              observedRevision:
+                description: |-
+                  ObservedRevision is the spec.build.revision represented by this status.
+                  Change spec.build.revision on a terminal VMImage to request a rebuild.
+                type: string
               phase:
                 description: Phase is the current lifecycle phase
                 enum:

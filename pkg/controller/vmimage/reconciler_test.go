@@ -345,6 +345,91 @@ func TestReconcile_Pending_CreatesJob(t *testing.T) {
 	}
 }
 
+func TestReconcile_Pending_RecordsObservedGeneration(t *testing.T) {
+	img := newImg("observed-generation", "default", v1alpha1.PhasePending)
+	img.Generation = 3
+	img.Finalizers = []string{"imagebuilder.io/cleanup"}
+	img.Spec.Build.Revision = "v1"
+
+	s := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img).Build()
+	r := &vmimage.VMImageReconciler{Client: c, Scheme: s, Registry: plugin.Default()}
+	reconcileOnce(t, r, "observed-generation", "default")
+
+	updated := &v1alpha1.VMImage{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: img.Name, Namespace: img.Namespace}, updated); err != nil {
+		t.Fatalf("get updated VMImage: %v", err)
+	}
+	if updated.Status.ObservedGeneration != 3 || updated.Status.ObservedRevision != "v1" {
+		t.Fatalf("observed status = generation %d revision %q", updated.Status.ObservedGeneration, updated.Status.ObservedRevision)
+	}
+	for _, condition := range updated.Status.Conditions {
+		if condition.ObservedGeneration != 3 {
+			t.Fatalf("condition %q observedGeneration = %d, want 3", condition.Type, condition.ObservedGeneration)
+		}
+	}
+}
+
+func TestReconcile_TerminalRevisionChangeResetsStatus(t *testing.T) {
+	img := newImg("rebuild-ready", "default", v1alpha1.PhaseReady)
+	img.Generation = 2
+	img.Finalizers = []string{"imagebuilder.io/cleanup"}
+	img.Spec.Build.Revision = "v2"
+	img.Status.ObservedGeneration = 1
+	img.Status.ObservedRevision = "v1"
+	img.Status.Images = []v1alpha1.ImageStatus{{Provider: "aws", ProviderConfig: "aws-cfg", ImageRef: "ami-old", Format: "ami"}}
+	oldJob := "rebuild-ready-build-old"
+	img.Status.BuildJobRef = &oldJob
+	img.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, ObservedGeneration: 1, Reason: "Built"}}
+	recorder := record.NewFakeRecorder(10)
+
+	s := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img).Build()
+	r := &vmimage.VMImageReconciler{Client: c, Scheme: s, Registry: plugin.Default(), Recorder: recorder}
+	result := reconcileOnce(t, r, img.Name, img.Namespace)
+	if result.RequeueAfter == 0 {
+		t.Fatalf("rebuild result = %+v, want requeue", result)
+	}
+
+	updated := &v1alpha1.VMImage{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: img.Name, Namespace: img.Namespace}, updated); err != nil {
+		t.Fatalf("get updated VMImage: %v", err)
+	}
+	if updated.Status.Phase != v1alpha1.PhasePending || updated.Status.ObservedGeneration != 2 || updated.Status.ObservedRevision != "v2" {
+		t.Fatalf("reset status = %#v", updated.Status)
+	}
+	if len(updated.Status.Images) != 0 || updated.Status.BuildJobRef != nil || len(updated.Status.Conditions) != 0 {
+		t.Fatalf("previous revision status was not cleared: %#v", updated.Status)
+	}
+	requireEvent(t, recorder, "RebuildRequested")
+}
+
+func TestReconcile_TerminalGenerationWithoutRevisionRemainsStale(t *testing.T) {
+	img := newImg("stale-ready", "default", v1alpha1.PhaseReady)
+	img.Generation = 2
+	img.Finalizers = []string{"imagebuilder.io/cleanup"}
+	img.Spec.Build.Revision = "v1"
+	img.Status.ObservedGeneration = 1
+	img.Status.ObservedRevision = "v1"
+	img.Status.Images = []v1alpha1.ImageStatus{{Provider: "aws", ProviderConfig: "aws-cfg", ImageRef: "ami-old", Format: "ami"}}
+
+	s := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img).Build()
+	r := &vmimage.VMImageReconciler{Client: c, Scheme: s, Registry: plugin.Default()}
+	result := reconcileOnce(t, r, img.Name, img.Namespace)
+	if result.RequeueAfter != 0 {
+		t.Fatalf("stale result = %+v, want no rebuild", result)
+	}
+
+	updated := &v1alpha1.VMImage{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: img.Name, Namespace: img.Namespace}, updated); err != nil {
+		t.Fatalf("get updated VMImage: %v", err)
+	}
+	if updated.Status.ObservedGeneration != 1 || updated.Status.Phase != v1alpha1.PhaseReady || len(updated.Status.Images) != 1 {
+		t.Fatalf("stale terminal status changed unexpectedly: %#v", updated.Status)
+	}
+}
+
 func TestReconcile_Pending_SetsPhaseToBuilding(t *testing.T) {
 	img := newImg("build-me", "default", v1alpha1.PhasePending)
 	img.Finalizers = []string{"imagebuilder.io/cleanup"}

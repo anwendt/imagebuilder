@@ -115,6 +115,33 @@ func TestAssemble_JobName(t *testing.T) {
 	}
 }
 
+func TestAssemble_RevisionChangesJobAndWorkspaceNames(t *testing.T) {
+	first := baseImage()
+	first.Spec.Build.Revision = "v1"
+	second := first.DeepCopy()
+	second.Spec.Build.Revision = "v2"
+
+	firstJob, err := buildpod.Assemble(first, newScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble first revision: %v", err)
+	}
+	secondJob, err := buildpod.Assemble(second, newScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble second revision: %v", err)
+	}
+	if firstJob.Name == secondJob.Name {
+		t.Fatalf("revision job names are equal: %q", firstJob.Name)
+	}
+	firstClaim := buildpod.WorkspaceClaimName(first)
+	secondClaim := buildpod.WorkspaceClaimName(second)
+	if firstClaim == secondClaim {
+		t.Fatalf("revision workspace names are equal: %q", firstClaim)
+	}
+	if firstJob.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim.ClaimName != firstClaim {
+		t.Fatalf("first workspace claim = %q, want %q", firstJob.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim.ClaimName, firstClaim)
+	}
+}
+
 func TestAssemble_JobNamespace(t *testing.T) {
 	img := baseImage()
 	job, err := buildpod.Assemble(img, newScheme(t))

@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"reflect"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -38,8 +39,8 @@ func (vmImageValidator) ValidateCreate(_ context.Context, obj *VMImage) (admissi
 	return obj.validate()
 }
 
-func (vmImageValidator) ValidateUpdate(_ context.Context, _ *VMImage, newObj *VMImage) (admission.Warnings, error) {
-	return newObj.validate()
+func (vmImageValidator) ValidateUpdate(_ context.Context, oldObj *VMImage, newObj *VMImage) (admission.Warnings, error) {
+	return newObj.validateUpdate(oldObj)
 }
 
 func (vmImageValidator) ValidateDelete(_ context.Context, _ *VMImage) (admission.Warnings, error) {
@@ -52,8 +53,9 @@ func (r *VMImage) ValidateCreate() (admission.Warnings, error) {
 }
 
 // ValidateUpdate validates a VMImage update.
-func (r *VMImage) ValidateUpdate(_ runtime.Object) (admission.Warnings, error) {
-	return r.validate()
+func (r *VMImage) ValidateUpdate(old runtime.Object) (admission.Warnings, error) {
+	oldImage, _ := old.(*VMImage)
+	return r.validateUpdate(oldImage)
 }
 
 // ValidateDelete is a no-op — VMImage deletions are always allowed.
@@ -176,6 +178,22 @@ func (r *VMImage) validate() (admission.Warnings, error) {
 
 	if len(errs) > 0 {
 		return nil, joinErrors(errs)
+	}
+	return nil, nil
+}
+
+func (r *VMImage) validateUpdate(old *VMImage) (admission.Warnings, error) {
+	if _, err := r.validate(); err != nil {
+		return nil, err
+	}
+	if old == nil || reflect.DeepEqual(old.Spec, r.Spec) {
+		return nil, nil
+	}
+	if old.Status.Phase != PhaseReady && old.Status.Phase != PhaseFailed {
+		return nil, fmt.Errorf("spec cannot be changed while VMImage phase is %q; wait for Ready or Failed, then change spec.build.revision", old.Status.Phase)
+	}
+	if old.Spec.Build.Revision == r.Spec.Build.Revision {
+		return nil, fmt.Errorf("terminal VMImage spec changes must change spec.build.revision to request a rebuild")
 	}
 	return nil, nil
 }

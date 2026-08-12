@@ -15,6 +15,7 @@ import (
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/controller/buildpod"
+	"github.com/anwendt/imagebuilder/pkg/controller/revision"
 )
 
 const (
@@ -264,11 +265,11 @@ func workspaceVolume(img *v1alpha1.VMImage) corev1.Volume {
 }
 
 func JobName(img *v1alpha1.VMImage) string {
-	return fmt.Sprintf("%s-upload", img.Name)
+	return revision.ResourceName(fmt.Sprintf("%s-upload", img.Name), img.Spec.Build.Revision)
 }
 
 func CleanupJobName(img *v1alpha1.VMImage) string {
-	return fmt.Sprintf("%s-upload-cleanup", img.Name)
+	return revision.ResourceName(fmt.Sprintf("%s-upload-cleanup", img.Name), img.Spec.Build.Revision)
 }
 
 func jobNameForMode(img *v1alpha1.VMImage, cleanupOnly bool) string {

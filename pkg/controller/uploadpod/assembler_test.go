@@ -292,6 +292,31 @@ func TestAssembleCleanup_SetsCleanupMode(t *testing.T) {
 	}
 }
 
+func TestAssemble_RevisionChangesUploadResourceNames(t *testing.T) {
+	img := &v1alpha1.VMImage{
+		ObjectMeta: metav1.ObjectMeta{Name: "ubuntu", Namespace: "default", UID: "uid"},
+		Spec: v1alpha1.VMImageSpec{
+			Build:   v1alpha1.BuildSpec{Revision: "v2", ArtifactStorage: &v1alpha1.ArtifactStorageSpec{Type: "pvc"}},
+			Targets: []v1alpha1.TargetSpec{{ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "aws-cfg"}, Format: "vmdk"}},
+		},
+	}
+	cfg := v1alpha1.ProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "aws-cfg", Namespace: "default"},
+		Spec:       v1alpha1.ProviderConfigSpec{Provider: "aws", Credentials: v1alpha1.CredentialsSpec{SecretRef: v1alpha1.SecretRef{Name: "aws-secret"}}},
+	}
+	job, err := uploadpod.Assemble(img, []v1alpha1.ProviderConfig{cfg}, testScheme(t))
+	if err != nil {
+		t.Fatalf("Assemble returned error: %v", err)
+	}
+	cleanup, err := uploadpod.AssembleCleanup(img, []v1alpha1.ProviderConfig{cfg}, testScheme(t))
+	if err != nil {
+		t.Fatalf("AssembleCleanup returned error: %v", err)
+	}
+	if job.Name == "ubuntu-upload" || cleanup.Name == "ubuntu-upload-cleanup" || job.Name == cleanup.Name {
+		t.Fatalf("revision names: upload=%q cleanup=%q", job.Name, cleanup.Name)
+	}
+}
+
 func envMap(env []corev1.EnvVar) map[string]string {
 	out := map[string]string{}
 	for _, e := range env {

@@ -26,6 +26,42 @@ spec:
       format: vmdk
 ```
 
+## Rebuilds and revisions
+
+`spec.build.revision` is the explicit rebuild token. After a `VMImage` reaches
+`Ready` or `Failed`, change this value to start another build. The token is
+opaque and may be a release number, Git commit, or CI run ID:
+
+```yaml
+spec:
+  build:
+    revision: "2026-08-12.2"
+```
+
+The update may include other desired-state changes, but the revision must also
+change. While the phase is `Pending`, `Building`, `Provisioning`, or
+`Uploading`, spec changes are rejected so an active attempt always executes an
+immutable specification. Changing only the revision on a `Failed` resource is
+the declarative retry mechanism.
+
+On a rebuild, the controller clears the previous attempt's current status and
+returns the resource to `Pending`. Generated Jobs, provider operation IDs, and
+operator-created workspace PVCs are scoped by a stable revision hash, avoiding
+collisions with resources from older attempts. Existing PVCs explicitly
+selected through `claimName` remain shared by user choice.
+
+Use these status fields to determine whether status represents the current
+desired state:
+
+- `status.observedGeneration` — accepted `metadata.generation`;
+- `status.observedRevision` — revision represented by the current status;
+- `status.conditions[*].observedGeneration` — generation for each condition.
+
+If `status.observedGeneration` is lower than `metadata.generation`, the current
+status is stale and must not be treated as the result of the new spec. A
+successfully registered image from an older revision is not automatically
+deleted when a new revision is requested.
+
 ## Source Types
 
 | Type | Usage |

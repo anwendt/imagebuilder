@@ -37,6 +37,7 @@ import (
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/controller/buildpod"
+	"github.com/anwendt/imagebuilder/pkg/controller/revision"
 	"github.com/anwendt/imagebuilder/pkg/controller/uploadpod"
 	"github.com/anwendt/imagebuilder/pkg/observability"
 	"github.com/anwendt/imagebuilder/pkg/plugin"
@@ -121,6 +122,9 @@ func (r *VMImageReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 		return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 	}
+	if handled, result, err := r.reconcileSpecGeneration(ctx, img, log); handled {
+		return result, err
+	}
 
 	// 4. Dispatch by current phase.
 	switch img.Status.Phase {
@@ -134,11 +138,65 @@ func (r *VMImageReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	case v1alpha1.PhaseUploading:
 		return r.reconcileUploading(ctx, img, log)
 	case v1alpha1.PhaseReady, v1alpha1.PhaseFailed:
-		// Terminal states — no further action unless spec changes (handled by re-creation).
+		// Terminal states remain stable until spec.build.revision changes.
 		return ctrl.Result{}, nil
 	default:
 		return ctrl.Result{}, fmt.Errorf("unknown phase %q", img.Status.Phase)
 	}
+}
+
+func (r *VMImageReconciler) reconcileSpecGeneration(ctx context.Context, img *v1alpha1.VMImage, log *slog.Logger) (bool, ctrl.Result, error) {
+	if img.Status.ObservedGeneration == img.Generation {
+		return false, ctrl.Result{}, nil
+	}
+
+	// Migrate resources created before observedGeneration existed without
+	// rebuilding them. Non-terminal resources persist these values with their
+	// next normal status transition.
+	if img.Status.ObservedGeneration == 0 {
+		img.Status.ObservedGeneration = img.Generation
+		img.Status.ObservedRevision = img.Spec.Build.Revision
+		for i := range img.Status.Conditions {
+			img.Status.Conditions[i].ObservedGeneration = img.Generation
+		}
+		if img.Status.Phase != v1alpha1.PhaseReady && img.Status.Phase != v1alpha1.PhaseFailed {
+			return false, ctrl.Result{}, nil
+		}
+		if err := r.Status().Update(ctx, img); err != nil {
+			return true, ctrl.Result{}, fmt.Errorf("initialize observed generation: %w", err)
+		}
+		return true, ctrl.Result{}, nil
+	}
+
+	if img.Status.ObservedRevision == img.Spec.Build.Revision {
+		log.Warn("spec generation is newer than status but build revision is unchanged",
+			slog.Int64("generation", img.Generation),
+			slog.Int64("observedGeneration", img.Status.ObservedGeneration),
+			slog.String("revision", img.Spec.Build.Revision))
+		return true, ctrl.Result{}, nil
+	}
+	if img.Status.Phase != v1alpha1.PhaseReady && img.Status.Phase != v1alpha1.PhaseFailed {
+		return true, ctrl.Result{}, fmt.Errorf("build revision changed while VMImage phase is %q", img.Status.Phase)
+	}
+	if err := r.releaseImageBuildSlots(ctx, img); err != nil {
+		return true, ctrl.Result{}, fmt.Errorf("release build slots before rebuild: %w", err)
+	}
+
+	previousRevision := img.Status.ObservedRevision
+	img.Status = v1alpha1.VMImageStatus{
+		ObservedGeneration: img.Generation,
+		ObservedRevision:   img.Spec.Build.Revision,
+		Phase:              v1alpha1.PhasePending,
+	}
+	if err := r.Status().Update(ctx, img); err != nil {
+		return true, ctrl.Result{}, fmt.Errorf("reset status for rebuild: %w", err)
+	}
+	r.recordEvent(img, corev1.EventTypeNormal, "RebuildRequested", "Build revision changed from %q to %q", previousRevision, img.Spec.Build.Revision)
+	log.Info("build revision changed; status reset for rebuild",
+		slog.String("previousRevision", previousRevision),
+		slog.String("revision", img.Spec.Build.Revision),
+		slog.Int64("generation", img.Generation))
+	return true, ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1412,7 +1470,7 @@ func remoteBuildRequest(img *v1alpha1.VMImage, target v1alpha1.TargetSpec) *plat
 		operationRef = *img.Status.RemoteBuildRef
 	}
 	return &platform.RemoteBuildRequest{
-		BuildID:           string(img.UID),
+		BuildID:           revision.BuildID(string(img.UID), img.Spec.Build.Revision),
 		OperationRef:      operationRef,
 		ImageName:         img.Name,
 		Namespace:         img.Namespace,
@@ -1621,6 +1679,7 @@ func setCondition(img *v1alpha1.VMImage, condType string, status metav1.Conditio
 			img.Status.Conditions[i].Status = status
 			img.Status.Conditions[i].Reason = reason
 			img.Status.Conditions[i].Message = msg
+			img.Status.Conditions[i].ObservedGeneration = img.Generation
 			img.Status.Conditions[i].LastTransitionTime = now
 			return
 		}
@@ -1630,6 +1689,7 @@ func setCondition(img *v1alpha1.VMImage, condType string, status metav1.Conditio
 		Status:             status,
 		Reason:             reason,
 		Message:            msg,
+		ObservedGeneration: img.Generation,
 		LastTransitionTime: now,
 	})
 }

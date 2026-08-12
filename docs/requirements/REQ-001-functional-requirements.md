@@ -36,6 +36,8 @@ building of virtual machine (VM) images for multiple cloud and on-premises platf
 | FR-007 | The system SHALL report build phase transitions via Kubernetes status conditions. | Must |
 | FR-008 | The system SHALL record start time and completion time of each build in the VMImage status. | Must |
 | FR-009 | The system SHALL support configurable build timeouts. | Must |
+| FR-009A | VMImage status SHALL expose the observed metadata generation and build revision, and every condition SHALL identify its observed generation. | Must |
+| FR-009B | Ready and Failed VMImages SHALL support declarative rebuild or retry by changing an opaque build revision token. Active build specifications SHALL remain immutable, and generated resources and provider operation IDs SHALL be revision-scoped. | Must |
 | FR-006A | The system SHALL support Git-backed provisioner content with an explicit HTTPS URL, ref, and path. Directory paths SHALL expand into regular files executed in lexicographic order. | Should |
 | FR-006B | Git-backed provisioner content SHALL be expanded before provisioner validation and execution so local and remote build providers observe the same ordered provisioner plan. | Must |
 | FR-006C | Git-backed provisioner content SHALL support private repositories through Kubernetes Secret references for token or username/password authentication. | Must |

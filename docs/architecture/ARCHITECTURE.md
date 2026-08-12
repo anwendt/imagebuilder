@@ -214,6 +214,9 @@ providers by name when processing targets.
 
 2. Kubernetes API Server validates the CRD schema and persists the resource
 
+  Updates are revision-controlled: active build specs are immutable, while a
+  terminal spec update must change `spec.build.revision`.
+
 3. VMImage Controller detects the new resource (WATCH event)
 
 4. Controller validates the spec:
@@ -268,12 +271,20 @@ providers by name when processing targets.
 11. Controller updates VMImage.status:
     - status.phase = Ready
     - status.images[] with one entry per target platform
+  - status.observedGeneration = metadata.generation
+  - status.observedRevision = spec.build.revision
 
 12. On any failure:
     - Provider.DeleteArtifact() is called for any partially-uploaded targets
     - status.phase = Failed
     - status.conditions updated with human-readable error
     - Kubernetes Event emitted
+
+13. To rebuild Ready or Failed resources:
+    - User changes spec.build.revision, optionally with other spec changes
+    - Controller clears attempt-local status and returns to Pending
+    - Build/upload Jobs, remote build IDs, and generated workspace PVCs use a
+      revision hash so old and new attempts cannot collide
 ```
 
 ### 4.2 Provider Registration Flow

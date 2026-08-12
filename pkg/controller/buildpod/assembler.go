@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
+	"github.com/anwendt/imagebuilder/pkg/controller/revision"
 	"github.com/anwendt/imagebuilder/pkg/provisioner"
 )
 
@@ -521,7 +522,7 @@ func WorkspaceClaimName(img *v1alpha1.VMImage) string {
 		img.Spec.Build.ArtifactStorage.PVC.ClaimName != "" {
 		return img.Spec.Build.ArtifactStorage.PVC.ClaimName
 	}
-	return fmt.Sprintf("%s-workspace", img.Name)
+	return revision.ResourceName(fmt.Sprintf("%s-workspace", img.Name), img.Spec.Build.Revision)
 }
 
 func usesArtifactPVC(img *v1alpha1.VMImage) bool {
@@ -567,7 +568,7 @@ func buildTolerations(img *v1alpha1.VMImage) []corev1.Toleration {
 // ---------------------------------------------------------------------------
 
 func jobName(img *v1alpha1.VMImage) string {
-	return fmt.Sprintf("%s-build", img.Name)
+	return revision.ResourceName(fmt.Sprintf("%s-build", img.Name), img.Spec.Build.Revision)
 }
 
 func jobLabels(img *v1alpha1.VMImage) map[string]string {
