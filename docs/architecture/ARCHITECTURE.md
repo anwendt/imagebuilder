@@ -188,7 +188,9 @@ interface. Managed by the core operator as Kubernetes Deployments.
 
 Kubernetes Jobs created per VMImage build. Use restartable init containers for
 complex provisioner tool isolation while the builder coordinates sequential
-execution.
+execution. This requires Kubernetes 1.29 or newer, where native sidecar
+containers are enabled by default; Kubernetes 1.33 or newer provides stable
+sidecar semantics and is recommended for production.
 
 **Responsibilities:**
 - Execute the build backend (QEMU, diskimage-builder, or cloud API)

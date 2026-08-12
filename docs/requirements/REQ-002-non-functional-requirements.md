@@ -71,6 +71,7 @@ than what it does and are essential for ISAE audit traceability.
 | ID | Requirement | Target |
 |---|---|---|
 | NFR-021 | The operator SHALL run on any Kubernetes distribution (vanilla, OpenShift, EKS, AKS, GKE, Rancher). | K8s-native |
+| NFR-021A | The minimum supported Kubernetes version SHALL be 1.29 because OCI provisioners use native sidecar containers (`initContainers[].restartPolicy: Always`). Helm installation and operator startup SHALL enforce this boundary. Kubernetes 1.33 or newer SHOULD be used for stable sidecar semantics. | Must |
 | NFR-022 | The operator container image SHALL be built for AMD64 and ARM64 architectures. | Multi-arch |
 | NFR-023 | All Kubernetes resources (CRDs, RBAC, Deployments) SHALL be deployable via standard `kubectl apply`. | Standard manifests |
 | NFR-024 | The operator SHALL not require cluster-admin privileges; a minimal ClusterRole SHALL be defined. | Least privilege |

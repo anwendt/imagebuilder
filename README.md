@@ -4,6 +4,15 @@ VM Image Builder is a Kubernetes-native operator for declarative VM image
 builds. It is designed around CRDs, Kubernetes Jobs, external platform
 providers, and an Apache-2.0-compatible dependency model.
 
+## Kubernetes Compatibility
+
+Kubernetes 1.29 or newer is required because OCI provisioners use native
+sidecar containers represented by restartable init containers
+(`initContainers[].restartPolicy: Always`). This feature is enabled by default
+from Kubernetes 1.29 and stable from Kubernetes 1.33; Kubernetes 1.33 or newer
+is recommended for production. Helm and operator startup both enforce the 1.29
+minimum.
+
 ## What It Does
 
 - Builds VM images from cloud images or ISO sources.

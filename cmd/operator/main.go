@@ -21,6 +21,7 @@ import (
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/discovery"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -29,6 +30,7 @@ import (
 	imagebuilderv1alpha1 "github.com/anwendt/imagebuilder/api/v1alpha1"
 	providercontroller "github.com/anwendt/imagebuilder/pkg/controller/provider"
 	vmimagecontroller "github.com/anwendt/imagebuilder/pkg/controller/vmimage"
+	"github.com/anwendt/imagebuilder/pkg/kubecompat"
 	"github.com/anwendt/imagebuilder/pkg/observability"
 	"github.com/anwendt/imagebuilder/pkg/plugin"
 
@@ -108,7 +110,19 @@ func main() {
 	registry := plugin.Default()
 	slog.Info("registered platform plugins", slog.Any("plugins", registry.List()))
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	restConfig := ctrl.GetConfigOrDie()
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(restConfig)
+	if err != nil {
+		slog.Error("unable to create Kubernetes discovery client for compatibility check", slog.Any("error", err))
+		os.Exit(1)
+	}
+	if err := kubecompat.CheckServer(discoveryClient); err != nil {
+		slog.Error("Kubernetes compatibility check failed", slog.Any("error", err))
+		os.Exit(1)
+	}
+	slog.Info("Kubernetes compatibility check passed", slog.String("minimumVersion", kubecompat.MinimumKubernetesVersion))
+
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,

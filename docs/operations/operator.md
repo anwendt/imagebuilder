@@ -1,5 +1,19 @@
 # Operator Operations Guide
 
+## Kubernetes Compatibility
+
+The minimum supported cluster version is Kubernetes 1.29. Image Builder emits
+native sidecar containers as restartable init containers using
+`initContainers[].restartPolicy: Always`. `SidecarContainers` is enabled by
+default from 1.29 and stable from 1.33, so Kubernetes 1.33 or newer is
+recommended for production. Disabling the feature gate on Kubernetes 1.29–1.32
+is unsupported.
+
+The Helm chart declares `kubeVersion: ">=1.29.0-0"`. The operator also queries
+the API server version before creating its manager and exits if discovery fails
+or the cluster is older than 1.29. This runtime guard also covers static
+manifest and locally executed installations.
+
 ## Components
 
 The deployment consists of:

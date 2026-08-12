@@ -142,7 +142,8 @@ success=false or timeout                → Build fails
 
 Restartable init containers are started before the main builder. The builder
 keeps provisioner execution sequential by writing one step config at a time and
-waiting for the matching status file.
+waiting for the matching status file. This requires Kubernetes 1.29 or newer;
+Kubernetes 1.33 or newer is recommended for stable native sidecar semantics.
 
 ---
 

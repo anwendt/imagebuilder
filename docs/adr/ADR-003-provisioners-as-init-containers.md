@@ -45,6 +45,13 @@ must abort the entire build.
 **Complex provisioners** are implemented as **Kubernetes restartable Init Containers**
 within the build Job Pod. Each provisioner is a separate OCI container image.
 
+This decision establishes a minimum supported Kubernetes version of **1.29**.
+Native sidecar containers are enabled by default from Kubernetes 1.29 and are
+stable from Kubernetes 1.33. Production clusters should use Kubernetes 1.33 or
+newer. Clusters below 1.29 are rejected by the Helm chart and by the operator's
+startup compatibility check; relying on an older alpha feature gate is not a
+supported deployment mode.
+
 The contract between the operator and an init-container provisioner is filesystem-based:
 
 ```
@@ -111,6 +118,8 @@ provisioner execution ordered through the filesystem contract.
 - Clear failure semantics via `success=false` and `error` in the step status file.
 
 ### Negative
+- Kubernetes 1.29 or newer is required; Kubernetes 1.33 or newer is recommended
+  where stable native sidecar semantics are required.
 - Provisioners cannot stream real-time progress to the operator; only terminal status is captured.
 - The `/workspace` volume must be shared between the main builder and restartable init containers, requiring careful volume management.
 - Provisioner OCI images may be large (Ansible: ~500 MB with Python); pull time affects build latency.

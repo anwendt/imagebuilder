@@ -6,7 +6,11 @@ provider account.
 
 ## Prerequisites
 
-- Kubernetes cluster
+- Kubernetes 1.29 or newer. Image Builder uses native sidecar containers as
+  restartable init containers (`initContainers[].restartPolicy: Always`) for
+  OCI provisioners. The `SidecarContainers` feature is enabled by default from
+  Kubernetes 1.29 and stable from Kubernetes 1.33. Kubernetes 1.33 or newer is
+  recommended for production.
 - `kubectl`
 - Helm 3.8 or newer with OCI registry support
 
@@ -50,7 +54,8 @@ kubectl get crd | grep imagebuilder.io
 The operator pod should become `Running`. The chart installs CRDs, RBAC,
 webhook resources, metrics Service, network policies, and the operator
 Deployment with released image tags. Kyverno is not required for the default
-install.
+install. Helm rejects clusters below Kubernetes 1.29, and the operator performs
+the same fail-closed server-version check for static-manifest installations.
 
 If Kyverno is installed and you want the example image signature policy, enable
 it explicitly:
