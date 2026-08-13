@@ -2,6 +2,8 @@ package openstack
 
 import (
 	"context"
+	"io"
+	"os"
 	"testing"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
@@ -9,15 +11,17 @@ import (
 )
 
 type fakeOpenStackClient struct {
-	uploadInput openStackUploadInput
-	remoteInput openStackRemoteBuildInput
-	deleted     []string
-	image       *platform.ImageRef
-	remoteState *openStackRemoteBuildState
+	uploadInput  openStackUploadInput
+	uploadedBody []byte
+	remoteInput  openStackRemoteBuildInput
+	deleted      []string
+	image        *platform.ImageRef
+	remoteState  *openStackRemoteBuildState
 }
 
-func (f *fakeOpenStackClient) UploadImage(_ context.Context, input openStackUploadInput) (*platform.ImageRef, error) {
+func (f *fakeOpenStackClient) UploadImage(_ context.Context, input openStackUploadInput, body io.Reader) (*platform.ImageRef, error) {
 	f.uploadInput = input
+	f.uploadedBody, _ = io.ReadAll(body)
 	return &platform.ImageRef{ID: "img-uploaded", Name: input.ImageName, Location: "RegionOne"}, nil
 }
 
@@ -74,8 +78,12 @@ func TestPluginUploadCreatesGlanceImage(t *testing.T) {
 		client: client,
 	}
 
+	artifactPath := t.TempDir() + "/image.qcow2"
+	if err := os.WriteFile(artifactPath, []byte("qcow2-data"), 0o600); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
 	result, err := plugin.Upload(context.Background(), &platform.BuildArtifact{
-		Path:      "/tmp/image.qcow2",
+		Path:      artifactPath,
 		Format:    platform.FormatQCOW2,
 		Checksum:  "sha256:abc",
 		SizeBytes: 1024,

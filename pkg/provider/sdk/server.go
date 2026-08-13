@@ -141,7 +141,8 @@ func (s *Server) UploadArtifact(stream providerv1.PlatformProvider_UploadArtifac
 		ProviderConfigName: first.GetProviderConfigName(),
 	}, reader, uploadProgressReporter{stream: stream})
 	if uploadErr != nil {
-		_ = reader.Close()
+		_ = reader.CloseWithError(uploadErr)
+		<-copyErr
 		return uploadErr
 	}
 	if err := <-copyErr; err != nil {

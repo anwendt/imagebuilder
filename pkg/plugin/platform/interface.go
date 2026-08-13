@@ -11,6 +11,7 @@ package platform
 
 import (
 	"context"
+	"io"
 	"time"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
@@ -147,6 +148,28 @@ type BuildArtifact struct {
 
 	// Metadata carries additional info (distro, version, build-id, ...)
 	Metadata map[string]string
+}
+
+// StreamArtifact is the sequential representation used by external provider
+// SDK servers. The caller owns Reader and keeps it valid until UploadStream
+// returns. Providers must not retain it or assume seek/random-access support.
+type StreamArtifact struct {
+	Reader     io.Reader
+	Format     ImageFormat
+	Checksum   string
+	SizeBytes  int64
+	OS         OSFamily
+	Metadata   map[string]string
+	OnProgress func(bytesRead int64) error
+}
+
+// StreamingPlugin is an optional additive capability for providers that can
+// forward a gRPC artifact stream directly to the target platform. Providers
+// requiring random access or archive inspection may omit it and retain their
+// bounded spool path.
+type StreamingPlugin interface {
+	Plugin
+	UploadStream(ctx context.Context, artifact *StreamArtifact) (*UploadResult, error)
 }
 
 // UploadResult is returned by Upload() and passed to Register().

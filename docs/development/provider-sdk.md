@@ -126,6 +126,27 @@ func (p *Provider) UploadArtifact(ctx context.Context, artifact sdk.ArtifactInfo
 }
 ```
 
+Reference-provider behavior:
+
+| Provider | Direct target streaming |
+|---|---|
+| AWS | gRPC reader to S3 `PutObject` or bounded 64 MiB multipart parts |
+| Azure | Sequential page-aligned chunks to Azure Page Blob Storage |
+| OpenStack | gRPC reader directly to Glance image-data upload |
+| vSphere | VMDK reader directly to the datastore HTTP upload API |
+
+vSphere OVA/OVF is intentionally spooled because OVF/template and Content
+Library registration reopen the archive and inspect its descriptor, manifest,
+and referenced disks. Providers with similar random-access requirements may
+retain a bounded-lifecycle spool fallback, but direct streaming is required
+when the target SDK accepts an `io.Reader`.
+
+The reference providers wrap streams with `sdk.NewValidatingReader`. It checks
+the declared byte length and SHA-256 during target upload and rejects truncated,
+overlong, partially consumed, or checksum-mismatched streams. Progress callbacks
+are emitted as the target platform consumes bytes rather than after a local
+spool completes.
+
 Report progress when useful:
 
 ```go

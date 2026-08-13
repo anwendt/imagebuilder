@@ -233,6 +233,8 @@ func (r *PlatformProviderReconciler) buildDeployment(pp *v1alpha1.PlatformProvid
 		{
 			Name: providerUploadTempVolume,
 			VolumeSource: corev1.VolumeSource{
+				// Direct-streaming providers do not consume this volume. It remains
+				// available for bounded random-access fallbacks such as vSphere OVA/OVF.
 				EmptyDir: &corev1.EmptyDirVolumeSource{},
 			},
 		},

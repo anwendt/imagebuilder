@@ -3,8 +3,8 @@ package openstack
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -64,13 +64,7 @@ func newGophercloudClient(ctx context.Context, cfg openStackConfig) (*gopherclou
 	return &gophercloudClient{cfg: cfg, image: imageClient, compute: computeClient}, nil
 }
 
-func (c *gophercloudClient) UploadImage(ctx context.Context, input openStackUploadInput) (*platform.ImageRef, error) {
-	file, err := os.Open(input.Path)
-	if err != nil {
-		return nil, fmt.Errorf("open artifact: %w", err)
-	}
-	defer file.Close()
-
+func (c *gophercloudClient) UploadImage(ctx context.Context, input openStackUploadInput, body io.Reader) (*platform.ImageRef, error) {
 	visibility := images.ImageVisibility(input.Visibility)
 	protected := input.Protected
 	image, err := images.Create(ctx, c.image, images.CreateOpts{
@@ -87,7 +81,7 @@ func (c *gophercloudClient) UploadImage(ctx context.Context, input openStackUplo
 	if err != nil {
 		return nil, fmt.Errorf("create queued Glance image: %w", err)
 	}
-	if err := imagedata.Upload(ctx, c.image, image.ID, file).ExtractErr(); err != nil {
+	if err := imagedata.Upload(ctx, c.image, image.ID, body).ExtractErr(); err != nil {
 		_ = images.Delete(ctx, c.image, image.ID).ExtractErr()
 		return nil, fmt.Errorf("upload image data: %w", err)
 	}

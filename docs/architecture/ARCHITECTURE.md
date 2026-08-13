@@ -268,10 +268,13 @@ providers by name when processing targets.
     When no matching `PlatformProvider` CR exists, the uploader retains the
     built-in provider path for backward compatibility. With provider mTLS,
     the controller creates a VMImage-owned client TLS Secret in the workload
-    namespace and mounts it read-only into the upload Pod. Provider Pods keep
-    their root filesystem read-only and spool incoming streams to a dedicated
-    writable `emptyDir` mounted at `/var/lib/imagebuilder/uploads` before the
-    provider-specific cloud SDK consumes the artifact.
+    namespace and mounts it read-only into the upload Pod. The four external
+    reference providers forward the gRPC reader directly to the target SDK for
+    AWS S3, Azure Page Blob Storage, OpenStack Glance, and vSphere VMDK datastore
+    uploads. Stream size and SHA-256 are checked while bytes flow and partial or
+    overlong streams fail closed. vSphere OVA/OVF remains an explicit spool
+    exception because registration must reopen and inspect multiple archive
+    members after the initial datastore upload.
 
 11. Controller updates VMImage.status:
     - status.phase = Ready

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"sync"
 	"time"
 
@@ -90,43 +89,36 @@ func (p *SDKProvider) UploadArtifact(ctx context.Context, artifact sdk.ArtifactI
 	if err != nil {
 		return sdk.UploadResult{}, err
 	}
-	tmp, err := os.CreateTemp("", "imagebuilder-aws-upload-*."+artifact.Format)
-	if err != nil {
-		return sdk.UploadResult{}, fmt.Errorf("create temporary artifact file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-
-	written, err := io.Copy(tmp, body)
-	if err != nil {
-		_ = tmp.Close()
-		return sdk.UploadResult{}, fmt.Errorf("spool artifact stream: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return sdk.UploadResult{}, fmt.Errorf("close temporary artifact file: %w", err)
-	}
-	if err := progress.Report(ctx, sdk.Progress{
-		BytesWritten: written,
-		TotalBytes:   artifact.TotalSizeBytes,
-		Phase:        "uploading",
-		Message:      "artifact received by aws provider",
-	}); err != nil {
-		return sdk.UploadResult{}, err
-	}
-
 	metadata := cloneStringMap(artifact.Metadata)
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
 	metadata["providerConfigName"] = artifact.ProviderConfigName
 	metadata["format"] = artifact.Format
-	buildArtifact := &platform.BuildArtifact{
-		Path:      tmpPath,
+	reader, err := sdk.NewValidatingReader(body, artifact.TotalSizeBytes, artifact.Checksum, func(bytesRead int64) error {
+		if progress == nil {
+			return nil
+		}
+		return progress.Report(ctx, sdk.Progress{BytesWritten: bytesRead, TotalBytes: artifact.TotalSizeBytes, Phase: "uploading", Message: "streaming artifact directly to S3"})
+	})
+	if err != nil {
+		return sdk.UploadResult{}, err
+	}
+	result, err := plugin.UploadStream(ctx, &platform.StreamArtifact{
+		Reader:    reader,
 		Format:    platform.ImageFormat(artifact.Format),
 		Checksum:  artifact.Checksum,
 		SizeBytes: artifact.TotalSizeBytes,
 		OS:        platform.OSFamily(artifact.OSFamily),
 		Metadata:  metadata,
-	}
-	result, err := plugin.Upload(ctx, buildArtifact)
+	})
 	if err != nil {
+		return sdk.UploadResult{}, err
+	}
+	if err := reader.Verify(); err != nil {
+		if result != nil {
+			_ = plugin.Cleanup(ctx, &platform.BuildArtifact{Format: platform.ImageFormat(artifact.Format), Metadata: map[string]string{"aws.s3Bucket": result.Metadata["bucket"], "aws.s3Key": result.Metadata["key"]}})
+		}
 		return sdk.UploadResult{}, err
 	}
 	if result.Metadata == nil {

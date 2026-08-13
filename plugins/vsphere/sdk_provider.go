@@ -89,19 +89,38 @@ func (p *SDKProvider) UploadArtifact(ctx context.Context, artifact sdk.ArtifactI
 	if err != nil {
 		return sdk.UploadResult{}, err
 	}
+	if platform.ImageFormat(artifact.Format) == platform.FormatVMDK {
+		return p.uploadStream(ctx, plugin, artifact, body, progress)
+	}
+	// OVA/OVF registration re-opens and inspects archive members after upload;
+	// retain a bounded-lifecycle local file for those non-streamable formats.
 	tmp, err := os.CreateTemp("", "imagebuilder-vsphere-upload-*."+artifact.Format)
 	if err != nil {
 		return sdk.UploadResult{}, fmt.Errorf("create temporary artifact file: %w", err)
 	}
 	tmpPath := tmp.Name()
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
 
-	written, err := io.Copy(tmp, body)
+	reader, err := sdk.NewValidatingReader(body, artifact.TotalSizeBytes, artifact.Checksum, nil)
+	if err != nil {
+		_ = tmp.Close()
+		return sdk.UploadResult{}, err
+	}
+	written, err := io.Copy(tmp, reader)
 	if err != nil {
 		_ = tmp.Close()
 		return sdk.UploadResult{}, fmt.Errorf("spool artifact stream: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		return sdk.UploadResult{}, fmt.Errorf("close temporary artifact file: %w", err)
+	}
+	if err := reader.Verify(); err != nil {
+		return sdk.UploadResult{}, err
 	}
 	if progress != nil {
 		if err := progress.Report(ctx, sdk.Progress{
@@ -139,6 +158,42 @@ func (p *SDKProvider) UploadArtifact(ctx context.Context, artifact sdk.ArtifactI
 	result.Metadata["format"] = artifact.Format
 	result.Metadata["artifactPath"] = tmpPath
 
+	p.mu.Lock()
+	p.uploads[result.ProviderRef] = result
+	p.mu.Unlock()
+	removeTemp = false
+	return sdk.UploadResult{ProviderRef: result.ProviderRef, Metadata: cloneStringMap(result.Metadata)}, nil
+}
+
+func (p *SDKProvider) uploadStream(ctx context.Context, plugin *Plugin, artifact sdk.ArtifactInfo, body io.Reader, progress sdk.ProgressReporter) (sdk.UploadResult, error) {
+	metadata := cloneStringMap(artifact.Metadata)
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	metadata["providerConfigName"], metadata["format"] = artifact.ProviderConfigName, artifact.Format
+	reader, err := sdk.NewValidatingReader(body, artifact.TotalSizeBytes, artifact.Checksum, func(bytesRead int64) error {
+		if progress == nil {
+			return nil
+		}
+		return progress.Report(ctx, sdk.Progress{BytesWritten: bytesRead, TotalBytes: artifact.TotalSizeBytes, Phase: "uploading", Message: "streaming VMDK directly to vSphere datastore"})
+	})
+	if err != nil {
+		return sdk.UploadResult{}, err
+	}
+	result, err := plugin.UploadStream(ctx, &platform.StreamArtifact{
+		Reader: reader, Format: platform.ImageFormat(artifact.Format), Checksum: artifact.Checksum,
+		SizeBytes: artifact.TotalSizeBytes, OS: platform.OSFamily(artifact.OSFamily), Metadata: metadata,
+	})
+	if err != nil {
+		return sdk.UploadResult{}, err
+	}
+	if err := reader.Verify(); err != nil {
+		if result != nil {
+			_ = plugin.Cleanup(ctx, &platform.BuildArtifact{Metadata: cloneStringMap(result.Metadata)})
+		}
+		return sdk.UploadResult{}, err
+	}
+	result.Metadata["providerConfigName"], result.Metadata["format"] = artifact.ProviderConfigName, artifact.Format
 	p.mu.Lock()
 	p.uploads[result.ProviderRef] = result
 	p.mu.Unlock()

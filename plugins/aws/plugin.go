@@ -184,7 +184,12 @@ func (p *AWSPlugin) Upload(ctx context.Context, artifact *platform.BuildArtifact
 		return nil, fmt.Errorf("aws plugin: ProviderConfig extra s3Bucket is required for local AWS uploads")
 	}
 	s3Key := localUploadKey(p.config.extraConfig, buildID, artifact.Format)
-	if err := client.UploadObject(ctx, bucket, s3Key, artifact.Path); err != nil {
+	file, err := os.Open(artifact.Path) // #nosec G304 -- Artifact path is supplied by the controller-owned build result.
+	if err != nil {
+		return nil, fmt.Errorf("aws plugin: open artifact: %w", err)
+	}
+	defer file.Close()
+	if err := client.UploadObject(ctx, bucket, s3Key, file, artifact.SizeBytes); err != nil {
 		return nil, fmt.Errorf("aws plugin: upload artifact to s3://%s/%s: %w", bucket, s3Key, err)
 	}
 	if artifact.Metadata == nil {
@@ -210,6 +215,32 @@ func (p *AWSPlugin) Upload(ctx context.Context, artifact *platform.BuildArtifact
 			),
 		},
 	}, nil
+}
+
+func (p *AWSPlugin) UploadStream(ctx context.Context, artifact *platform.StreamArtifact) (*platform.UploadResult, error) {
+	if artifact == nil || artifact.Reader == nil {
+		return nil, fmt.Errorf("aws plugin: artifact stream is required")
+	}
+	buildID := artifact.Metadata["buildID"]
+	if buildID == "" {
+		return nil, fmt.Errorf("aws plugin: artifact metadata missing required key 'buildID'")
+	}
+	if p.localClient == nil {
+		return nil, fmt.Errorf("aws plugin: local image client is not initialised")
+	}
+	bucket := strings.TrimSpace(p.config.extraConfig["s3Bucket"])
+	if bucket == "" {
+		return nil, fmt.Errorf("aws plugin: ProviderConfig extra s3Bucket is required for local AWS uploads")
+	}
+	key := localUploadKey(p.config.extraConfig, buildID, artifact.Format)
+	if err := p.localClient.UploadObject(ctx, bucket, key, artifact.Reader, artifact.SizeBytes); err != nil {
+		return nil, fmt.Errorf("aws plugin: upload artifact stream to s3://%s/%s: %w", bucket, key, err)
+	}
+	return &platform.UploadResult{ProviderRef: key, Metadata: map[string]string{
+		"bucket": bucket, "key": key, "buildID": buildID,
+		"format": string(artifact.Format), "checksum": artifact.Checksum, "os": string(artifact.OS),
+		"imageName": firstNonEmpty(artifact.Metadata["imageName"], artifact.Metadata["vmimage"], p.config.extraConfig["imageName"], "imagebuilder-"+sanitizeAWSName(buildID)),
+	}}, nil
 }
 
 func (p *AWSPlugin) Register(ctx context.Context, result *platform.UploadResult) (*platform.ImageRef, error) {
@@ -504,7 +535,7 @@ func firstNonEmpty(values ...string) string {
 }
 
 type awsLocalImageClient interface {
-	UploadObject(ctx context.Context, bucket, key, filePath string) error
+	UploadObject(ctx context.Context, bucket, key string, body io.Reader, size int64) error
 	RegisterAMI(ctx context.Context, input awsLocalRegisterInput) (*platform.ImageRef, error)
 	CleanupLocalImage(ctx context.Context, metadata map[string]string) error
 	HealthCheck(ctx context.Context) error
@@ -573,30 +604,25 @@ func newAWSLocalImageClient(ctx context.Context, cfg awsConfig) (awsLocalImageCl
 	}, nil
 }
 
-func (c *awsSDKLocalImageClient) UploadObject(ctx context.Context, bucket, key, filePath string) error {
-	file, err := os.Open(filePath) // #nosec G304 -- Artifact path is supplied by the controller-owned build result.
-	if err != nil {
-		return fmt.Errorf("open artifact: %w", err)
+func (c *awsSDKLocalImageClient) UploadObject(ctx context.Context, bucket, key string, body io.Reader, size int64) error {
+	if size <= 0 {
+		return fmt.Errorf("artifact size must be positive")
 	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return fmt.Errorf("stat artifact: %w", err)
-	}
-	if info.Size() <= 5*1024*1024*1024 {
+	if size <= 5*1024*1024*1024 {
 		input := &s3.PutObjectInput{
-			Bucket: awssdk.String(bucket),
-			Key:    awssdk.String(key),
-			Body:   file,
+			Bucket:        awssdk.String(bucket),
+			Key:           awssdk.String(key),
+			Body:          body,
+			ContentLength: awssdk.Int64(size),
 		}
 		applyS3Encryption(input, c.kmsKeyID)
-		_, err = c.s3.PutObject(ctx, input)
+		_, err := c.s3.PutObject(ctx, input)
 		if err != nil {
 			return fmt.Errorf("put object: %w", err)
 		}
 		return nil
 	}
-	return c.multipartUpload(ctx, bucket, key, file, info.Size())
+	return c.multipartUpload(ctx, bucket, key, body, size)
 }
 
 func applyS3Encryption(input *s3.PutObjectInput, kmsKeyID string) {
@@ -617,7 +643,7 @@ func applyMultipartS3Encryption(input *s3.CreateMultipartUploadInput, kmsKeyID s
 	input.SSEKMSKeyId = awssdk.String(kmsKeyID)
 }
 
-func (c *awsSDKLocalImageClient) multipartUpload(ctx context.Context, bucket, key string, file *os.File, size int64) error {
+func (c *awsSDKLocalImageClient) multipartUpload(ctx context.Context, bucket, key string, body io.Reader, size int64) error {
 	const partSize int64 = 64 * 1024 * 1024
 	createInput := &s3.CreateMultipartUploadInput{
 		Bucket: awssdk.String(bucket),
@@ -645,12 +671,11 @@ func (c *awsSDKLocalImageClient) multipartUpload(ctx context.Context, bucket, ke
 			})
 		}
 	}()
-	for {
-		n, readErr := io.ReadFull(file, buffer)
-		if errors.Is(readErr, io.EOF) {
-			break
-		}
-		if readErr != nil && !errors.Is(readErr, io.ErrUnexpectedEOF) {
+	remaining := size
+	for remaining > 0 {
+		partBytes := min(partSize, remaining)
+		n, readErr := io.ReadFull(body, buffer[:partBytes])
+		if readErr != nil {
 			return fmt.Errorf("read multipart part %d: %w", partNumber, readErr)
 		}
 		out, err := c.s3.UploadPart(ctx, &s3.UploadPartInput{
@@ -665,9 +690,7 @@ func (c *awsSDKLocalImageClient) multipartUpload(ctx context.Context, bucket, ke
 		}
 		completed = append(completed, s3types.CompletedPart{ETag: out.ETag, PartNumber: awssdk.Int32(partNumber)})
 		partNumber++
-		if errors.Is(readErr, io.ErrUnexpectedEOF) {
-			break
-		}
+		remaining -= int64(n)
 	}
 	if len(completed) == 0 {
 		return fmt.Errorf("multipart upload has no parts")

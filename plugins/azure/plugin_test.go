@@ -3,6 +3,7 @@ package azure
 import (
 	"context"
 	"encoding/binary"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -44,12 +45,20 @@ type fakeClient struct {
 	uploadedContainer string
 	uploadedBlob      string
 	uploadedPath      string
+	uploadedBody      []byte
+	uploadedSize      int64
 	registerInput     registerInput
 	remoteInput       azureRemoteBuildInput
 	remoteState       *azureRemoteBuildState
 	remoteCleanup     azureRemoteBuildInput
 	cleanupMetadata   map[string]string
 	healthErr         error
+}
+
+func (f *fakeClient) UploadBlobStream(_ context.Context, container, blobName string, body io.Reader, size int64) (string, error) {
+	f.uploadedContainer, f.uploadedBlob, f.uploadedSize = container, blobName, size
+	f.uploadedBody, _ = io.ReadAll(body)
+	return "https://storage.example/" + container + "/" + blobName, nil
 }
 
 func (f *fakeClient) UploadBlob(_ context.Context, container, blobName, filePath string) (string, error) {

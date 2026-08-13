@@ -3,6 +3,8 @@ package vsphere
 import (
 	"context"
 	"errors"
+	"io"
+	"os"
 	"testing"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
@@ -27,6 +29,7 @@ func validPluginConfig() platform.PluginConfig {
 
 type fakeClient struct {
 	uploadInput     uploadInput
+	uploadedBody    []byte
 	registerInput   registerInput
 	remoteInput     vsphereRemoteBuildInput
 	remoteState     *vsphereRemoteBuildState
@@ -35,8 +38,9 @@ type fakeClient struct {
 	healthErr       error
 }
 
-func (f *fakeClient) UploadArtifact(_ context.Context, input uploadInput) (*platform.UploadResult, error) {
+func (f *fakeClient) UploadArtifact(_ context.Context, input uploadInput, body io.Reader) (*platform.UploadResult, error) {
 	f.uploadInput = input
+	f.uploadedBody, _ = io.ReadAll(body)
 	return &platform.UploadResult{
 		ProviderRef: datastoreReference(input.Datastore, input.DatastorePath),
 		Metadata: map[string]string{
@@ -162,8 +166,12 @@ func TestPluginValidateFormats(t *testing.T) {
 
 func TestPluginUploadBuildsDatastoreReference(t *testing.T) {
 	p, client := newInitializedPlugin(t)
+	artifactPath := t.TempDir() + "/ubuntu.vmdk"
+	if err := os.WriteFile(artifactPath, []byte("vmdk-data"), 0o600); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
 	result, err := p.Upload(context.Background(), &platform.BuildArtifact{
-		Path:      "/workspace/out/ubuntu.vmdk",
+		Path:      artifactPath,
 		Format:    platform.FormatVMDK,
 		Checksum:  "sha256:abc123",
 		SizeBytes: 42,

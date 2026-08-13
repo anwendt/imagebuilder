@@ -19,6 +19,7 @@ package aws
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -58,16 +59,18 @@ func newInitializedPlugin(t *testing.T) *AWSPlugin {
 type fakeAWSLocalImageClient struct {
 	uploadedBucket  string
 	uploadedKey     string
-	uploadedPath    string
+	uploadedBody    []byte
+	uploadedSize    int64
 	registerInput   awsLocalRegisterInput
 	cleanupMetadata map[string]string
 	healthErr       error
 }
 
-func (f *fakeAWSLocalImageClient) UploadObject(_ context.Context, bucket, key, filePath string) error {
+func (f *fakeAWSLocalImageClient) UploadObject(_ context.Context, bucket, key string, body io.Reader, size int64) error {
 	f.uploadedBucket = bucket
 	f.uploadedKey = key
-	f.uploadedPath = filePath
+	f.uploadedSize = size
+	f.uploadedBody, _ = io.ReadAll(body)
 	return nil
 }
 

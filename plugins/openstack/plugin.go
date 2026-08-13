@@ -3,7 +3,9 @@ package openstack
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
+	"os"
 	"strconv"
 	"strings"
 
@@ -51,7 +53,7 @@ type openStackConfig struct {
 }
 
 type openStackClient interface {
-	UploadImage(ctx context.Context, input openStackUploadInput) (*platform.ImageRef, error)
+	UploadImage(ctx context.Context, input openStackUploadInput, body io.Reader) (*platform.ImageRef, error)
 	GetImage(ctx context.Context, id string) (*platform.ImageRef, error)
 	DeleteImage(ctx context.Context, id string) error
 	ReconcileRemoteBuild(ctx context.Context, input openStackRemoteBuildInput) (*openStackRemoteBuildState, error)
@@ -60,7 +62,6 @@ type openStackClient interface {
 }
 
 type openStackUploadInput struct {
-	Path            string
 	ImageName       string
 	Format          platform.ImageFormat
 	Checksum        string
@@ -168,8 +169,12 @@ func (p *Plugin) Upload(ctx context.Context, artifact *platform.BuildArtifact) (
 		"imagebuilder-"+sanitizeOpenStackName(buildID),
 	)
 	settings := openStackImageSettingsFromExtra(p.config.extraConfig, artifact.Format)
+	file, err := os.Open(artifact.Path) // #nosec G304 -- Artifact path is supplied by the controller-owned build result.
+	if err != nil {
+		return nil, fmt.Errorf("openstack plugin: open artifact: %w", err)
+	}
+	defer file.Close()
 	ref, err := client.UploadImage(ctx, openStackUploadInput{
-		Path:            artifact.Path,
 		ImageName:       imageName,
 		Format:          artifact.Format,
 		Checksum:        artifact.Checksum,
@@ -183,7 +188,7 @@ func (p *Plugin) Upload(ctx context.Context, artifact *platform.BuildArtifact) (
 		Protected:       settings.Protected,
 		MinDiskGB:       settings.MinDiskGB,
 		MinRAMMB:        settings.MinRAMMB,
-	})
+	}, file)
 	if err != nil {
 		return nil, fmt.Errorf("openstack plugin: upload image to Glance: %w", err)
 	}
@@ -198,6 +203,32 @@ func (p *Plugin) Upload(ctx context.Context, artifact *platform.BuildArtifact) (
 			"checksum":           artifact.Checksum,
 		},
 	}, nil
+}
+
+func (p *Plugin) UploadStream(ctx context.Context, artifact *platform.StreamArtifact) (*platform.UploadResult, error) {
+	if artifact == nil || artifact.Reader == nil {
+		return nil, fmt.Errorf("openstack plugin: artifact stream is required")
+	}
+	if p.client == nil {
+		return nil, fmt.Errorf("openstack plugin: client is not initialised")
+	}
+	buildID := artifact.Metadata["buildID"]
+	imageName := firstNonEmpty(artifact.Metadata["imageName"], artifact.Metadata["vmimage"], p.config.extraConfig["imageName"], "imagebuilder-"+sanitizeOpenStackName(buildID))
+	settings := openStackImageSettingsFromExtra(p.config.extraConfig, artifact.Format)
+	buildArtifact := &platform.BuildArtifact{Format: artifact.Format, Checksum: artifact.Checksum, SizeBytes: artifact.SizeBytes, OS: artifact.OS, Metadata: artifact.Metadata}
+	ref, err := p.client.UploadImage(ctx, openStackUploadInput{
+		ImageName: imageName, Format: artifact.Format, Checksum: artifact.Checksum, SizeBytes: artifact.SizeBytes, OS: artifact.OS,
+		Tags: openStackTags(artifact.Metadata, buildID), Properties: openStackImageProperties(buildArtifact, p.config.extraConfig),
+		DiskFormat: settings.DiskFormat, ContainerFormat: settings.ContainerFormat, Visibility: settings.Visibility,
+		Protected: settings.Protected, MinDiskGB: settings.MinDiskGB, MinRAMMB: settings.MinRAMMB,
+	}, artifact.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("openstack plugin: stream image to Glance: %w", err)
+	}
+	return &platform.UploadResult{ProviderRef: ref.ID, Metadata: map[string]string{
+		"imageID": ref.ID, "imageName": ref.Name, "location": ref.Location,
+		"providerConfigName": p.config.providerConfigName, "format": string(artifact.Format), "checksum": artifact.Checksum,
+	}}, nil
 }
 
 func (p *Plugin) Register(ctx context.Context, result *platform.UploadResult) (*platform.ImageRef, error) {

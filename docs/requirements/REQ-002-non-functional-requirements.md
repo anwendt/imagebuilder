@@ -38,7 +38,7 @@ than what it does and are essential for ISAE audit traceability.
 | NFR-007 | Build resource allocation (CPU, memory, storage) SHALL be configurable per VMImage. | Per-spec |
 | NFR-008 | The operator reconciliation loop SHALL process VMImage state transitions within 10 seconds under normal load. | ≤ 10 s |
 | NFR-009 | Platform provider health checks SHALL complete within 5 seconds. | ≤ 5 s |
-| NFR-010 | The artifact upload to target platforms SHALL support streaming (chunked transfer) to avoid buffering large disk images in memory. | Streaming |
+| NFR-010 | Artifact upload SHALL stream from gRPC directly into target-platform APIs when they accept sequential readers. Full local spooling is permitted only for formats requiring later random access or archive inspection, such as vSphere OVA/OVF, and must have bounded lifecycle cleanup. | Streaming |
 
 ---
 

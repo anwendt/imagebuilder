@@ -1,6 +1,7 @@
 package azure
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -98,11 +99,39 @@ type config struct {
 
 type client interface {
 	UploadBlob(ctx context.Context, container, blobName, filePath string) (string, error)
+	UploadBlobStream(ctx context.Context, container, blobName string, body io.Reader, size int64) (string, error)
 	RegisterImage(ctx context.Context, input registerInput) (*platform.ImageRef, error)
 	ReconcileRemoteBuild(ctx context.Context, input azureRemoteBuildInput) (*azureRemoteBuildState, error)
 	CleanupRemoteBuild(ctx context.Context, input azureRemoteBuildInput) error
 	Cleanup(ctx context.Context, metadata map[string]string) error
 	HealthCheck(ctx context.Context) error
+}
+
+func (p *Plugin) UploadStream(ctx context.Context, artifact *platform.StreamArtifact) (*platform.UploadResult, error) {
+	if artifact == nil || artifact.Reader == nil {
+		return nil, fmt.Errorf("azure plugin: artifact stream is required")
+	}
+	if artifact.Format != platform.FormatVHD {
+		return nil, fmt.Errorf("azure plugin: unsupported artifact format %q; use vhd", artifact.Format)
+	}
+	buildID := artifact.Metadata["buildID"]
+	if buildID == "" {
+		return nil, fmt.Errorf("azure plugin: artifact metadata missing required key 'buildID'")
+	}
+	if p.client == nil {
+		return nil, fmt.Errorf("azure plugin: client is not initialised")
+	}
+	blobName := uploadBlobName(p.config.blobPrefix, buildID, artifact.Metadata["imageName"])
+	blobURL, err := p.client.UploadBlobStream(ctx, p.config.storageContainer, blobName, artifact.Reader, artifact.SizeBytes)
+	if err != nil {
+		return nil, fmt.Errorf("azure plugin: stream artifact to blob: %w", err)
+	}
+	imageName := firstNonEmpty(artifact.Metadata["imageName"], artifact.Metadata["vmimage"], p.config.imageName, "imagebuilder-"+sanitizeName(buildID))
+	return &platform.UploadResult{ProviderRef: blobURL, Metadata: map[string]string{
+		"buildID": buildID, "imageName": imageName, "format": string(artifact.Format), "checksum": artifact.Checksum,
+		"os": string(artifact.OS), "container": p.config.storageContainer, "blobName": blobName, "blobURL": blobURL,
+		"resourceGroup": p.config.resourceGroup, "location": p.config.location,
+	}}, nil
 }
 
 type registerInput struct {
@@ -741,6 +770,65 @@ func (c *sdkClient) UploadBlob(ctx context.Context, container, blobName, filePat
 		return "", err
 	}
 	return c.blobURL(container, blobName), nil
+}
+
+func (c *sdkClient) UploadBlobStream(ctx context.Context, container, blobName string, body io.Reader, size int64) (blobURL string, retErr error) {
+	start := time.Now()
+	defer func() { observeAzureOperation("upload_blob_stream", start, retErr) }()
+	if container != c.cfg.storageContainer {
+		return "", fmt.Errorf("configured container mismatch: got %q want %q", container, c.cfg.storageContainer)
+	}
+	if size <= 0 || size%azurePageSize != 0 {
+		return "", fmt.Errorf("fixed VHD size must be a positive multiple of %d bytes, got %d", azurePageSize, size)
+	}
+	if _, err := c.blobs.CreateContainer(ctx, container, nil); err != nil && !bloberror.HasCode(err, bloberror.ContainerAlreadyExists) {
+		return "", fmt.Errorf("ensure container exists: %w", err)
+	}
+	client, err := c.recreatePageBlob(ctx, container, blobName, size)
+	if err != nil {
+		return "", err
+	}
+	complete := false
+	defer func() {
+		if !complete {
+			_, _ = c.blobs.DeleteBlob(context.Background(), container, blobName, &azblob.DeleteBlobOptions{DeleteSnapshots: to.Ptr(azblob.DeleteSnapshotsOptionTypeInclude)})
+		}
+	}()
+	buffer := make([]byte, c.cfg.pageUploadChunk)
+	for offset := int64(0); offset < size; {
+		count := minInt64(c.cfg.pageUploadChunk, size-offset)
+		if _, err := io.ReadFull(body, buffer[:count]); err != nil {
+			return "", fmt.Errorf("read page range offset=%d count=%d: %w", offset, count, err)
+		}
+		reader := &sectionReadSeekCloser{SectionReader: io.NewSectionReader(bytes.NewReader(buffer[:count]), 0, count)}
+		if _, err := client.UploadPages(ctx, reader, blob.HTTPRange{Offset: offset, Count: count}, nil); err != nil {
+			return "", fmt.Errorf("upload page range offset=%d count=%d: %w", offset, count, err)
+		}
+		azurePageUploadBytes.WithLabelValues(container).Add(float64(count))
+		azurePageUploadRanges.WithLabelValues(container, "true").Inc()
+		offset += count
+	}
+	complete = true
+	return c.blobURL(container, blobName), nil
+}
+
+func (c *sdkClient) recreatePageBlob(ctx context.Context, container, blobName string, size int64) (*pageblob.Client, error) {
+	client, err := c.pageBlobClient(container, blobName)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := client.Create(ctx, size, nil); err != nil {
+		if !bloberror.HasCode(err, bloberror.BlobAlreadyExists) {
+			return nil, fmt.Errorf("create page blob: %w", err)
+		}
+		if _, deleteErr := c.blobs.DeleteBlob(ctx, container, blobName, &azblob.DeleteBlobOptions{DeleteSnapshots: to.Ptr(azblob.DeleteSnapshotsOptionTypeInclude)}); deleteErr != nil && !bloberror.HasCode(deleteErr, bloberror.BlobNotFound) {
+			return nil, fmt.Errorf("replace existing page blob: %w", deleteErr)
+		}
+		if _, err := client.Create(ctx, size, nil); err != nil {
+			return nil, fmt.Errorf("recreate page blob: %w", err)
+		}
+	}
+	return client, nil
 }
 
 func (c *sdkClient) uploadPageBlob(ctx context.Context, container, blobName string, file *os.File, size int64) error {

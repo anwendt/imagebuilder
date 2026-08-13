@@ -3,9 +3,11 @@ package vsphere
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -72,7 +74,7 @@ type config struct {
 }
 
 type client interface {
-	UploadArtifact(ctx context.Context, input uploadInput) (*platform.UploadResult, error)
+	UploadArtifact(ctx context.Context, input uploadInput, body io.Reader) (*platform.UploadResult, error)
 	RegisterImage(ctx context.Context, input registerInput) (*platform.ImageRef, error)
 	ReconcileRemoteBuild(ctx context.Context, input vsphereRemoteBuildInput) (*vsphereRemoteBuildState, error)
 	CleanupRemoteBuild(ctx context.Context, input vsphereRemoteBuildInput) error
@@ -229,6 +231,11 @@ func (p *Plugin) Upload(ctx context.Context, artifact *platform.BuildArtifact) (
 		slog.String("datastore", p.config.datastore),
 		slog.String("datastorePath", datastorePath),
 	)
+	file, err := os.Open(artifact.Path) // #nosec G304 -- Artifact path is supplied by the controller-owned build result.
+	if err != nil {
+		return nil, fmt.Errorf("vsphere plugin: open artifact: %w", err)
+	}
+	defer file.Close()
 	result, err := client.UploadArtifact(ctx, uploadInput{
 		ArtifactPath:  artifact.Path,
 		Datastore:     p.config.datastore,
@@ -239,7 +246,7 @@ func (p *Plugin) Upload(ctx context.Context, artifact *platform.BuildArtifact) (
 		SizeBytes:     artifact.SizeBytes,
 		BuildID:       buildID,
 		ImageName:     imageName,
-	})
+	}, file)
 	if err != nil {
 		return nil, fmt.Errorf("vsphere plugin: upload artifact: %w", err)
 	}
@@ -261,6 +268,38 @@ func (p *Plugin) Upload(ctx context.Context, artifact *platform.BuildArtifact) (
 	artifact.Metadata["vsphere.datastore"] = p.config.datastore
 	artifact.Metadata["vsphere.datastorePath"] = datastorePath
 	artifact.Metadata["vsphere.providerRef"] = result.ProviderRef
+	return result, nil
+}
+
+func (p *Plugin) UploadStream(ctx context.Context, artifact *platform.StreamArtifact) (*platform.UploadResult, error) {
+	if artifact == nil || artifact.Reader == nil {
+		return nil, fmt.Errorf("vsphere plugin: artifact stream is required")
+	}
+	if artifact.Format != platform.FormatVMDK {
+		return nil, fmt.Errorf("vsphere plugin: direct streaming supports vmdk only; ova/ovf require archive inspection")
+	}
+	if p.client == nil {
+		return nil, fmt.Errorf("vsphere plugin: client is not initialised")
+	}
+	buildID := artifact.Metadata["buildID"]
+	if buildID == "" {
+		return nil, fmt.Errorf("vsphere plugin: artifact metadata missing required key 'buildID'")
+	}
+	imageName := firstNonEmpty(artifact.Metadata["imageName"], artifact.Metadata["vmimage"], p.config.extraConfig["imageName"], "imagebuilder-"+sanitizeName(buildID))
+	datastorePath := artifactDatastorePath(p.config.uploadPathPrefix, buildID, imageName+".vmdk", artifact.Format)
+	result, err := p.client.UploadArtifact(ctx, uploadInput{
+		Datastore: p.config.datastore, Datacenter: p.config.datacenter, DatastorePath: datastorePath,
+		Format: artifact.Format, Checksum: artifact.Checksum, SizeBytes: artifact.SizeBytes, BuildID: buildID, ImageName: imageName,
+	}, artifact.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("vsphere plugin: stream artifact to datastore: %w", err)
+	}
+	if result.Metadata == nil {
+		result.Metadata = map[string]string{}
+	}
+	result.Metadata["buildID"], result.Metadata["imageName"] = buildID, imageName
+	result.Metadata["format"], result.Metadata["checksum"] = string(artifact.Format), artifact.Checksum
+	result.Metadata["datacenter"], result.Metadata["datastore"], result.Metadata["datastorePath"] = p.config.datacenter, p.config.datastore, datastorePath
 	return result, nil
 }
 
@@ -435,7 +474,7 @@ func newGovmomiClient(ctx context.Context, cfg config) (client, error) {
 	}, nil
 }
 
-func (c *govmomiClient) UploadArtifact(ctx context.Context, input uploadInput) (*platform.UploadResult, error) {
+func (c *govmomiClient) UploadArtifact(ctx context.Context, input uploadInput, body io.Reader) (*platform.UploadResult, error) {
 	dc, ds, err := c.resolveDatastore(ctx, input.Datacenter, input.Datastore)
 	if err != nil {
 		return nil, err
@@ -443,7 +482,9 @@ func (c *govmomiClient) UploadArtifact(ctx context.Context, input uploadInput) (
 	if err := c.fileManager.MakeDirectory(ctx, datastoreDirectory(input.Datastore, path.Dir(input.DatastorePath)), dc, true); err != nil {
 		return nil, fmt.Errorf("create datastore upload directory: %w", err)
 	}
-	if err := ds.UploadFile(ctx, input.ArtifactPath, input.DatastorePath, nil); err != nil {
+	params := soap.DefaultUpload
+	params.ContentLength = input.SizeBytes
+	if err := ds.Upload(ctx, body, input.DatastorePath, &params); err != nil {
 		return nil, fmt.Errorf("upload file to datastore: %w", err)
 	}
 	ref := datastoreReference(input.Datastore, input.DatastorePath)
