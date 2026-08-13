@@ -35,6 +35,24 @@ func TestOperatorRBACIsScopedForProduction(t *testing.T) {
     verbs: ["get", "create", "update"]`) {
 			t.Fatalf("%s must grant get/create/update on Secrets for VMImage-owned upload mTLS bundles", path)
 		}
+		for _, want := range []string{
+			`apiGroups: ["kyverno.io"]`,
+			`resources: ["clusterpolicies"]`,
+			`apiGroups: ["admissionregistration.k8s.io"]`,
+			`resources: ["validatingwebhookconfigurations"]`,
+		} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("%s missing signature-policy verification RBAC %q", path, want)
+			}
+		}
+		if !strings.Contains(text, `resources: ["validatingwebhookconfigurations"]
+    verbs: ["get", "list"]`) {
+			t.Fatalf("%s must grant get/list on validating webhook configurations", path)
+		}
+		if !strings.Contains(text, `resources: ["namespaces"]
+    verbs: ["get"]`) {
+			t.Fatalf("%s must grant get on Namespaces for webhook selector evaluation", path)
+		}
 	}
 }
 

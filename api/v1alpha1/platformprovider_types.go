@@ -134,9 +134,9 @@ type ProviderPackageSecuritySpec struct {
 	// +optional
 	RequireDigest bool `json:"requireDigest,omitempty"`
 
-	// VerifySignature marks this provider as requiring signature verification.
-	// The core enforces immutable digest references and records the policy in
-	// the Deployment; cluster admission can bind this to cosign/Sigstore.
+	// VerifySignature requires fail-closed cryptographic image verification.
+	// The operator validates an enforcing cluster admission policy and its
+	// failurePolicy=Fail webhook before creating the provider Deployment.
 	// +optional
 	VerifySignature bool `json:"verifySignature,omitempty"`
 }

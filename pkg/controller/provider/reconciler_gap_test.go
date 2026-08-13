@@ -166,4 +166,7 @@ func TestProviderReconcile_DeploymentLabels(t *testing.T) {
 	if dep.Labels["app.kubernetes.io/managed-by"] != "imagebuilder" {
 		t.Error("label app.kubernetes.io/managed-by missing")
 	}
+	if dep.Labels["imagebuilder.io/provider-pod"] != "true" || dep.Spec.Template.Labels["imagebuilder.io/provider-pod"] != "true" {
+		t.Error("provider pod signature-policy selector label missing")
+	}
 }

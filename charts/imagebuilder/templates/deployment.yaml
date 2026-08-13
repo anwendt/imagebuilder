@@ -30,6 +30,9 @@ spec:
             - --require-provider-mtls={{ .Values.providerSecurity.requireMTLS }}
             - --require-provider-digest={{ .Values.providerSecurity.requireDigest }}
             - --require-provider-signature={{ .Values.providerSecurity.requireSignature }}
+            {{- if and .Values.providerSecurity.requireSignature .Values.imageSignaturePolicy.enabled }}
+            - --provider-signature-policy={{ include "imagebuilder.fullname" . }}-require-signed-digests
+            {{- end }}
             {{- if .Values.providerSecurity.allowedRegistries }}
             - --allowed-provider-registries={{ join "," .Values.providerSecurity.allowedRegistries }}
             {{- end }}

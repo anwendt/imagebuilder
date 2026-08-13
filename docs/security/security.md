@@ -38,8 +38,11 @@ build:
 ```
 
 The core validates registry allow-lists and digest pinning. Cryptographic
-signature verification should be enforced by cluster admission policy. A Kyverno
-example is provided in `config/policy/kyverno-image-signatures.yaml`.
+signature verification is enforced by cluster admission policy. The operator
+checks that the configured Kyverno policy and validating webhook remain
+fail-closed before it creates provider pods. The production Helm defaults render
+the policy from `config/policy/kyverno-image-signatures.yaml`; install Kyverno
+before using the production profile.
 
 ## Runtime Hardening
 

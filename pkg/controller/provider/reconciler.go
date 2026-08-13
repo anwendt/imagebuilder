@@ -36,6 +36,7 @@ import (
 	"github.com/anwendt/imagebuilder/pkg/plugin"
 	plugingrpc "github.com/anwendt/imagebuilder/pkg/plugin/grpc"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
+	"github.com/anwendt/imagebuilder/pkg/security/signaturepolicy"
 )
 
 const (
@@ -57,6 +58,9 @@ const (
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get
+// +kubebuilder:rbac:groups=kyverno.io,resources=clusterpolicies,verbs=get
+// +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingwebhookconfigurations,verbs=get;list
+// +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get
 type PlatformProviderReconciler struct {
 	client.Client
 	Scheme            *runtime.Scheme
@@ -66,6 +70,7 @@ type PlatformProviderReconciler struct {
 	RequireDigest     bool
 	RequireSignature  bool
 	AllowedRegistries []string
+	SignatureVerifier *signaturepolicy.Verifier
 	ConnectProvider   func(ctx context.Context, address string) (platform.Plugin, error)
 	log               *slog.Logger
 }
@@ -111,6 +116,14 @@ func (r *PlatformProviderReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if err := r.validateProviderPackagePolicy(pp); err != nil {
 		return r.setUnhealthy(ctx, pp, fmt.Sprintf("provider package policy rejected image: %v", err))
 	}
+	if pp.Spec.Security != nil && pp.Spec.Security.VerifySignature {
+		if r.SignatureVerifier == nil {
+			return r.failSignatureVerification(ctx, pp, log, "provider signature verification requested, but no cryptographic verifier is configured")
+		}
+		if err := r.SignatureVerifier.Verify(ctx, pp.Spec.Package); err != nil {
+			return r.failSignatureVerification(ctx, pp, log, fmt.Sprintf("provider signature verification policy is unavailable: %v", err))
+		}
+	}
 	if err := r.validateProviderTransportPolicy(pp); err != nil {
 		return r.setUnhealthy(ctx, pp, fmt.Sprintf("provider transport policy rejected: %v", err))
 	}
@@ -123,6 +136,20 @@ func (r *PlatformProviderReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	// Check Deployment readiness and update phase.
 	return r.reconcileHealth(ctx, pp, log)
+}
+
+func (r *PlatformProviderReconciler) failSignatureVerification(ctx context.Context, pp *v1alpha1.PlatformProvider, log *slog.Logger, reason string) (ctrl.Result, error) {
+	deployment := &appsv1.Deployment{}
+	key := types.NamespacedName{Name: providerDeploymentName(pp), Namespace: r.providerNamespace(pp)}
+	if err := r.Get(ctx, key, deployment); err == nil {
+		log.Warn("deleting provider deployment after signature verification failure", slog.String("deployment", key.Name))
+		if err := r.Delete(ctx, deployment); err != nil && !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, fmt.Errorf("delete unverified provider deployment: %w", err)
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, fmt.Errorf("get provider deployment after signature verification failure: %w", err)
+	}
+	return r.setUnhealthy(ctx, pp, reason)
 }
 
 // ---------------------------------------------------------------------------
@@ -165,6 +192,7 @@ func (r *PlatformProviderReconciler) buildDeployment(pp *v1alpha1.PlatformProvid
 	labels := map[string]string{
 		"app.kubernetes.io/managed-by":  "imagebuilder",
 		"imagebuilder.io/provider-name": pp.Name,
+		"imagebuilder.io/provider-pod":  "true",
 	}
 	for key, value := range pp.Spec.PodLabels {
 		labels[key] = value
@@ -173,11 +201,6 @@ func (r *PlatformProviderReconciler) buildDeployment(pp *v1alpha1.PlatformProvid
 	for key, value := range pp.Spec.PodAnnotations {
 		annotations[key] = value
 	}
-	if pp.Spec.Security != nil && pp.Spec.Security.VerifySignature {
-		annotations["imagebuilder.io/signature-policy"] = "cosign-required"
-		annotations["imagebuilder.io/signature-image"] = pp.Spec.Package
-	}
-
 	var pullSecrets []corev1.LocalObjectReference
 	for _, s := range pp.Spec.PackagePullSecrets {
 		pullSecrets = append(pullSecrets, corev1.LocalObjectReference{Name: s})
@@ -305,6 +328,7 @@ func (r *PlatformProviderReconciler) buildService(pp *v1alpha1.PlatformProvider)
 	labels := map[string]string{
 		"app.kubernetes.io/managed-by":  "imagebuilder",
 		"imagebuilder.io/provider-name": pp.Name,
+		"imagebuilder.io/provider-pod":  "true",
 	}
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -355,18 +379,24 @@ func (r *PlatformProviderReconciler) reconcileHealth(ctx context.Context, pp *v1
 			if err != nil {
 				return r.setUnhealthy(ctx, pp, fmt.Sprintf("provider handshake failed: %v", err))
 			}
-			if !r.Registry.Supports(providerPlugin.Name()) {
-				if err := r.Registry.Register(providerPlugin); err != nil {
-					return r.setUnhealthy(ctx, pp, fmt.Sprintf("provider registry update failed: %v", err))
-				}
-			}
 			pp.Status.Capabilities = capabilitiesFromPlugin(providerPlugin)
+			if providerPlugin.Name() != pp.Name {
+				closeProviderPlugin(providerPlugin)
+				return r.setUnhealthy(ctx, pp, fmt.Sprintf("provider advertises name %q, which must match PlatformProvider metadata.name %q", providerPlugin.Name(), pp.Name))
+			}
+			if err := r.Registry.RegisterExternal(pp.Name, string(pp.UID), providerPlugin); err != nil {
+				closeProviderPlugin(providerPlugin)
+				return r.setUnhealthy(ctx, pp, fmt.Sprintf("provider registry update failed: %v", err))
+			}
 		}
 		log.Info("provider deployment is ready — marking Healthy")
 		pp.Status.Phase = "Healthy"
 		observability.ProviderHealthy.WithLabelValues(pp.Name, r.providerNamespace(pp)).Set(1)
 		setCondition(pp, "Ready", metav1.ConditionTrue, "DeploymentReady", "Provider deployment has ready replicas")
 	} else {
+		if r.Registry != nil {
+			r.Registry.DeregisterExternal(pp.Name, string(pp.UID))
+		}
 		observability.ProviderHealthy.WithLabelValues(pp.Name, r.providerNamespace(pp)).Set(0)
 		installing := pp.Status.Phase == "" || pp.Status.Phase == "Installing"
 		if installing {
@@ -392,8 +422,8 @@ func (r *PlatformProviderReconciler) reconcileHealth(ctx context.Context, pp *v1
 
 func (r *PlatformProviderReconciler) reconcileDelete(ctx context.Context, pp *v1alpha1.PlatformProvider, log *slog.Logger) (ctrl.Result, error) {
 	log.Info("reconciling deletion of platform provider")
-	if r.Registry != nil && pp.Status.Capabilities != nil {
-		r.Registry.Deregister(pp.Status.Capabilities.ProviderName)
+	if r.Registry != nil {
+		r.Registry.DeregisterExternal(pp.Name, string(pp.UID))
 	}
 	observability.ProviderHealthy.DeleteLabelValues(pp.Name, r.providerNamespace(pp))
 	// Owned Deployment and Service are garbage-collected via ownerReferences.
@@ -411,6 +441,9 @@ func (r *PlatformProviderReconciler) reconcileDelete(ctx context.Context, pp *v1
 
 func (r *PlatformProviderReconciler) setUnhealthy(ctx context.Context, pp *v1alpha1.PlatformProvider, reason string) (ctrl.Result, error) {
 	r.log.Error("platform provider unhealthy", slog.String("name", pp.Name), slog.String("reason", reason))
+	if r.Registry != nil {
+		r.Registry.DeregisterExternal(pp.Name, string(pp.UID))
+	}
 	observability.ProviderHealthy.WithLabelValues(pp.Name, r.providerNamespace(pp)).Set(0)
 	pp.Status.Phase = "Unhealthy"
 	setCondition(pp, "Ready", metav1.ConditionFalse, "Error", reason)
@@ -534,20 +567,32 @@ func (r *PlatformProviderReconciler) healthCheckRegisteredProvider(ctx context.C
 	if r.Registry == nil || pp.Status.Capabilities == nil || pp.Status.Capabilities.ProviderName == "" {
 		return nil
 	}
+	if pp.Status.Capabilities.ProviderName != pp.Name {
+		return fmt.Errorf("provider advertises name %q, which must match PlatformProvider metadata.name %q", pp.Status.Capabilities.ProviderName, pp.Name)
+	}
 
-	providerPlugin, err := r.Registry.Get(pp.Status.Capabilities.ProviderName)
+	providerPlugin, err := r.Registry.External(pp.Name, string(pp.UID), pp.Status.Capabilities.ProviderName)
 	if err != nil {
 		providerPlugin, err = r.connectProvider(ctx, pp)
 		if err != nil {
 			return err
 		}
-		if !r.Registry.Supports(providerPlugin.Name()) {
-			if err := r.Registry.Register(providerPlugin); err != nil {
-				return err
-			}
+		if providerPlugin.Name() != pp.Status.Capabilities.ProviderName {
+			closeProviderPlugin(providerPlugin)
+			return fmt.Errorf("provider capability name changed from %q to %q", pp.Status.Capabilities.ProviderName, providerPlugin.Name())
+		}
+		if err := r.Registry.RegisterExternal(pp.Name, string(pp.UID), providerPlugin); err != nil {
+			closeProviderPlugin(providerPlugin)
+			return err
 		}
 	}
 	return providerPlugin.HealthCheck(ctx)
+}
+
+func closeProviderPlugin(providerPlugin platform.Plugin) {
+	if closer, ok := providerPlugin.(platform.ClosePlugin); ok {
+		_ = closer.Close()
+	}
 }
 
 func capabilitiesFromPlugin(p platform.Plugin) *v1alpha1.ProviderCapabilities {

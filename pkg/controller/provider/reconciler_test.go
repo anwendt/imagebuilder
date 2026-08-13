@@ -127,6 +127,15 @@ func hasVolumeMount(container corev1.Container, name, mountPath string) bool {
 	return false
 }
 
+func conditionMessage(pp *v1alpha1.PlatformProvider, conditionType string) string {
+	for _, condition := range pp.Status.Conditions {
+		if condition.Type == conditionType {
+			return condition.Message
+		}
+	}
+	return ""
+}
+
 type fakePlatformPlugin struct {
 	name         string
 	version      string
@@ -640,14 +649,14 @@ func TestProviderReconcile_Phase_Healthy_WhenDeploymentReady(t *testing.T) {
 }
 
 func TestProviderReconcile_ReadyProvider_RegistersCapabilities(t *testing.T) {
-	pp := newPP("external-aws", "default", "ghcr.io/anwendt/provider-aws:v1")
+	pp := newPP("aws", "default", "ghcr.io/anwendt/provider-aws:v1")
 	pp.Finalizers = []string{"imagebuilder.io/provider-cleanup"}
 
 	dep := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "provider-external-aws", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "provider-aws", Namespace: "default"},
 		Spec: appsv1.DeploymentSpec{
 			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"imagebuilder.io/provider-name": "external-aws"},
+				MatchLabels: map[string]string{"imagebuilder.io/provider-name": "aws"},
 			},
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -666,8 +675,8 @@ func TestProviderReconcile_ReadyProvider_RegistersCapabilities(t *testing.T) {
 		Scheme:   s,
 		Registry: reg,
 		ConnectProvider: func(ctx context.Context, address string) (platform.Plugin, error) {
-			if address != "provider-external-aws.default.svc:50051" {
-				t.Fatalf("provider address = %q, want provider-external-aws.default.svc:50051", address)
+			if address != "provider-aws.default.svc:50051" {
+				t.Fatalf("provider address = %q, want provider-aws.default.svc:50051", address)
 			}
 			return &fakePlatformPlugin{
 				name:    "aws",
@@ -678,14 +687,14 @@ func TestProviderReconcile_ReadyProvider_RegistersCapabilities(t *testing.T) {
 		},
 	}
 
-	reconcileProvider(t, r, "external-aws", "default")
+	reconcileProvider(t, r, "aws", "default")
 
-	if !reg.Supports("aws") {
-		t.Fatal("expected external provider to be registered after readiness handshake")
+	if !reg.SupportsExternal("aws", string(pp.UID), "aws") {
+		t.Fatal("expected external provider installation to be registered after readiness handshake")
 	}
 
 	updated := &v1alpha1.PlatformProvider{}
-	c.Get(context.Background(), types.NamespacedName{Name: "external-aws", Namespace: "default"}, updated) //nolint:errcheck
+	c.Get(context.Background(), types.NamespacedName{Name: "aws", Namespace: "default"}, updated) //nolint:errcheck
 	if updated.Status.Phase != "Healthy" {
 		t.Errorf("phase = %q, want Healthy", updated.Status.Phase)
 	}
@@ -697,6 +706,40 @@ func TestProviderReconcile_ReadyProvider_RegistersCapabilities(t *testing.T) {
 	}
 	if updated.Status.Capabilities.ProtocolVersion != "v1" {
 		t.Errorf("protocolVersion = %q, want v1", updated.Status.Capabilities.ProtocolVersion)
+	}
+}
+
+func TestProviderReconcile_AdvertisedNameMustMatchResourceName(t *testing.T) {
+	pp := newPP("external-aws", "default", "ghcr.io/anwendt/provider-aws:v1")
+	pp.Finalizers = []string{"imagebuilder.io/provider-cleanup"}
+	dep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "provider-external-aws", Namespace: "default"},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"imagebuilder.io/provider-name": "external-aws"}},
+			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "provider", Image: pp.Spec.Package}}}},
+		},
+		Status: appsv1.DeploymentStatus{ReadyReplicas: 1},
+	}
+	reg := plugin.NewRegistry(nil)
+	s := providerScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.PlatformProvider{}).WithObjects(pp, dep).Build()
+	r := &provider.PlatformProviderReconciler{
+		Client: c, Scheme: s, Registry: reg,
+		ConnectProvider: func(context.Context, string) (platform.Plugin, error) {
+			return &fakePlatformPlugin{name: "aws", version: "external"}, nil
+		},
+	}
+	reconcileProvider(t, r, pp.Name, pp.Namespace)
+
+	updated := &v1alpha1.PlatformProvider{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: pp.Name, Namespace: pp.Namespace}, updated); err != nil {
+		t.Fatalf("get PlatformProvider: %v", err)
+	}
+	if updated.Status.Phase != "Unhealthy" || !strings.Contains(conditionMessage(updated, "Ready"), "must match") {
+		t.Fatalf("status=%#v", updated.Status)
+	}
+	if reg.SupportsExternal(pp.Name, string(pp.UID), "aws") {
+		t.Fatal("mismatched provider was registered")
 	}
 }
 
@@ -733,6 +776,39 @@ func TestProviderReconcile_Phase_Unhealthy_WhenHealthyThenDrops(t *testing.T) {
 	}
 }
 
+func TestProviderReconcile_LostReadinessDeregistersOnlyExternalAdapter(t *testing.T) {
+	pp := newPP("aws", "default", "ghcr.io/anwendt/provider-aws:v1")
+	pp.Finalizers = []string{"imagebuilder.io/provider-cleanup"}
+	pp.Status.Phase = "Healthy"
+	pp.Status.Capabilities = &v1alpha1.ProviderCapabilities{ProviderName: "aws", ProtocolVersion: "v1"}
+	dep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "provider-aws", Namespace: "default"},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"imagebuilder.io/provider-name": "aws"}},
+			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "provider", Image: pp.Spec.Package}}}},
+		},
+		Status: appsv1.DeploymentStatus{ReadyReplicas: 0},
+	}
+	reg := plugin.NewRegistry(nil)
+	if err := reg.Register(&fakePlatformPlugin{name: "aws", version: "builtin"}); err != nil {
+		t.Fatalf("register builtin: %v", err)
+	}
+	if err := reg.RegisterExternal(pp.Name, string(pp.UID), &fakePlatformPlugin{name: "aws", version: "external"}); err != nil {
+		t.Fatalf("register external: %v", err)
+	}
+	s := providerScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.PlatformProvider{}).WithObjects(pp, dep).Build()
+	r := &provider.PlatformProviderReconciler{Client: c, Scheme: s, Registry: reg}
+	reconcileProvider(t, r, pp.Name, pp.Namespace)
+
+	if reg.SupportsExternal(pp.Name, string(pp.UID), "aws") {
+		t.Fatal("unready provider remained externally registered")
+	}
+	if !reg.Supports("aws") {
+		t.Fatal("unready external provider removed colliding builtin")
+	}
+}
+
 func TestProviderReconcile_RequeuesAfterHealthCheck(t *testing.T) {
 	pp := newPP("aws-provider", "default", "ghcr.io/anwendt/provider-aws:v1")
 	pp.Finalizers = []string{"imagebuilder.io/provider-cleanup"}
@@ -764,16 +840,16 @@ func TestProviderReconcile_RequeuesAfterHealthCheck(t *testing.T) {
 }
 
 func TestProviderReconcile_AlreadyHealthy_PerformsProviderHealthCheck(t *testing.T) {
-	pp := newPP("external-aws", "default", "ghcr.io/anwendt/provider-aws:v1")
+	pp := newPP("aws", "default", "ghcr.io/anwendt/provider-aws:v1")
 	pp.Finalizers = []string{"imagebuilder.io/provider-cleanup"}
 	pp.Status.Phase = "Healthy"
 	pp.Status.Capabilities = &v1alpha1.ProviderCapabilities{ProviderName: "aws", ProtocolVersion: "v1"}
 
 	dep := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "provider-external-aws", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "provider-aws", Namespace: "default"},
 		Spec: appsv1.DeploymentSpec{
 			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"imagebuilder.io/provider-name": "external-aws"},
+				MatchLabels: map[string]string{"imagebuilder.io/provider-name": "aws"},
 			},
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -786,7 +862,7 @@ func TestProviderReconcile_AlreadyHealthy_PerformsProviderHealthCheck(t *testing
 
 	registered := &fakePlatformPlugin{name: "aws", version: "v1.2.3"}
 	reg := plugin.NewRegistry(nil)
-	if err := reg.Register(registered); err != nil {
+	if err := reg.RegisterExternal(pp.Name, string(pp.UID), registered); err != nil {
 		t.Fatalf("register fake plugin: %v", err)
 	}
 
@@ -794,7 +870,7 @@ func TestProviderReconcile_AlreadyHealthy_PerformsProviderHealthCheck(t *testing
 	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.PlatformProvider{}).WithObjects(pp, dep).Build()
 	r := &provider.PlatformProviderReconciler{Client: c, Scheme: s, Registry: reg}
 
-	reconcileProvider(t, r, "external-aws", "default")
+	reconcileProvider(t, r, "aws", "default")
 
 	if registered.healthChecks != 1 {
 		t.Errorf("healthChecks = %d, want 1", registered.healthChecks)
@@ -802,16 +878,16 @@ func TestProviderReconcile_AlreadyHealthy_PerformsProviderHealthCheck(t *testing
 }
 
 func TestProviderReconcile_AlreadyHealthy_UnhealthyWhenProviderHealthCheckFails(t *testing.T) {
-	pp := newPP("external-aws", "default", "ghcr.io/anwendt/provider-aws:v1")
+	pp := newPP("aws", "default", "ghcr.io/anwendt/provider-aws:v1")
 	pp.Finalizers = []string{"imagebuilder.io/provider-cleanup"}
 	pp.Status.Phase = "Healthy"
 	pp.Status.Capabilities = &v1alpha1.ProviderCapabilities{ProviderName: "aws", ProtocolVersion: "v1"}
 
 	dep := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "provider-external-aws", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "provider-aws", Namespace: "default"},
 		Spec: appsv1.DeploymentSpec{
 			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"imagebuilder.io/provider-name": "external-aws"},
+				MatchLabels: map[string]string{"imagebuilder.io/provider-name": "aws"},
 			},
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -823,7 +899,7 @@ func TestProviderReconcile_AlreadyHealthy_UnhealthyWhenProviderHealthCheckFails(
 	}
 
 	reg := plugin.NewRegistry(nil)
-	if err := reg.Register(&fakePlatformPlugin{name: "aws", version: "v1.2.3", healthErr: fmt.Errorf("grpc unavailable")}); err != nil {
+	if err := reg.RegisterExternal(pp.Name, string(pp.UID), &fakePlatformPlugin{name: "aws", version: "v1.2.3", healthErr: fmt.Errorf("grpc unavailable")}); err != nil {
 		t.Fatalf("register fake plugin: %v", err)
 	}
 
@@ -831,10 +907,10 @@ func TestProviderReconcile_AlreadyHealthy_UnhealthyWhenProviderHealthCheckFails(
 	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.PlatformProvider{}).WithObjects(pp, dep).Build()
 	r := &provider.PlatformProviderReconciler{Client: c, Scheme: s, Registry: reg}
 
-	reconcileProvider(t, r, "external-aws", "default")
+	reconcileProvider(t, r, "aws", "default")
 
 	updated := &v1alpha1.PlatformProvider{}
-	c.Get(context.Background(), types.NamespacedName{Name: "external-aws", Namespace: "default"}, updated) //nolint:errcheck
+	c.Get(context.Background(), types.NamespacedName{Name: "aws", Namespace: "default"}, updated) //nolint:errcheck
 	if updated.Status.Phase != "Unhealthy" {
 		t.Errorf("phase = %q, want Unhealthy", updated.Status.Phase)
 	}
@@ -913,7 +989,7 @@ func TestProviderReconcile_PackagePolicy_RequireDigestRejectsMutableTag(t *testi
 	}
 }
 
-func TestProviderReconcile_PackagePolicy_VerifySignatureAnnotatesDeployment(t *testing.T) {
+func TestProviderReconcile_PackagePolicy_VerifySignatureFailsClosedWithoutVerifier(t *testing.T) {
 	image := "ghcr.io/anwendt/provider-aws@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	pp := newPP("aws-provider", "default", image)
 	pp.Finalizers = []string{"imagebuilder.io/provider-cleanup"}
@@ -929,12 +1005,38 @@ func TestProviderReconcile_PackagePolicy_VerifySignatureAnnotatesDeployment(t *t
 
 	reconcileProvider(t, r, "aws-provider", "default")
 
+	updated := &v1alpha1.PlatformProvider{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "aws-provider", Namespace: "default"}, updated); err != nil {
+		t.Fatalf("get PlatformProvider: %v", err)
+	}
+	if updated.Status.Phase != "Unhealthy" || !strings.Contains(conditionMessage(updated, "Ready"), "no cryptographic verifier") {
+		t.Fatalf("status=%#v", updated.Status)
+	}
 	dep := &appsv1.Deployment{}
-	c.Get(context.Background(), types.NamespacedName{Name: "provider-aws-provider", Namespace: "default"}, dep) //nolint:errcheck
-	annotations := dep.Spec.Template.Annotations
-	if annotations["imagebuilder.io/signature-policy"] != "cosign-required" ||
-		annotations["imagebuilder.io/signature-image"] != image {
-		t.Fatalf("signature annotations = %#v", annotations)
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "provider-aws-provider", Namespace: "default"}, dep); err == nil {
+		t.Fatal("provider Deployment must not be created without a cryptographic verifier")
+	}
+}
+
+func TestProviderReconcile_SignatureVerificationFailureDeletesExistingDeployment(t *testing.T) {
+	image := "ghcr.io/anwendt/provider-aws@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	pp := newPP("aws-provider", "default", image)
+	pp.Finalizers = []string{"imagebuilder.io/provider-cleanup"}
+	pp.Spec.Security = &v1alpha1.ProviderPackageSecuritySpec{RequireDigest: true, VerifySignature: true}
+	dep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "provider-aws-provider", Namespace: "default"},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"imagebuilder.io/provider-name": "aws-provider"}},
+			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "provider", Image: image}}}},
+		},
+	}
+	s := providerScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.PlatformProvider{}).WithObjects(pp, dep).Build()
+	r := &provider.PlatformProviderReconciler{Client: c, Scheme: s}
+	reconcileProvider(t, r, pp.Name, pp.Namespace)
+
+	if err := c.Get(context.Background(), types.NamespacedName{Name: dep.Name, Namespace: dep.Namespace}, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("deployment still exists or lookup failed unexpectedly: %v", err)
 	}
 }
 
@@ -976,7 +1078,7 @@ func TestProviderReconcile_Deletion_DeregistersProvider(t *testing.T) {
 	pp.Status.Capabilities = &v1alpha1.ProviderCapabilities{ProviderName: "aws", ProtocolVersion: "v1"}
 
 	reg := plugin.NewRegistry(nil)
-	if err := reg.Register(&fakePlatformPlugin{name: "aws", version: "v1.2.3"}); err != nil {
+	if err := reg.RegisterExternal(pp.Name, string(pp.UID), &fakePlatformPlugin{name: "aws", version: "v1.2.3"}); err != nil {
 		t.Fatalf("register fake plugin: %v", err)
 	}
 
@@ -990,7 +1092,71 @@ func TestProviderReconcile_Deletion_DeregistersProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if reg.Supports("aws") {
+	if reg.SupportsExternal(pp.Name, string(pp.UID), "aws") {
 		t.Error("expected provider to be deregistered during deletion")
+	}
+}
+
+func TestProviderReconcile_ExternalSameNameDoesNotReplaceBuiltin(t *testing.T) {
+	pp := newPP("aws", "default", "ghcr.io/anwendt/provider-aws:v1")
+	pp.Finalizers = []string{"imagebuilder.io/provider-cleanup"}
+	dep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "provider-aws", Namespace: "default"},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"imagebuilder.io/provider-name": "aws"}},
+			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "provider", Image: pp.Spec.Package}}}},
+		},
+		Status: appsv1.DeploymentStatus{ReadyReplicas: 1},
+	}
+	builtin := &fakePlatformPlugin{name: "aws", version: "builtin"}
+	reg := plugin.NewRegistry(nil)
+	if err := reg.Register(builtin); err != nil {
+		t.Fatalf("register builtin: %v", err)
+	}
+
+	s := providerScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.PlatformProvider{}).WithObjects(pp, dep).Build()
+	r := &provider.PlatformProviderReconciler{
+		Client: c, Scheme: s, Registry: reg,
+		ConnectProvider: func(context.Context, string) (platform.Plugin, error) {
+			return &fakePlatformPlugin{name: "aws", version: "external"}, nil
+		},
+	}
+	reconcileProvider(t, r, pp.Name, pp.Namespace)
+
+	gotBuiltin, err := reg.New("aws")
+	if err != nil || gotBuiltin.Version() != "builtin" {
+		t.Fatalf("builtin = %#v error=%v", gotBuiltin, err)
+	}
+	gotExternal, err := reg.External(pp.Name, string(pp.UID), "aws")
+	if err != nil || gotExternal.Version() != "external" {
+		t.Fatalf("external = %#v error=%v", gotExternal, err)
+	}
+}
+
+func TestProviderReconcile_DeletionNeverRemovesCollidingBuiltin(t *testing.T) {
+	now := metav1.Now()
+	pp := newPP("aws", "default", "ghcr.io/anwendt/provider-aws:v1")
+	pp.Finalizers = []string{"imagebuilder.io/provider-cleanup"}
+	pp.DeletionTimestamp = &now
+	pp.Status.Capabilities = &v1alpha1.ProviderCapabilities{ProviderName: "aws", ProtocolVersion: "v1"}
+	reg := plugin.NewRegistry(nil)
+	if err := reg.Register(&fakePlatformPlugin{name: "aws", version: "builtin"}); err != nil {
+		t.Fatalf("register builtin: %v", err)
+	}
+	if err := reg.RegisterExternal(pp.Name, string(pp.UID), &fakePlatformPlugin{name: "aws", version: "external"}); err != nil {
+		t.Fatalf("register external: %v", err)
+	}
+
+	s := providerScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.PlatformProvider{}).WithObjects(pp).Build()
+	r := &provider.PlatformProviderReconciler{Client: c, Scheme: s, Registry: reg}
+	reconcileProvider(t, r, pp.Name, pp.Namespace)
+
+	if !reg.Supports("aws") {
+		t.Fatal("external deletion removed the built-in provider")
+	}
+	if reg.SupportsExternal(pp.Name, string(pp.UID), "aws") {
+		t.Fatal("external provider remained registered after deletion")
 	}
 }

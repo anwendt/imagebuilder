@@ -28,3 +28,8 @@ providerSecurity:
 
 imageSignaturePolicy:
   enabled: false
+  imageReferences:
+    - ghcr.io/anwendt/*
+  keyless:
+    issuer: https://token.actions.githubusercontent.com
+    subject: https://github.com/*

@@ -25,6 +25,16 @@ type fakePlugin struct {
 	providerConfigName string
 }
 
+type closeableFakePlugin struct {
+	fakePlugin
+	closed bool
+}
+
+func (p *closeableFakePlugin) Close() error {
+	p.closed = true
+	return nil
+}
+
 func (p *fakePlugin) Name() string    { return p.name }
 func (p *fakePlugin) Version() string { return p.version }
 func (p *fakePlugin) SupportedFormats() []platform.ImageFormat {
@@ -202,6 +212,101 @@ func TestRegistry_Deregister_RemovesPlugin(t *testing.T) {
 	r.Deregister("openstack")
 	if r.Supports("openstack") {
 		t.Error("Supports should return false after Deregister")
+	}
+}
+
+func TestRegistry_BuiltinAndExternalSameProviderNameCoexist(t *testing.T) {
+	r := newRegistry()
+	builtin := &fakePlugin{name: "aws", version: "builtin"}
+	external := &fakePlugin{name: "aws", version: "external"}
+	if err := r.Register(builtin); err != nil {
+		t.Fatalf("Register builtin: %v", err)
+	}
+	if err := r.RegisterExternal("aws", "uid-1", external); err != nil {
+		t.Fatalf("RegisterExternal: %v", err)
+	}
+
+	gotBuiltin, err := r.New("aws")
+	if err != nil || gotBuiltin.Version() != "builtin" {
+		t.Fatalf("builtin = %#v error=%v", gotBuiltin, err)
+	}
+	gotExternal, err := r.External("aws", "uid-1", "aws")
+	if err != nil || gotExternal.Version() != "external" {
+		t.Fatalf("external = %#v error=%v", gotExternal, err)
+	}
+}
+
+func TestRegistry_ExternalInstallationsMayAdvertiseSameProviderName(t *testing.T) {
+	r := newRegistry()
+	if err := r.RegisterExternal("aws-standard", "uid-1", &fakePlugin{name: "aws", version: "v1"}); err != nil {
+		t.Fatalf("RegisterExternal first: %v", err)
+	}
+	if err := r.RegisterExternal("aws-fips", "uid-2", &fakePlugin{name: "aws", version: "v2"}); err != nil {
+		t.Fatalf("RegisterExternal second: %v", err)
+	}
+	if _, err := r.External("aws-standard", "uid-1", "aws"); err != nil {
+		t.Fatalf("External first: %v", err)
+	}
+	if _, err := r.External("aws-fips", "uid-2", "aws"); err != nil {
+		t.Fatalf("External second: %v", err)
+	}
+}
+
+func TestRegistry_DeregisterExternalRequiresMatchingOwnerAndPreservesBuiltin(t *testing.T) {
+	r := newRegistry()
+	if err := r.Register(&fakePlugin{name: "aws", version: "builtin"}); err != nil {
+		t.Fatalf("Register builtin: %v", err)
+	}
+	external := &closeableFakePlugin{fakePlugin: fakePlugin{name: "aws", version: "external"}}
+	if err := r.RegisterExternal("aws", "uid-current", external); err != nil {
+		t.Fatalf("RegisterExternal: %v", err)
+	}
+	if r.DeregisterExternal("aws", "uid-stale") {
+		t.Fatal("stale owner deregistered external provider")
+	}
+	if !r.SupportsExternal("aws", "uid-current", "aws") {
+		t.Fatal("external provider removed by stale owner")
+	}
+	if !r.DeregisterExternal("aws", "uid-current") {
+		t.Fatal("current owner did not deregister external provider")
+	}
+	if !external.closed {
+		t.Fatal("external adapter was not closed")
+	}
+	if !r.Supports("aws") {
+		t.Fatal("deregistering external provider removed built-in")
+	}
+}
+
+func TestRegistry_RegisterExternalSameInstallationReplacesAndClosesAdapter(t *testing.T) {
+	r := newRegistry()
+	old := &closeableFakePlugin{fakePlugin: fakePlugin{name: "custom", version: "v1"}}
+	if err := r.RegisterExternal("custom", "uid-1", old); err != nil {
+		t.Fatalf("RegisterExternal old: %v", err)
+	}
+	newPlugin := &fakePlugin{name: "custom", version: "v2"}
+	if err := r.RegisterExternal("custom", "uid-1", newPlugin); err != nil {
+		t.Fatalf("RegisterExternal new: %v", err)
+	}
+	if !old.closed {
+		t.Fatal("replaced adapter was not closed")
+	}
+	got, err := r.External("custom", "uid-1", "custom")
+	if err != nil || got.Version() != "v2" {
+		t.Fatalf("external = %#v error=%v", got, err)
+	}
+}
+
+func TestRegistry_ExternalRejectsWrongOwnerOrCapability(t *testing.T) {
+	r := newRegistry()
+	if err := r.RegisterExternal("custom", "uid-1", &fakePlugin{name: "provider-api", version: "v1"}); err != nil {
+		t.Fatalf("RegisterExternal: %v", err)
+	}
+	if _, err := r.External("custom", "uid-old", "provider-api"); err == nil {
+		t.Fatal("wrong owner UID should be rejected")
+	}
+	if _, err := r.External("custom", "uid-1", "other-api"); err == nil {
+		t.Fatal("wrong capability name should be rejected")
 	}
 }
 

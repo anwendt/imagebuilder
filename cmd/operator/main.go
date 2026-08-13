@@ -16,6 +16,7 @@ import (
 	"os"
 	"strings"
 
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
@@ -33,6 +34,7 @@ import (
 	"github.com/anwendt/imagebuilder/pkg/kubecompat"
 	"github.com/anwendt/imagebuilder/pkg/observability"
 	"github.com/anwendt/imagebuilder/pkg/plugin"
+	"github.com/anwendt/imagebuilder/pkg/security/signaturepolicy"
 
 	// Built-in platform plugins — each registers itself via init().
 	// Comment out any plugin to exclude it from the binary.
@@ -53,6 +55,7 @@ func init() {
 	_ = batchv1.AddToScheme(scheme)
 	_ = coordinationv1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
+	_ = admissionregistrationv1.AddToScheme(scheme)
 }
 
 func main() {
@@ -67,6 +70,7 @@ func main() {
 		requireProviderMTLS       bool
 		requireProviderDigest     bool
 		requireProviderSignature  bool
+		providerSignaturePolicy   string
 		allowedProviderRegistries string
 		logLevel                  string
 	)
@@ -80,7 +84,8 @@ func main() {
 	flag.StringVar(&providerNamespace, "provider-namespace", os.Getenv("POD_NAMESPACE"), "Namespace used for PlatformProvider Deployments and Services")
 	flag.BoolVar(&requireProviderMTLS, "require-provider-mtls", false, "Require all PlatformProvider resources to use spec.transport.tls.mode=Mutual")
 	flag.BoolVar(&requireProviderDigest, "require-provider-digest", false, "Require all PlatformProvider package references to be digest-pinned")
-	flag.BoolVar(&requireProviderSignature, "require-provider-signature", false, "Require all PlatformProvider resources to enable spec.security.verifySignature")
+	flag.BoolVar(&requireProviderSignature, "require-provider-signature", false, "Require all PlatformProvider resources to enable and pass cryptographic image signature verification")
+	flag.StringVar(&providerSignaturePolicy, "provider-signature-policy", "", "Name of the enforcing Kyverno ClusterPolicy used for provider signature verification")
 	flag.StringVar(&allowedProviderRegistries, "allowed-provider-registries", "", "Comma-separated registry prefixes allowed for PlatformProvider packages")
 	// OR-012: log level must be configurable at runtime without redeployment.
 	flag.StringVar(&logLevel, "log-level", "info", "Log level: debug, info, warn, error")
@@ -155,6 +160,13 @@ func main() {
 		RequireDigest:     requireProviderDigest,
 		RequireSignature:  requireProviderSignature,
 		AllowedRegistries: allowedProviderRegistryList,
+		SignatureVerifier: &signaturepolicy.Verifier{
+			Client: mgr.GetClient(),
+			Config: signaturepolicy.Config{
+				PolicyName:        providerSignaturePolicy,
+				ProviderNamespace: providerNamespace,
+			},
+		},
 	}).SetupWithManager(mgr); err != nil {
 		slog.Error("unable to create PlatformProvider controller", slog.Any("error", err))
 		os.Exit(1)

@@ -58,16 +58,9 @@ helm install imagebuilder oci://ghcr.io/anwendt/charts/imagebuilder \
   -f charts/imagebuilder/values-development.yaml
 ```
 
-Enable the optional Kyverno image signature policy only on clusters where
-Kyverno CRDs are installed:
-
-```bash
-helm install imagebuilder oci://ghcr.io/anwendt/charts/imagebuilder \
-  --version 0.4.2 \
-  --namespace imagebuilder-system \
-  --create-namespace \
-  --set imageSignaturePolicy.enabled=true
-```
+Install Kyverno before using the production defaults. The chart renders an
+enforcing image signature policy and the operator verifies Kyverno's
+fail-closed Pod admission webhook before any provider Deployment is created.
 
 Helm deployment from a local checkout:
 
@@ -105,7 +98,8 @@ for production chart installs.
 | `--provider-namespace` | `$POD_NAMESPACE` | Namespace used for PlatformProvider Deployments and Services. |
 | `--require-provider-mtls` | `false` | Reject PlatformProvider resources unless `spec.transport.tls.mode=Mutual`. |
 | `--require-provider-digest` | `false` | Reject PlatformProvider packages that are not pinned by digest. |
-| `--require-provider-signature` | `false` | Reject PlatformProvider resources unless `spec.security.verifySignature=true`. |
+| `--require-provider-signature` | `false` | Require every PlatformProvider to opt into and pass cryptographic image signature verification. |
+| `--provider-signature-policy` | empty | Enforcing Kyverno ClusterPolicy checked before provider Deployment creation. |
 | `--allowed-provider-registries` | empty | Comma-separated registry prefixes allowed for PlatformProvider packages. |
 | `--log-level` | `info` | `debug`, `info`, `warn`, or `error`. |
 
@@ -345,17 +339,23 @@ installed. Use plain TCP only for local development or tightly controlled
 namespace-local test clusters by starting the operator with
 `--require-provider-mtls=false`.
 
-Provider image signatures are fail-closed in two layers:
+Provider image signatures are fail-closed in three layers:
 
 - PlatformProvider admission requires `spec.security.verifySignature=true` when
   `--require-provider-signature=true`.
-- The supplied Kyverno policy in
-  `config/policy/kyverno-image-signatures.yaml`, also rendered by the Helm chart
-  when `imageSignaturePolicy.enabled=true`, verifies image signatures and
-  digests on imagebuilder-managed Pods. This Helm value defaults to `false` so
-  the chart can be installed on clusters without Kyverno CRDs. Enable it only
-  after installing Kyverno, or replace the rendered policy with an equivalent
-  Sigstore/Gatekeeper policy.
+- Before creating or updating a provider Deployment, the operator verifies that
+  the configured Kyverno `ClusterPolicy` is in `Enforce` mode and contains a
+  `required: true`, `verifyDigest: true` `verifyImages` rule for
+  imagebuilder-managed provider Pods.
+- The operator also discovers an active Kyverno
+  `ValidatingWebhookConfiguration` and verifies that it intercepts Pod creation with
+  `failurePolicy: Fail`. Missing, weakened, or unavailable policy resources
+  mark the provider `Unhealthy`, remove an existing provider Deployment, and
+  prevent execution.
+
+The production Helm defaults therefore enable `imageSignaturePolicy`. Install
+Kyverno before installing the production profile. Development values disable
+both the signature requirement and the policy explicitly.
 
 ## Logs
 

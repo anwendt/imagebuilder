@@ -101,8 +101,8 @@ func TestHelmChartDefaultsNetworkPolicyOnAndRendersProviderBoundary(t *testing.T
 	if !ok {
 		t.Fatalf("imageSignaturePolicy values missing or malformed: %#v", parsed["imageSignaturePolicy"])
 	}
-	if imageSignaturePolicy["enabled"] != false {
-		t.Fatalf("imageSignaturePolicy.enabled = %#v, want false by default", imageSignaturePolicy["enabled"])
+	if imageSignaturePolicy["enabled"] != true {
+		t.Fatalf("imageSignaturePolicy.enabled = %#v, want true by default", imageSignaturePolicy["enabled"])
 	}
 
 	schemaPath := filepath.Join(repoRoot, "charts", "imagebuilder", "values.schema.json")
@@ -131,8 +131,8 @@ func TestHelmChartDefaultsNetworkPolicyOnAndRendersProviderBoundary(t *testing.T
 	}
 	if !strings.Contains(string(schema), `"imageSignaturePolicy"`) ||
 		!strings.Contains(string(schema), `"keyless"`) ||
-		!strings.Contains(string(schema), `Enable only when Kyverno CRDs are installed.`) {
-		t.Fatalf("values.schema.json must document optional image signature policy rendering")
+		!strings.Contains(string(schema), `Must remain enabled whenever providerSecurity.requireSignature is true.`) {
+		t.Fatalf("values.schema.json must enforce fail-closed image signature policy rendering")
 	}
 
 	devValuesPath := filepath.Join(repoRoot, "charts", "imagebuilder", "values-development.yaml")
@@ -159,6 +159,10 @@ func TestHelmChartDefaultsNetworkPolicyOnAndRendersProviderBoundary(t *testing.T
 		if devProviderSecurity[key] != false {
 			t.Fatalf("development providerSecurity.%s = %#v, want false", key, devProviderSecurity[key])
 		}
+	}
+	devImageSignaturePolicy, ok := devParsed["imageSignaturePolicy"].(map[string]any)
+	if !ok || devImageSignaturePolicy["enabled"] != false {
+		t.Fatalf("development imageSignaturePolicy = %#v, want disabled", devParsed["imageSignaturePolicy"])
 	}
 
 	templatePath := filepath.Join(repoRoot, "charts", "imagebuilder", "templates", "networkpolicies.yaml")
@@ -197,6 +201,8 @@ func TestHelmChartRendersImageSignaturePolicy(t *testing.T) {
 		"verifyDigest: true",
 		"keyless:",
 		".Values.imageSignaturePolicy.imageReferences",
+		"validationFailureAction: Enforce",
+		`imagebuilder.io/provider-pod: "true"`,
 	} {
 		if !strings.Contains(templateText, want) {
 			t.Fatalf("image signature policy template missing %q", want)
@@ -244,6 +250,7 @@ func TestHelmChartImagesAreDigestConfigurable(t *testing.T) {
 		"--require-provider-mtls={{ .Values.providerSecurity.requireMTLS }}",
 		"--require-provider-digest={{ .Values.providerSecurity.requireDigest }}",
 		"--require-provider-signature={{ .Values.providerSecurity.requireSignature }}",
+		"--provider-signature-policy={{ include \"imagebuilder.fullname\" . }}-require-signed-digests",
 		"--allowed-provider-registries={{ join \",\" .Values.providerSecurity.allowedRegistries }}",
 		"name: PROVISIONER_ANSIBLE_IMAGE",
 		"name: PROVISIONER_CHEF_IMAGE",

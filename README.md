@@ -80,10 +80,11 @@ kubectl get pods -n imagebuilder-system
 ```
 
 The chart installs CRDs, the operator, webhook resources, metrics Service,
-network policies, and secure default image references. Kyverno image signature
-policies are optional and can be enabled with
-`--set imageSignaturePolicy.enabled=true` when Kyverno is installed. For real
-image builds, add one or more provider configurations from `examples/argocd/`.
+network policies, secure default image references, and an enforcing Kyverno
+provider-image signature policy. Install Kyverno before using the production
+defaults. The operator verifies that the policy and its fail-closed admission
+webhook remain active before creating provider Deployments. For real image
+builds, add one or more provider configurations from `examples/argocd/`.
 
 For local clusters where you want the least friction, use the development
 profile from a checkout:

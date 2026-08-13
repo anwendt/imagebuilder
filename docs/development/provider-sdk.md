@@ -4,6 +4,20 @@ External providers are OCI images that implement the stable gRPC contract in
 `api/provider/v1/provider.proto`. The Go SDK in `pkg/provider/sdk` removes most
 of the gRPC boilerplate.
 
+## Provider identity and selection
+
+The provider name returned by `GetCapabilities()` is the logical API identity
+and must match `ProviderConfig.spec.provider`. The `PlatformProvider` resource
+selecting the external implementation must use that same value as
+`metadata.name`. This explicit resource-name match takes precedence over a
+same-named built-in provider. If no matching `PlatformProvider` exists, the
+built-in implementation remains the fallback.
+
+Built-in and external implementations are stored separately, so an external
+provider may advertise `aws`, `azure`, `gcp`, `openstack`, or `vsphere` without
+overwriting the built-in. An unhealthy selected external implementation causes
+a clear reconciliation failure rather than a silent built-in fallback.
+
 ## Provider Interface
 
 Implement `sdk.Provider`:

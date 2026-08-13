@@ -12,6 +12,8 @@ spec:
           - resources:
               kinds:
                 - Pod
+              operations:
+                - CREATE
               selector:
                 matchLabels:
                   app.kubernetes.io/managed-by: imagebuilder
@@ -30,9 +32,12 @@ spec:
           - resources:
               kinds:
                 - Pod
+              operations:
+                - CREATE
               selector:
                 matchLabels:
                   app.kubernetes.io/managed-by: imagebuilder
+                  imagebuilder.io/provider-pod: "true"
       verifyImages:
         - imageReferences:
             - "ghcr.io/anwendt/*"

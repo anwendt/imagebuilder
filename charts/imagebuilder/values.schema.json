@@ -141,7 +141,7 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Renders the optional Kyverno image signature verification policy. Enable only when Kyverno CRDs are installed."
+          "description": "Renders the enforcing Kyverno image signature verification policy. Must remain enabled whenever providerSecurity.requireSignature is true."
         },
         "imageReferences": {
           "type": "array",
@@ -200,6 +200,28 @@
       "required": ["ansible", "chef", "custom", "puppet", "saltstack"]
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "providerSecurity": {
+            "properties": {
+              "requireSignature": { "const": true }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "imageSignaturePolicy": {
+            "properties": {
+              "enabled": { "const": true }
+            }
+          }
+        }
+      }
+    }
+  ],
   "definitions": {
     "imageReference": {
       "type": "object",

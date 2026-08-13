@@ -94,7 +94,7 @@ providerSecurity:
     - ghcr.io/anwendt
 
 imageSignaturePolicy:
-  enabled: false
+  enabled: true
   imageReferences:
     - ghcr.io/anwendt/*
   keyless:

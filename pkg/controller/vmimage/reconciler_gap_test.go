@@ -313,6 +313,74 @@ func TestReconcile_RemoteBuild_ProviderUnsupported_SetsFailed(t *testing.T) {
 	}
 }
 
+func TestReconcile_RemoteBuild_CollidingExternalTakesPrecedenceOverBuiltin(t *testing.T) {
+	img, provCfg := remoteTestImage("remote-external-precedence")
+	pp := &v1alpha1.PlatformProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "aws", UID: "external-aws-uid"},
+		Status: v1alpha1.PlatformProviderStatus{
+			Phase: "Healthy",
+			Capabilities: &v1alpha1.ProviderCapabilities{
+				ProviderName: "aws", ProviderVersion: "external", ProtocolVersion: "v1", BuildModes: []string{v1alpha1.BuildModeLocal, v1alpha1.BuildModeRemote},
+			},
+		},
+	}
+	builtin := &fakeRemoteBuildPlugin{fakeRegistryPlugin: fakeRegistryPlugin{name: "aws"}, result: &platform.RemoteBuildResult{Phase: platform.RemoteBuildPhaseReady, Done: true}}
+	external := &fakeRemoteBuildPlugin{fakeRegistryPlugin: fakeRegistryPlugin{name: "aws"}, result: &platform.RemoteBuildResult{Phase: platform.RemoteBuildPhaseBooting, Message: "external booting"}}
+	reg := plugin.NewRegistry(slog.Default())
+	if err := reg.Register(builtin); err != nil {
+		t.Fatalf("register builtin: %v", err)
+	}
+	if err := reg.RegisterExternal(pp.Name, string(pp.UID), external); err != nil {
+		t.Fatalf("register external: %v", err)
+	}
+
+	s := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img, provCfg, pp).Build()
+	r := &vmimage.VMImageReconciler{Client: c, Scheme: s, Registry: reg}
+	reconcileOnce(t, r, img.Name, img.Namespace)
+	reconcileOnce(t, r, img.Name, img.Namespace)
+
+	if external.remoteCalls != 1 {
+		t.Fatalf("external remote calls=%d, want 1", external.remoteCalls)
+	}
+	if builtin.remoteCalls != 0 {
+		t.Fatalf("builtin remote calls=%d, want 0", builtin.remoteCalls)
+	}
+}
+
+func TestReconcile_RemoteBuild_UnhealthyExternalDoesNotFallbackToBuiltin(t *testing.T) {
+	img, provCfg := remoteTestImage("remote-no-fallback")
+	pp := &v1alpha1.PlatformProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "aws", UID: "external-aws-uid"},
+		Status: v1alpha1.PlatformProviderStatus{
+			Phase:        "Unhealthy",
+			Capabilities: &v1alpha1.ProviderCapabilities{ProviderName: "aws", ProtocolVersion: "v1"},
+		},
+	}
+	builtin := &fakeRemoteBuildPlugin{fakeRegistryPlugin: fakeRegistryPlugin{name: "aws"}}
+	reg := plugin.NewRegistry(slog.Default())
+	if err := reg.Register(builtin); err != nil {
+		t.Fatalf("register builtin: %v", err)
+	}
+
+	s := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img, provCfg, pp).Build()
+	r := &vmimage.VMImageReconciler{Client: c, Scheme: s, Registry: reg}
+	reconcileOnce(t, r, img.Name, img.Namespace)
+	reconcileOnce(t, r, img.Name, img.Namespace)
+
+	if builtin.remoteCalls != 0 {
+		t.Fatalf("builtin remote calls=%d, want 0", builtin.remoteCalls)
+	}
+	updated := &v1alpha1.VMImage{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: img.Name, Namespace: img.Namespace}, updated); err != nil {
+		t.Fatalf("get VMImage: %v", err)
+	}
+	if updated.Status.Phase != v1alpha1.PhaseFailed {
+		t.Fatalf("phase=%q, want Failed", updated.Status.Phase)
+	}
+}
+
 func TestReconcile_RemoteBuild_TransientErrorRetriesWithoutCleanup(t *testing.T) {
 	img, provCfg := remoteTestImage("remote-transient")
 	providerPlugin := &fakeRemoteBuildPlugin{

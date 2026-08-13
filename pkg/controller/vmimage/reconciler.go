@@ -215,10 +215,7 @@ func (r *VMImageReconciler) reconcilePending(ctx context.Context, img *v1alpha1.
 		if err != nil {
 			return r.setFailed(ctx, img, fmt.Sprintf("provider lookup failed: %v", err))
 		}
-		if !r.Registry.Supports(providerName) {
-			return r.setFailed(ctx, img, fmt.Sprintf("provider %q is not installed or not healthy", providerName))
-		}
-		providerPlugin, err := r.Registry.New(providerName)
+		providerPlugin, err := r.providerPlugin(ctx, providerName)
 		if err != nil {
 			return r.setFailed(ctx, img, fmt.Sprintf("provider %q is not installed or not healthy: %v", providerName, err))
 		}
@@ -426,7 +423,7 @@ func (r *VMImageReconciler) reconcileRemoteBuild(ctx context.Context, img *v1alp
 	if err != nil {
 		return r.setFailed(ctx, img, fmt.Sprintf("provider lookup failed: %v", err))
 	}
-	providerPlugin, err := r.Registry.New(providerName)
+	providerPlugin, err := r.providerPlugin(ctx, providerName)
 	if err != nil {
 		return r.setFailedWithReason(ctx, img, "RemoteBuildUnsupported", fmt.Sprintf("provider %q is not installed or not healthy: %v", providerName, err))
 	}
@@ -1423,7 +1420,7 @@ func (r *VMImageReconciler) cleanupRemoteBuild(ctx context.Context, img *v1alpha
 		r.markCleanupFailure(ctx, img, "remote-build", "RemoteBuildCleanupFailed", cleanupErr)
 		return cleanupErr
 	}
-	providerPlugin, err := r.Registry.New(providerName)
+	providerPlugin, err := r.providerPlugin(ctx, providerName)
 	if err != nil {
 		cleanupErr := fmt.Errorf("get provider %q: %w", providerName, err)
 		r.markCleanupFailure(ctx, img, "remote-build", "RemoteBuildCleanupFailed", cleanupErr)
@@ -1514,6 +1511,26 @@ func (r *VMImageReconciler) providerNameForTarget(ctx context.Context, namespace
 		return "", fmt.Errorf("get ProviderConfig %q: %w", target.ProviderConfigRef.Name, err)
 	}
 	return cfg.Spec.Provider, nil
+}
+
+// providerPlugin applies the provider-selection precedence consistently across
+// validation, remote build, and cleanup. A PlatformProvider whose resource name
+// equals ProviderConfig.spec.provider is an explicit external selection. When
+// no such installation exists, the built-in implementation is used.
+func (r *VMImageReconciler) providerPlugin(ctx context.Context, providerName string) (platform.Plugin, error) {
+	pp := &v1alpha1.PlatformProvider{}
+	if err := r.Get(ctx, types.NamespacedName{Name: providerName}, pp); err == nil {
+		if pp.Status.Phase != "Healthy" {
+			return nil, fmt.Errorf("PlatformProvider %q is not healthy (phase %q)", providerName, pp.Status.Phase)
+		}
+		if pp.Status.Capabilities == nil || pp.Status.Capabilities.ProviderName != providerName {
+			return nil, fmt.Errorf("PlatformProvider %q has no matching capability handshake", providerName)
+		}
+		return r.Registry.External(pp.Name, string(pp.UID), providerName)
+	} else if !apierrors.IsNotFound(err) {
+		return nil, fmt.Errorf("get PlatformProvider %q: %w", providerName, err)
+	}
+	return r.Registry.New(providerName)
 }
 
 func buildMode(img *v1alpha1.VMImage) string {

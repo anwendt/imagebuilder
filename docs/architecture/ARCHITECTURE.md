@@ -471,9 +471,25 @@ factory. Every ProviderConfig-bound validation, upload, registration, cleanup,
 or remote-build reconciliation requests a fresh provider instance and calls
 `Init` exactly once. Credentials, parsed configuration, and SDK clients are
 therefore never stored on the global registry prototype or shared between
-concurrent VMImages. External gRPC adapters remain shared because the gRPC
-client connection is concurrency-safe and the provider process isolates its
-state by `providerConfigName`.
+concurrent VMImages. External gRPC adapters are scoped to their owning
+`PlatformProvider` installation; the provider process isolates operation state
+by `providerConfigName`.
+
+Built-in implementations and external `PlatformProvider` installations occupy
+separate registry namespaces. `ProviderConfig.spec.provider` is resolved as
+follows:
+
+1. If a `PlatformProvider` resource with that exact metadata name exists, that
+  installation is the explicit selection for validation, local gRPC upload,
+  remote build, health checking, and cleanup.
+2. If no matching `PlatformProvider` resource exists, the built-in provider of
+  the same logical name is used.
+3. An unhealthy or incompatible selected external provider never silently
+  falls back to a built-in implementation.
+
+The external registry entry is owned by the `PlatformProvider` UID. Provider
+pod restarts replace and close the old adapter; deletion removes only the entry
+owned by that UID and can therefore never deregister a colliding built-in.
 
 ---
 

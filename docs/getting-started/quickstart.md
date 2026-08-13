@@ -13,11 +13,12 @@ provider account.
   recommended for production.
 - `kubectl`
 - Helm 3.8 or newer with OCI registry support
+- Kyverno with its fail-closed resource validating webhook for the default
+  production profile
 
 Optional components:
 
 - Prometheus Operator for `ServiceMonitor` and `PrometheusRule`
-- Kyverno for the example image signature policy
 - Dedicated build nodes with `/dev/kvm` when KVM acceleration is enabled
 
 ## Install
@@ -53,20 +54,11 @@ kubectl get crd | grep imagebuilder.io
 
 The operator pod should become `Running`. The chart installs CRDs, RBAC,
 webhook resources, metrics Service, network policies, and the operator
-Deployment with released image tags. Kyverno is not required for the default
-install. Helm rejects clusters below Kubernetes 1.29, and the operator performs
+Deployment with released image tags. The default chart also installs an
+enforcing Kyverno image-verification policy and the operator verifies Kyverno's
+fail-closed admission webhook before creating provider Deployments. Helm rejects
+clusters below Kubernetes 1.29, and the operator performs
 the same fail-closed server-version check for static-manifest installations.
-
-If Kyverno is installed and you want the example image signature policy, enable
-it explicitly:
-
-```bash
-helm upgrade imagebuilder oci://ghcr.io/anwendt/charts/imagebuilder \
-  --version 0.4.2 \
-  --namespace imagebuilder-system \
-  --reuse-values \
-  --set imageSignaturePolicy.enabled=true
-```
 
 ## Create A Provider Configuration
 

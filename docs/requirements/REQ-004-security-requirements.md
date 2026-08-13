@@ -59,7 +59,7 @@ isolation. These requirements are mandatory for ISAE audit compliance.
 | ID | Requirement | Priority |
 |---|---|---|
 | SR-016 | All provider OCI images used as PlatformProvider packages SHALL be referenced by digest (sha256), not by mutable tag, in production configurations. | Must |
-| SR-017 | Provider images SHALL be signed using cosign / Sigstore. The operator SHALL verify signatures before loading a new provider. | Should |
+| SR-017 | Provider images SHALL be signed using cosign / Sigstore. Before creating a provider Deployment, the operator SHALL verify that an enforcing cryptographic image-verification policy and a fail-closed Pod admission webhook are active; policy failure SHALL remove any existing provider Deployment. | Should |
 | SR-018 | Source images (ISOs, cloud images) SHALL have their checksum verified (SHA-256) before use in a build. This is enforced by FR-005. | Must |
 | SR-019 | The Go module graph SHALL be reproducibly verifiable via `go.sum`. No `replace` directives pointing to local or unverified sources are permitted in production. | Must |
 | SR-020 | The container image build pipeline SHALL use a pinned base image digest and be reproducible. | Should |

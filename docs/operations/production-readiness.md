@@ -80,10 +80,10 @@ The default chart values are production-oriented. The repository also ships
 that profile for production because it disables webhooks, network policies,
 namespace guardrails, and strict provider package policies.
 
-`imageSignaturePolicy.enabled` is optional in the chart and defaults to `false`
-so the operator can be installed on clusters without Kyverno CRDs. Set it to
-`true` only after Kyverno is installed, or enforce the same signature and digest
-requirements with an equivalent admission policy engine.
+`imageSignaturePolicy.enabled` defaults to `true` and must remain true while
+`providerSecurity.requireSignature` is enabled. Install Kyverno first. The
+operator validates both the enforcing `ClusterPolicy` and an active fail-closed
+Kyverno validating webhook before creating provider Deployments.
 
 Provider `PlatformProvider` resources must also use digest-pinned package
 references and mTLS:
