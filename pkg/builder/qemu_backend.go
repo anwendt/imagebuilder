@@ -81,13 +81,23 @@ func (b *QEMUImageBackend) Build(ctx context.Context, req BackendRequest) (*plat
 		return nil, err
 	}
 	artifactPath := filepath.Join(workspaceDir, fmt.Sprintf("%s.%s", defaultArtifactFileName, req.Format))
+	conversionPath := artifactPath
+	if req.Format == platform.FormatGCETarball {
+		conversionPath = filepath.Join(workspaceDir, defaultArtifactFileName+".raw")
+	}
 	if err := b.runner.Run(ctx, Command{
 		Name: b.qemuImgPath,
-		Args: []string{"convert", "-p", "-O", qemuFormat, req.Source.Path, artifactPath},
+		Args: []string{"convert", "-p", "-O", qemuFormat, req.Source.Path, conversionPath},
 		Dir:  workspaceDir,
 	}); err != nil {
 		_ = os.Remove(artifactPath)
 		return nil, Classify(ReasonArtifactConvertFailed, fmt.Errorf("qemu-img convert: %w", err))
+	}
+	if req.Format == platform.FormatGCETarball {
+		defer os.Remove(conversionPath)
+		if err := createGCEArchive(ctx, b.runner, conversionPath, artifactPath); err != nil {
+			return nil, Classify(ReasonArtifactConvertFailed, err)
+		}
 	}
 	info, err := os.Stat(artifactPath)
 	if err != nil {
@@ -117,6 +127,8 @@ func qemuOutputFormat(format platform.ImageFormat) (string, bool) {
 		return "vmdk", true
 	case platform.FormatVHD:
 		return "vpc", true
+	case platform.FormatGCETarball:
+		return "raw", true
 	default:
 		return "", false
 	}

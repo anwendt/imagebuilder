@@ -1,0 +1,21 @@
+# Dockerfile.provider-gcp — standalone GCP PlatformProvider
+
+FROM golang:1.26.5-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS builder
+
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+
+RUN apk add --no-cache ca-certificates git
+WORKDIR /workspace
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w -extldflags=-static" \
+      -o /workspace/provider-gcp ./cmd/provider-gcp
+
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:a9329520abc449e3b14d5bc3a6ffae065bdde0f02667fa10880c49b35c109fd1
+COPY --from=builder /workspace/provider-gcp /provider-gcp
+USER 65532:65532
+EXPOSE 9443
+ENTRYPOINT ["/provider-gcp"]

@@ -1,6 +1,8 @@
 package builder_test
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"errors"
 	"os"
@@ -63,6 +65,41 @@ func TestQEMUImageBackend_Build_ConvertsCloudImageWithQEMUImg(t *testing.T) {
 	}
 }
 
+func TestQEMUImageBackend_Build_CreatesGCEArchive(t *testing.T) {
+	workspace := t.TempDir()
+	sourcePath := filepath.Join(workspace, "source.qcow2")
+	if err := os.WriteFile(sourcePath, []byte("source image"), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	runner := &recordingRunner{writeOutput: []byte("raw disk")}
+	backend := builder.NewQEMUImageBackend(builder.QEMUImageBackendOptions{Runner: runner, QEMUImgPath: "/usr/bin/qemu-img"})
+	artifact, err := backend.Build(context.Background(), builder.BackendRequest{
+		BuildRequest: builder.BuildRequest{Image: testImage(v1alpha1.SourceSpec{Type: "cloud-image"}, "gcetarball"), WorkspaceDir: workspace},
+		Source:       &builder.SourceArtifact{Path: sourcePath},
+		Format:       platform.FormatGCETarball,
+	})
+	if err != nil {
+		t.Fatalf("Build returned error: %v", err)
+	}
+	if artifact.Format != platform.FormatGCETarball || filepath.Ext(artifact.Path) != ".gcetarball" {
+		t.Fatalf("artifact = %#v", artifact)
+	}
+	file, err := os.Open(artifact.Path)
+	if err != nil {
+		t.Fatalf("open artifact: %v", err)
+	}
+	defer file.Close()
+	gzipReader, err := gzip.NewReader(file)
+	if err != nil {
+		t.Fatalf("gzip reader: %v", err)
+	}
+	defer gzipReader.Close()
+	header, err := tar.NewReader(gzipReader).Next()
+	if err != nil || header.Name != "disk.raw" {
+		t.Fatalf("GCE archive header = %#v error=%v", header, err)
+	}
+}
+
 func TestQEMUImageBackend_SupportsOnlyCloudImageConvertibleFormats(t *testing.T) {
 	backend := builder.NewQEMUImageBackend(builder.QEMUImageBackendOptions{})
 
@@ -76,6 +113,7 @@ func TestQEMUImageBackend_SupportsOnlyCloudImageConvertibleFormats(t *testing.T)
 		{name: "cloud image qcow2", source: "cloud-image", format: "qcow2", want: true},
 		{name: "cloud image vmdk", source: "cloud-image", format: "vmdk", want: true},
 		{name: "cloud image vhd", source: "cloud-image", format: "vhd", want: true},
+		{name: "cloud image GCE archive", source: "cloud-image", format: "gcetarball", want: true},
 		{name: "iso not yet implemented", source: "iso", format: "qcow2", want: false},
 		{name: "provider native ami not qemu", source: "cloud-image", format: "ami", want: false},
 	}
@@ -147,6 +185,9 @@ func (r *recordingRunner) Run(ctx context.Context, cmd builder.Command) error {
 	default:
 	}
 	r.commands = append(r.commands, cmd)
+	if cmd.Name == "tar" {
+		return (builder.ExecRunner{}).Run(ctx, cmd)
+	}
 	if len(cmd.Args) > 0 && len(r.writeOutput) > 0 && containsString(cmd.Args, "convert") {
 		out := cmd.Args[len(cmd.Args)-1]
 		if err := os.WriteFile(out, r.writeOutput, 0o600); err != nil {

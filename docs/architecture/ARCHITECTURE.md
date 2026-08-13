@@ -633,7 +633,7 @@ Lease name: imagebuilder-operator-leader
 | OpenStack SDK | gophercloud/v2 | v2.12.x | Apache 2.0 |
 | AWS SDK | aws-sdk-go-v2 | v1.41.x | Apache 2.0 |
 | Azure SDK | azure-sdk-for-go | v1.21.x | MIT |
-| GCP SDK | google-cloud-go | — (planned; GCP plugin is a stub) | Apache 2.0 |
+| GCP SDK | google-cloud-go storage + Compute API | Current module versions | Apache 2.0 |
 | VM build backend | QEMU (userspace, direct exec + QMP) | system | Apache 2.0 |
 | Image assembly | diskimage-builder | system | Apache 2.0 |
 | Logging | log/slog | stdlib | BSD-3-Clause |
@@ -694,7 +694,7 @@ type Provisioner interface {
 | Plugin registry | Complete | `pkg/plugin/registry.go` |
 | Provisioner interface | Complete | `pkg/provisioner/interface.go` |
 | Operator entry point | Complete | `cmd/operator/main.go` |
-| Built-in providers | In progress | AWS, Azure, vSphere, and OpenStack include standalone provider entrypoints and provider-owned remote build paths; GCP remains an earlier-stage implementation. External providers are supported through gRPC. |
+| Built-in providers | Complete for documented scopes | AWS, Azure, vSphere, OpenStack, and GCP include standalone provider entrypoints. GCP supports local GCE archive import plus provider-native image/snapshot copy; remote guest provisioning remains out of scope. External providers are supported through gRPC. |
 | External Provider SDK | Complete | `pkg/provider/sdk/`, starter template in `templates/provider/` |
 | VMImage controller | Complete | `pkg/controller/vmimage/` |
 | PlatformProvider controller | Complete | `pkg/controller/provider/` |
@@ -722,7 +722,7 @@ The next implementation sequence is:
    builds, including cleanup and provider-side hygiene assertions.
 2. Optimize developer and CI runtime by reducing Docker build context and running
    `make test-e2e` in CI.
-3. Extend remote build support to GCP after the current provider paths are stable.
+3. Extend GCP remote mode with temporary-VM guest provisioning when required by users.
 
 ---
 

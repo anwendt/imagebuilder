@@ -78,6 +78,13 @@ type Plugin interface {
 	HealthCheck(ctx context.Context) error
 }
 
+// ClosePlugin is an optional lifecycle capability for providers that own
+// transports or other resources which must be released after an operation.
+type ClosePlugin interface {
+	Plugin
+	Close() error
+}
+
 // RemoteBuildPlugin is an optional additive provider capability. Providers
 // implement this interface when they can execute the full build lifecycle on
 // the target platform without a local QEMU build Job.

@@ -134,7 +134,7 @@ logic, weakening the provider extension model established in ADR-002 and ADR-006
    cleanup, and image hygiene result handling.
 5. Implement production provider paths for AWS, Azure, vSphere, and OpenStack.
 6. Add provider-backed E2E tests and mocked-provider E2E tests for deterministic CI.
-7. Extend remote build support to GCP after the current provider paths are stable.
+7. GCP supports idempotent provider-native image and snapshot copies. Temporary-VM guest provisioning remains a future extension.
 
 ---
 

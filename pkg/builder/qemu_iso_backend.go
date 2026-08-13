@@ -158,6 +158,10 @@ func (b *QEMUISOBackend) Build(ctx context.Context, req BackendRequest) (*platfo
 	}
 	diskPath := filepath.Join(workspaceDir, "install.qcow2")
 	artifactPath := filepath.Join(workspaceDir, fmt.Sprintf("%s.%s", defaultArtifactFileName, req.Format))
+	conversionPath := artifactPath
+	if req.Format == platform.FormatGCETarball {
+		conversionPath = filepath.Join(workspaceDir, defaultArtifactFileName+".raw")
+	}
 	qmpPath := filepath.Join(workspaceDir, "qmp.sock")
 
 	if err := prepareInstallerMedia(ctx, req.Image, workspaceDir); err != nil {
@@ -278,11 +282,17 @@ func (b *QEMUISOBackend) Build(ctx context.Context, req BackendRequest) (*platfo
 	}
 	if err := b.runner.Run(ctx, Command{
 		Name: b.qemuImgPath,
-		Args: []string{"convert", "-p", "-O", qemuFormat, diskPath, artifactPath},
+		Args: []string{"convert", "-p", "-O", qemuFormat, diskPath, conversionPath},
 		Dir:  workspaceDir,
 	}); err != nil {
 		_ = os.Remove(artifactPath)
 		return nil, Classify(ReasonArtifactConvertFailed, fmt.Errorf("qemu-img convert installed disk: %w", err))
+	}
+	if req.Format == platform.FormatGCETarball {
+		defer os.Remove(conversionPath)
+		if err := createGCEArchive(ctx, b.runner, conversionPath, artifactPath); err != nil {
+			return nil, Classify(ReasonArtifactConvertFailed, err)
+		}
 	}
 	info, err := os.Stat(artifactPath)
 	if err != nil {

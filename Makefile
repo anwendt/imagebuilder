@@ -9,6 +9,7 @@ AWS_PROVIDER_BINARY := imagebuilder-provider-aws
 VSPHERE_PROVIDER_BINARY := imagebuilder-provider-vsphere
 AZURE_PROVIDER_BINARY := imagebuilder-provider-azure
 OPENSTACK_PROVIDER_BINARY := imagebuilder-provider-openstack
+GCP_PROVIDER_BINARY := imagebuilder-provider-gcp
 IMAGE_TAG      ?= dev
 REGISTRY       ?= ghcr.io/anwendt
 OPERATOR_IMAGE := $(REGISTRY)/$(BINARY_NAME)
@@ -23,12 +24,14 @@ AWS_PROVIDER_IMAGE := $(REGISTRY)/$(AWS_PROVIDER_BINARY)
 VSPHERE_PROVIDER_IMAGE := $(REGISTRY)/$(VSPHERE_PROVIDER_BINARY)
 AZURE_PROVIDER_IMAGE := $(REGISTRY)/$(AZURE_PROVIDER_BINARY)
 OPENSTACK_PROVIDER_IMAGE := $(REGISTRY)/$(OPENSTACK_PROVIDER_BINARY)
+GCP_PROVIDER_IMAGE := $(REGISTRY)/$(GCP_PROVIDER_BINARY)
 CORE_IMAGE_PLATFORMS ?= linux/amd64,linux/arm64
 PROVISIONER_IMAGE_PLATFORMS ?= linux/amd64,linux/arm64
 AWS_PROVIDER_PLATFORMS ?= linux/amd64,linux/arm64
 VSPHERE_PROVIDER_PLATFORMS ?= linux/amd64,linux/arm64
 AZURE_PROVIDER_PLATFORMS ?= linux/amd64,linux/arm64
 OPENSTACK_PROVIDER_PLATFORMS ?= linux/amd64,linux/arm64
+GCP_PROVIDER_PLATFORMS ?= linux/amd64,linux/arm64
 OPERATOR_DIGEST ?=
 BUILDER_DIGEST ?=
 UPLOADER_DIGEST ?=
@@ -36,6 +39,7 @@ AWS_PROVIDER_DIGEST ?=
 VSPHERE_PROVIDER_DIGEST ?=
 AZURE_PROVIDER_DIGEST ?=
 OPENSTACK_PROVIDER_DIGEST ?=
+GCP_PROVIDER_DIGEST ?=
 GO             := go
 GOFLAGS        ?=
 CGO_ENABLED    := 0
@@ -52,6 +56,7 @@ STATICCHECK_VERSION     := 2026.1
 GO_LICENSES_VERSION     := v1.6.0
 
 .PHONY: all build build-builder build-uploader build-provisioner build-provider-aws build-provider-vsphere build-provider-azure build-provider-openstack test test-race test-core-e2e test-manifests test-vsphere-simulator test-e2e test-e2e-production test-e2e-aws test-e2e-aws-tomcat test-e2e-aws-ubuntu24 test-e2e-azure test-e2e-azure-tomcat test-e2e-azure-ubuntu24 test-e2e-azure-tomcat-prep test-e2e-azure-tomcat-run-clean test-e2e-azure-tomcat-cleanup test-e2e-vsphere test-e2e-vsphere-tomcat test-e2e-vsphere-ubuntu24 test-e2e-openstack test-e2e-openstack-tomcat test-e2e-open-telekom-cloud-ubuntu24 test-e2e-windows-cloudbase lint vet verify-deps gosec govulncheck staticcheck security-check generate manifests patch-webhook-manifest run docker-build docker-build-builder docker-build-uploader docker-build-provisioner-ansible docker-build-provisioner-chef docker-build-provisioner-custom docker-build-provisioner-puppet docker-build-provisioner-saltstack docker-build-provisioners docker-build-provider-aws docker-build-provider-vsphere docker-build-provider-azure docker-build-provider-openstack docker-build-core-multiarch docker-build-provisioners-multiarch docker-build-provider-aws-multiarch docker-build-provider-vsphere-multiarch docker-build-provider-azure-multiarch docker-build-provider-openstack-multiarch docker-push-core docker-push-builder docker-push-uploader docker-push-provisioners docker-push-provider-aws docker-push-provider-vsphere docker-push-provider-azure docker-push-provider-openstack docker-digest-core docker-digest-builder docker-digest-uploader docker-digest-provider-aws docker-digest-provider-vsphere docker-digest-provider-azure docker-digest-provider-openstack sign-core sign-builder sign-uploader sign-provider-aws sign-provider-vsphere sign-provider-azure sign-provider-openstack update-provider-samples update-aws-provider-samples update-vsphere-provider-samples update-azure-provider-samples update-openstack-provider-samples license-check help deploy-production deploy-observability deploy-policies helm-lint helm-template
+.PHONY: build-provider-gcp docker-build-provider-gcp docker-build-provider-gcp-multiarch docker-push-provider-gcp docker-digest-provider-gcp sign-provider-gcp update-gcp-provider-samples
 
 all: generate manifests build
 
@@ -80,6 +85,9 @@ build-provider-azure: ## Build the standalone Azure PlatformProvider binary
 
 build-provider-openstack: ## Build the standalone OpenStack PlatformProvider binary
 	CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(GOFLAGS) -trimpath -o bin/$(OPENSTACK_PROVIDER_BINARY) ./cmd/provider-openstack/
+
+build-provider-gcp: ## Build the standalone GCP PlatformProvider binary
+	CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(GOFLAGS) -trimpath -o bin/$(GCP_PROVIDER_BINARY) ./cmd/provider-gcp/
 
 run: generate manifests ## Run the operator locally (uses current kubeconfig context)
 	$(GO) run ./cmd/operator/ \
@@ -124,6 +132,9 @@ docker-build-provider-azure: ## Build the standalone Azure PlatformProvider Dock
 docker-build-provider-openstack: ## Build the standalone OpenStack PlatformProvider Docker image
 	docker build -f Dockerfile.provider-openstack -t $(OPENSTACK_PROVIDER_IMAGE):$(IMAGE_TAG) .
 
+docker-build-provider-gcp: ## Build the standalone GCP PlatformProvider Docker image
+	docker build -f Dockerfile.provider-gcp -t $(GCP_PROVIDER_IMAGE):$(IMAGE_TAG) .
+
 docker-build-core-multiarch: ## Build operator, builder, and uploader multi-arch images locally via buildx
 	docker buildx build --platform $(CORE_IMAGE_PLATFORMS) -t $(OPERATOR_IMAGE):$(IMAGE_TAG) .
 	docker buildx build --platform $(CORE_IMAGE_PLATFORMS) -f Dockerfile.builder -t $(BUILDER_IMAGE):$(IMAGE_TAG) .
@@ -164,6 +175,9 @@ docker-build-provider-openstack-multiarch: ## Build the standalone OpenStack Pla
 		-t $(OPENSTACK_PROVIDER_IMAGE):$(IMAGE_TAG) \
 		.
 
+docker-build-provider-gcp-multiarch: ## Build the standalone GCP PlatformProvider multi-arch image locally via buildx
+	docker buildx build --platform $(GCP_PROVIDER_PLATFORMS) -f Dockerfile.provider-gcp -t $(GCP_PROVIDER_IMAGE):$(IMAGE_TAG) .
+
 docker-push-provider-aws: ## Build and push the standalone AWS PlatformProvider multi-arch image
 	docker buildx build \
 		--platform $(AWS_PROVIDER_PLATFORMS) \
@@ -195,6 +209,9 @@ docker-push-provider-openstack: ## Build and push the standalone OpenStack Platf
 		-t $(OPENSTACK_PROVIDER_IMAGE):$(IMAGE_TAG) \
 		--push \
 		.
+
+docker-push-provider-gcp: ## Build and push the standalone GCP PlatformProvider multi-arch image
+	docker buildx build --platform $(GCP_PROVIDER_PLATFORMS) -f Dockerfile.provider-gcp -t $(GCP_PROVIDER_IMAGE):$(IMAGE_TAG) --push .
 
 docker-push-core: ## Build and push operator, builder, and uploader multi-arch images
 	docker buildx build --platform $(CORE_IMAGE_PLATFORMS) -t $(OPERATOR_IMAGE):$(IMAGE_TAG) --push .
@@ -240,6 +257,9 @@ docker-digest-provider-azure: ## Print the pushed Azure PlatformProvider image d
 docker-digest-provider-openstack: ## Print the pushed OpenStack PlatformProvider image digest
 	docker buildx imagetools inspect $(OPENSTACK_PROVIDER_IMAGE):$(IMAGE_TAG) --format '{{.Manifest.Digest}}'
 
+docker-digest-provider-gcp: ## Print the pushed GCP PlatformProvider image digest
+	docker buildx imagetools inspect $(GCP_PROVIDER_IMAGE):$(IMAGE_TAG) --format '{{.Manifest.Digest}}'
+
 sign-provider-aws: ## Sign the pushed AWS PlatformProvider image by digest with cosign
 	test -n "$(AWS_PROVIDER_DIGEST)" || (echo "AWS_PROVIDER_DIGEST is required, e.g. sha256:..." && exit 1)
 	cosign sign $(AWS_PROVIDER_IMAGE)@$(AWS_PROVIDER_DIGEST)
@@ -255,6 +275,10 @@ sign-provider-azure: ## Sign the pushed Azure PlatformProvider image by digest w
 sign-provider-openstack: ## Sign the pushed OpenStack PlatformProvider image by digest with cosign
 	test -n "$(OPENSTACK_PROVIDER_DIGEST)" || (echo "OPENSTACK_PROVIDER_DIGEST is required, e.g. sha256:..." && exit 1)
 	cosign sign $(OPENSTACK_PROVIDER_IMAGE)@$(OPENSTACK_PROVIDER_DIGEST)
+
+sign-provider-gcp: ## Sign the pushed GCP PlatformProvider image by digest with cosign
+	test -n "$(GCP_PROVIDER_DIGEST)" || (echo "GCP_PROVIDER_DIGEST is required, e.g. sha256:..." && exit 1)
+	cosign sign $(GCP_PROVIDER_IMAGE)@$(GCP_PROVIDER_DIGEST)
 
 sign-core: ## Sign the pushed operator, builder, and uploader images by digest with cosign
 	test -n "$(OPERATOR_DIGEST)" || (echo "OPERATOR_DIGEST is required, e.g. sha256:..." && exit 1)
@@ -272,8 +296,8 @@ sign-uploader: ## Sign the pushed upload/register image by digest with cosign
 	test -n "$(UPLOADER_DIGEST)" || (echo "UPLOADER_DIGEST is required, e.g. sha256:..." && exit 1)
 	cosign sign $(UPLOADER_IMAGE)@$(UPLOADER_DIGEST)
 
-update-provider-samples: ## Replace PlatformProvider digest placeholders in samples (PROVIDER=aws|vsphere|azure|openstack)
-	test -n "$(PROVIDER)" || (echo "PROVIDER is required, e.g. aws, vsphere, azure, or openstack" && exit 1)
+update-provider-samples: ## Replace PlatformProvider digest placeholders in samples (PROVIDER=aws|vsphere|azure|openstack|gcp)
+	test -n "$(PROVIDER)" || (echo "PROVIDER is required, e.g. aws, vsphere, azure, openstack, or gcp" && exit 1)
 	test -n "$(PROVIDER_IMAGE)" || (echo "PROVIDER_IMAGE is required, e.g. ghcr.io/anwendt/imagebuilder-provider-aws" && exit 1)
 	test -n "$(PROVIDER_DIGEST)" || (echo "PROVIDER_DIGEST is required, e.g. sha256:..." && exit 1)
 	hack/update-provider-digest.sh "$(PROVIDER)" "$(PROVIDER_IMAGE)" "$(PROVIDER_DIGEST)"
@@ -293,6 +317,10 @@ update-azure-provider-samples: ## Replace Azure PlatformProvider digest placehol
 update-openstack-provider-samples: ## Replace OpenStack PlatformProvider digest placeholders in samples
 	test -n "$(OPENSTACK_PROVIDER_DIGEST)" || (echo "OPENSTACK_PROVIDER_DIGEST is required, e.g. sha256:..." && exit 1)
 	hack/update-provider-digest.sh openstack "$(OPENSTACK_PROVIDER_IMAGE)" "$(OPENSTACK_PROVIDER_DIGEST)"
+
+update-gcp-provider-samples: ## Replace GCP PlatformProvider digest placeholders in samples
+	test -n "$(GCP_PROVIDER_DIGEST)" || (echo "GCP_PROVIDER_DIGEST is required, e.g. sha256:..." && exit 1)
+	hack/update-provider-digest.sh gcp "$(GCP_PROVIDER_IMAGE)" "$(GCP_PROVIDER_DIGEST)"
 
 docker-push: ## Push the operator Docker image
 	docker push $(OPERATOR_IMAGE):$(IMAGE_TAG)

@@ -270,7 +270,11 @@ func providerPluginForTarget(ctx context.Context, target uploadpod.TargetConfig)
 		if err != nil {
 			return nil, func() {}, fmt.Errorf("get provider %q: %w", target.Provider, err)
 		}
-		return providerPlugin, func() {}, nil
+		return providerPlugin, func() {
+			if closePlugin, ok := providerPlugin.(platform.ClosePlugin); ok {
+				_ = closePlugin.Close()
+			}
+		}, nil
 	}
 	if target.GRPC.Address == "" {
 		return nil, func() {}, fmt.Errorf("gRPC address for provider %q is required", target.Provider)

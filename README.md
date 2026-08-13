@@ -58,6 +58,7 @@ tooling is required.
 - [VMImage authoring guide](docs/user-guide/vmimage.md)
 - [Git-backed provisioner scripts](docs/user-guide/git-provisioners.md)
 - [Operations guide](docs/operations/operator.md)
+- [GCP provider guide](docs/operations/gcp-provider.md)
 - [Security guide](docs/security/security.md)
 - [Provider SDK guide](docs/development/provider-sdk.md)
 - [Troubleshooting](docs/operations/troubleshooting.md)

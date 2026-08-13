@@ -28,7 +28,7 @@ FROM debian:12-slim@sha256:67b30a61dc87758f0caf819646104f29ecbda97d920aaf5edc834
 
 RUN apt-get update \
     && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends ca-certificates genisoimage openssh-client qemu-system-x86 qemu-utils \
+    && apt-get install -y --no-install-recommends ca-certificates genisoimage openssh-client qemu-system-x86 qemu-utils tar \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 65532 --home-dir /workspace --shell /usr/sbin/nologin nonroot
 

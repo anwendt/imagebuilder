@@ -69,6 +69,7 @@ jobs:
           make build-provider-vsphere
           make build-provider-azure
           make build-provider-openstack
+          make build-provider-gcp
 
   vsphere-simulator:
     name: vSphere Provider Simulator
@@ -382,6 +383,26 @@ jobs:
           ignore-unfixed: true
           exit-code: "1"
 
+      - name: Build GCP provider image
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f
+        with:
+          context: .
+          file: Dockerfile.provider-gcp
+          push: false
+          tags: ghcr.io/${{ github.repository_owner }}/imagebuilder-provider-gcp:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy vulnerability scanner for GCP provider
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/imagebuilder-provider-gcp:ci
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
   image-scan-sarif:
     name: Upload Container Image SARIF
     runs-on: ubuntu-latest
@@ -587,6 +608,33 @@ jobs:
         continue-on-error: true
         with:
           sarif_file: trivy-openstack-provider-results.sarif
+
+      - name: Build GCP provider image
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f
+        with:
+          context: .
+          file: Dockerfile.provider-gcp
+          push: false
+          tags: ghcr.io/${{ github.repository_owner }}/imagebuilder-provider-gcp:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy vulnerability scanner for GCP provider
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/imagebuilder-provider-gcp:ci
+          format: sarif
+          output: trivy-gcp-provider-results.sarif
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+
+      - name: Upload GCP provider Trivy SARIF
+        uses: github/codeql-action/upload-sarif@68bde559dea0fdcac2102bfdf6230c5f70eb485e
+        if: always() && hashFiles('trivy-gcp-provider-results.sarif') != ''
+        continue-on-error: true
+        with:
+          sarif_file: trivy-gcp-provider-results.sarif
 
   required:
     name: Required CI Gate

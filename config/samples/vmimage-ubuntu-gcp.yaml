@@ -1,0 +1,74 @@
+# Example: Build Ubuntu 24.04 and publish it as a Google Compute Engine
+# Custom Image. Replace checksum, project, bucket, credentials, and provider
+# digest values before applying. Workload Identity/ADC may be used instead of
+# the credentials reference when the provider pod has an authorized identity.
+
+---
+apiVersion: imagebuilder.io/v1alpha1
+kind: VMImage
+metadata:
+  name: ubuntu-24-04-gcp
+spec:
+  os:
+    family: linux
+    distribution: ubuntu
+    version: "24.04"
+    arch: amd64
+  source:
+    type: cloud-image
+    url: https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+    checksum: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  provisioners:
+    - type: cloud-init
+      inline: |
+        #cloud-config
+        package_update: true
+        packages:
+          - google-compute-engine
+  targets:
+    - providerConfigRef:
+        name: gcp-europe-west3
+      format: gcetarball
+      tags:
+        team: platform
+        environment: production
+  build:
+    mode: local
+    timeout: 2h
+    artifactStorage:
+      type: pvc
+      pvc:
+        size: 20Gi
+
+---
+apiVersion: imagebuilder.io/v1alpha1
+kind: ProviderConfig
+metadata:
+  name: gcp-europe-west3
+spec:
+  provider: gcp
+  region: europe-west3
+  credentials:
+    secretRef:
+      name: gcp-credentials
+      key: credentials
+  extra:
+    project: my-gcp-project
+    gcsBucket: my-imagebuilder-staging
+    gcsPrefix: imagebuilder
+    storageLocation: eu
+    imageFamily: production-images
+
+---
+apiVersion: imagebuilder.io/v1alpha1
+kind: PlatformProvider
+metadata:
+  name: gcp
+spec:
+  package: ghcr.io/anwendt/imagebuilder-provider-gcp@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+  packagePullPolicy: IfNotPresent
+  security:
+    allowedRegistries:
+      - ghcr.io/anwendt
+    requireDigest: true
+    verifySignature: true

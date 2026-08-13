@@ -222,6 +222,7 @@ func (r *VMImageReconciler) reconcilePending(ctx context.Context, img *v1alpha1.
 		if err != nil {
 			return r.setFailed(ctx, img, fmt.Sprintf("provider %q is not installed or not healthy: %v", providerName, err))
 		}
+		defer closeProviderPlugin(providerPlugin)
 		if err := r.initProviderForTarget(ctx, img.Namespace, target, providerPlugin); err != nil {
 			return r.setFailed(ctx, img, fmt.Sprintf("provider %q config %q rejected: %v", providerName, target.ProviderConfigRef.Name, err))
 		}
@@ -429,6 +430,7 @@ func (r *VMImageReconciler) reconcileRemoteBuild(ctx context.Context, img *v1alp
 	if err != nil {
 		return r.setFailedWithReason(ctx, img, "RemoteBuildUnsupported", fmt.Sprintf("provider %q is not installed or not healthy: %v", providerName, err))
 	}
+	defer closeProviderPlugin(providerPlugin)
 	remotePlugin, ok := providerPlugin.(platform.RemoteBuildPlugin)
 	if !ok || !supportsBuildMode(remotePlugin.SupportedBuildModes(), v1alpha1.BuildModeRemote) {
 		return r.setFailedWithReason(ctx, img, "RemoteBuildUnsupported", fmt.Sprintf("provider %q does not advertise remote build support", providerName))
@@ -1427,6 +1429,7 @@ func (r *VMImageReconciler) cleanupRemoteBuild(ctx context.Context, img *v1alpha
 		r.markCleanupFailure(ctx, img, "remote-build", "RemoteBuildCleanupFailed", cleanupErr)
 		return cleanupErr
 	}
+	defer closeProviderPlugin(providerPlugin)
 	cleanupPlugin, ok := providerPlugin.(platform.RemoteBuildCleanupPlugin)
 	if !ok {
 		return nil
@@ -1443,6 +1446,12 @@ func (r *VMImageReconciler) cleanupRemoteBuild(ctx context.Context, img *v1alpha
 		return cleanupErr
 	}
 	return nil
+}
+
+func closeProviderPlugin(providerPlugin platform.Plugin) {
+	if closePlugin, ok := providerPlugin.(platform.ClosePlugin); ok {
+		_ = closePlugin.Close()
+	}
 }
 
 // ---------------------------------------------------------------------------

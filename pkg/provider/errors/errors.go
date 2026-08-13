@@ -124,10 +124,12 @@ func transientHTTPStatus(code int) bool {
 
 func transientErrorCode(code string) bool {
 	code = strings.ToLower(strings.TrimSpace(code))
+	code = strings.NewReplacer("_", "", "-", "", " ", "").Replace(code)
 	for _, marker := range []string{
 		"throttl", "requestlimitexceeded", "requesttimeout", "requestexpired",
 		"serviceunavailable", "temporarilyunavailable", "toomanyrequests",
 		"internalerror", "internalfailure", "serverbusy", "operationtimedout",
+		"resourceexhausted", "quotaexceeded", "ratelimitexceeded",
 	} {
 		if strings.Contains(code, marker) {
 			return true
