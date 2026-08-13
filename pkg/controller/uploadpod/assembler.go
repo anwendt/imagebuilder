@@ -87,6 +87,21 @@ func assemble(img *v1alpha1.VMImage, configs []v1alpha1.ProviderConfig, connecti
 	}
 
 	backoffLimit := int32(0)
+	var podFailurePolicy *batchv1.PodFailurePolicy
+	if !cleanupOnly {
+		// Replacement Pods reuse the workspace PVC upload-session checkpoint.
+		// Keep retries bounded so permanent provider failures terminate promptly.
+		backoffLimit = 3
+		containerName := "upload"
+		podFailurePolicy = &batchv1.PodFailurePolicy{Rules: []batchv1.PodFailurePolicyRule{{
+			Action: batchv1.PodFailurePolicyActionFailJob,
+			OnExitCodes: &batchv1.PodFailurePolicyOnExitCodesRequirement{
+				ContainerName: &containerName,
+				Operator:      batchv1.PodFailurePolicyOnExitCodesOpIn,
+				Values:        []int32{1},
+			},
+		}}}
+	}
 	ttl := int32(3600)
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -96,6 +111,7 @@ func assemble(img *v1alpha1.VMImage, configs []v1alpha1.ProviderConfig, connecti
 		},
 		Spec: batchv1.JobSpec{
 			BackoffLimit:            &backoffLimit,
+			PodFailurePolicy:        podFailurePolicy,
 			TTLSecondsAfterFinished: &ttl,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: jobLabels(img)},

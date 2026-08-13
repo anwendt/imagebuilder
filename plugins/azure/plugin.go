@@ -60,6 +60,7 @@ type Plugin struct {
 var (
 	_ platform.RemoteBuildPlugin        = (*Plugin)(nil)
 	_ platform.RemoteBuildCleanupPlugin = (*Plugin)(nil)
+	_ platform.ResumablePlugin          = (*Plugin)(nil)
 )
 
 type config struct {
@@ -132,6 +133,26 @@ func (p *Plugin) UploadStream(ctx context.Context, artifact *platform.StreamArti
 		"os": string(artifact.OS), "container": p.config.storageContainer, "blobName": blobName, "blobURL": blobURL,
 		"resourceGroup": p.config.resourceGroup, "location": p.config.location,
 	}}, nil
+}
+
+func (p *Plugin) UploadResumable(ctx context.Context, artifact *platform.BuildArtifact, session platform.UploadSession, checkpoint platform.UploadCheckpoint) (*platform.UploadResult, error) {
+	if session.IdempotencyKey == "" {
+		return nil, fmt.Errorf("azure plugin: upload idempotency key is required")
+	}
+	if session.ResumeToken != "" && session.ResumeToken != session.IdempotencyKey {
+		return nil, fmt.Errorf("azure plugin: upload resume token does not match idempotency key")
+	}
+	session.ResumeToken, session.CommittedOffset, session.ResumeMode = session.IdempotencyKey, 0, "restart"
+	if checkpoint != nil {
+		if err := checkpoint(session); err != nil {
+			return nil, err
+		}
+	}
+	if artifact.Metadata == nil {
+		artifact.Metadata = map[string]string{}
+	}
+	artifact.Metadata["upload.sessionToken"] = session.ResumeToken
+	return p.Upload(ctx, artifact)
 }
 
 type registerInput struct {

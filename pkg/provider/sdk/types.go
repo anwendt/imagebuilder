@@ -17,6 +17,9 @@ type Capabilities struct {
 	// implements RemoteBuildProvider and can run the full build lifecycle on
 	// the target platform.
 	BuildModes []string
+	// UploadResumeMode is "restart" for idempotent full retransmission or
+	// "offset" when the provider durably commits byte ranges.
+	UploadResumeMode string
 }
 
 type Config struct {
@@ -35,6 +38,23 @@ type ArtifactInfo struct {
 	OSFamily           string
 	Metadata           map[string]string
 	ProviderConfigName string
+	IdempotencyKey     string
+}
+
+type UploadSession struct {
+	IdempotencyKey  string
+	ResumeToken     string
+	CommittedOffset int64
+	ResumeMode      string
+}
+
+// ResumableProvider is optional. PrepareUpload must reconstruct session state
+// from durable provider/backend data and return the authoritative offset.
+// UploadArtifactResumable receives only bytes starting at that offset.
+type ResumableProvider interface {
+	Provider
+	PrepareUpload(ctx context.Context, artifact ArtifactInfo, requested UploadSession) (UploadSession, error)
+	UploadArtifactResumable(ctx context.Context, artifact ArtifactInfo, session UploadSession, body io.Reader, progress ProgressReporter) (UploadResult, error)
 }
 
 type UploadResult struct {

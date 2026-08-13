@@ -12,12 +12,15 @@ import (
 	"testing"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	providerv1 "github.com/anwendt/imagebuilder/api/provider/v1"
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/controller/uploadpod"
 	"github.com/anwendt/imagebuilder/pkg/plugin"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
+	providererrors "github.com/anwendt/imagebuilder/pkg/provider/errors"
 	"github.com/anwendt/imagebuilder/pkg/security/netguard"
 )
 
@@ -151,7 +154,8 @@ func TestRun_ReportsUploadBytes(t *testing.T) {
 	targets := `[{"provider":"upload-bytes","providerConfigName":"upload-bytes-cfg","format":"vmdk","credentialsPath":"` + creds + `"}]`
 
 	registry := plugin.Default()
-	if err := registry.Register(&uploadBytesProvider{}); err != nil {
+	provider := &uploadBytesProvider{}
+	if err := registry.Register(provider); err != nil {
 		t.Fatalf("register upload bytes provider: %v", err)
 	}
 	t.Cleanup(func() {
@@ -176,6 +180,25 @@ func TestRun_ReportsUploadBytes(t *testing.T) {
 	}
 	if result.Operations[0].UploadBytes != 1234 {
 		t.Fatalf("uploadBytes = %d, want 1234", result.Operations[0].UploadBytes)
+	}
+	retried, err := run(context.Background(), func(key string) string {
+		switch key {
+		case "WORKSPACE_DIR":
+			return workspace
+		case "UPLOAD_TARGETS_JSON":
+			return targets
+		default:
+			return ""
+		}
+	})
+	if err != nil {
+		t.Fatalf("retried run returned error: %v", err)
+	}
+	if provider.uploads != 1 || provider.registers != 1 {
+		t.Fatalf("provider calls after retry: uploads=%d registers=%d", provider.uploads, provider.registers)
+	}
+	if len(retried.Images) != 1 || len(retried.Operations) != 1 {
+		t.Fatalf("retried result = %#v", retried)
 	}
 }
 
@@ -259,6 +282,70 @@ func TestRun_UsesPlatformProviderGRPCService(t *testing.T) {
 	}
 }
 
+func TestRun_TransientUploadFailureResumesDurableSession(t *testing.T) {
+	server := &retryUploaderGRPCServer{}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	grpcServer := grpc.NewServer()
+	providerv1.RegisterPlatformProviderServer(grpcServer, server)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(func() { grpcServer.Stop(); _ = listener.Close() })
+
+	workspace := t.TempDir()
+	artifactPath := filepath.Join(workspace, "artifact.vmdk")
+	artifactData := []byte("retry-this-artifact")
+	if err := os.WriteFile(artifactPath, artifactData, 0o600); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+	if err := writeJSON(filepath.Join(workspace, resultFileName), v1alpha1.ArtifactStatus{
+		Path: artifactPath, Format: "vmdk", Checksum: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		SizeBytes: int64(len(artifactData)), OS: "linux", Metadata: map[string]string{"buildID": "retry-build"},
+	}); err != nil {
+		t.Fatalf("write build result: %v", err)
+	}
+	credentialsPath := filepath.Join(workspace, "retry-credentials")
+	if err := os.Mkdir(credentialsPath, 0o700); err != nil {
+		t.Fatalf("create credentials directory: %v", err)
+	}
+	targetData, err := json.Marshal([]uploadpod.TargetConfig{{
+		Provider: "retry-external", ProviderConfigName: "retry-config", Format: "vmdk",
+		CredentialsPath: credentialsPath, GRPC: &uploadpod.GRPCConfig{Address: listener.Addr().String()},
+	}})
+	if err != nil {
+		t.Fatalf("marshal targets: %v", err)
+	}
+	getenv := func(key string) string {
+		switch key {
+		case "WORKSPACE_DIR":
+			return workspace
+		case "UPLOAD_TARGETS_JSON":
+			return string(targetData)
+		default:
+			return ""
+		}
+	}
+
+	if _, err := run(context.Background(), getenv); err == nil || !strings.Contains(err.Error(), "temporary disconnect") || !providererrors.IsTransient(err) {
+		t.Fatalf("first run error = %v", err)
+	}
+	sessions, err := readUploadSessions(filepath.Join(workspace, sessionsName))
+	if err != nil || len(sessions) != 1 || sessions[0].ResumeToken == "" || sessions[0].Phase != "uploading" {
+		t.Fatalf("session after failed attempt = %#v, error = %v", sessions, err)
+	}
+	result, err := run(context.Background(), getenv)
+	if err != nil {
+		t.Fatalf("retried run returned error: %v", err)
+	}
+	if server.attempts != 2 || server.registers != 1 || len(server.tokens) != 2 || server.tokens[0] != server.tokens[1] {
+		t.Fatalf("attempts=%d registers=%d tokens=%#v", server.attempts, server.registers, server.tokens)
+	}
+	if len(result.Images) != 1 || result.Images[0].ImageRef != "retry-image" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func TestFallbackUploadOperations_UsesBuildResultAndTargetMetadata(t *testing.T) {
 	workspace := t.TempDir()
 	if err := writeJSON(filepath.Join(workspace, resultFileName), v1alpha1.ArtifactStatus{
@@ -300,7 +387,10 @@ func TestFallbackUploadOperations_UsesBuildResultAndTargetMetadata(t *testing.T)
 	}
 }
 
-type uploadBytesProvider struct{}
+type uploadBytesProvider struct {
+	uploads   int
+	registers int
+}
 
 type uploaderGRPCServer struct {
 	providerv1.UnimplementedPlatformProviderServer
@@ -308,6 +398,67 @@ type uploaderGRPCServer struct {
 	firstChunk  *providerv1.UploadChunk
 	registered  *providerv1.RegisterRequest
 	uploaded    []byte
+}
+
+type retryUploaderGRPCServer struct {
+	providerv1.UnimplementedPlatformProviderServer
+	attempts  int
+	registers int
+	tokens    []string
+}
+
+func (s *retryUploaderGRPCServer) GetCapabilities(context.Context, *providerv1.Empty) (*providerv1.CapabilitiesResponse, error) {
+	return &providerv1.CapabilitiesResponse{
+		ProviderName: "retry-external", ProviderVersion: "v1.0.0", ProtocolVersion: "v1",
+		Formats: []string{"vmdk"}, OsFamilies: []string{"linux"}, UploadResumeMode: "restart",
+	}, nil
+}
+
+func (s *retryUploaderGRPCServer) ValidateConfig(context.Context, *providerv1.ValidateConfigRequest) (*providerv1.ValidateConfigResponse, error) {
+	return &providerv1.ValidateConfigResponse{Valid: true}, nil
+}
+
+func (s *retryUploaderGRPCServer) UploadArtifact(stream providerv1.PlatformProvider_UploadArtifactServer) error {
+	header, err := stream.Recv()
+	if err != nil {
+		return err
+	}
+	s.attempts++
+	token := header.GetSessionToken()
+	if token == "" {
+		token = header.GetIdempotencyKey()
+	}
+	s.tokens = append(s.tokens, token)
+	if err := stream.Send(&providerv1.UploadProgress{
+		Phase: "session", TotalBytes: header.GetTotalSizeBytes(), SessionToken: token, ResumeMode: "restart",
+	}); err != nil {
+		return err
+	}
+	for {
+		chunk, err := stream.Recv()
+		if err != nil {
+			return err
+		}
+		if chunk.GetLast() {
+			break
+		}
+	}
+	if s.attempts == 1 {
+		return status.Error(codes.Unavailable, "temporary disconnect")
+	}
+	return stream.Send(&providerv1.UploadProgress{
+		Phase: "done", ProviderRef: "retry-provider-ref", TotalBytes: header.GetTotalSizeBytes(),
+		BytesWritten: header.GetTotalSizeBytes(), SessionToken: token, CommittedOffset: header.GetTotalSizeBytes(), ResumeMode: "restart",
+	})
+}
+
+func (s *retryUploaderGRPCServer) RegisterImage(context.Context, *providerv1.RegisterRequest) (*providerv1.ImageRef, error) {
+	s.registers++
+	return &providerv1.ImageRef{Id: "retry-image"}, nil
+}
+
+func (s *retryUploaderGRPCServer) DeleteArtifact(context.Context, *providerv1.DeleteRequest) (*providerv1.DeleteResponse, error) {
+	return &providerv1.DeleteResponse{Deleted: true}, nil
 }
 
 func (s *uploaderGRPCServer) GetCapabilities(context.Context, *providerv1.Empty) (*providerv1.CapabilitiesResponse, error) {
@@ -369,12 +520,15 @@ func (p *uploadBytesProvider) Init(context.Context, platform.PluginConfig) error
 func (p *uploadBytesProvider) Validate(context.Context, v1alpha1.TargetSpec) error {
 	return nil
 }
+
 func (p *uploadBytesProvider) Upload(context.Context, *platform.BuildArtifact) (*platform.UploadResult, error) {
+	p.uploads++
 	return &platform.UploadResult{
 		ProviderRef: "provider://upload-bytes/artifact",
 	}, nil
 }
 func (p *uploadBytesProvider) Register(context.Context, *platform.UploadResult) (*platform.ImageRef, error) {
+	p.registers++
 	return &platform.ImageRef{ID: "image-123", Location: "test"}, nil
 }
 func (p *uploadBytesProvider) Cleanup(context.Context, *platform.BuildArtifact) error {

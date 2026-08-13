@@ -88,9 +88,13 @@ type CapabilitiesResponse struct {
 	ProtocolVersion string `protobuf:"bytes,5,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
 	// build_modes lists execution modes supported by the provider.
 	// Omitted means ["local"] for backward compatibility.
-	BuildModes    []string `protobuf:"bytes,6,rep,name=build_modes,json=buildModes,proto3" json:"build_modes,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	BuildModes []string `protobuf:"bytes,6,rep,name=build_modes,json=buildModes,proto3" json:"build_modes,omitempty"`
+	// upload_resume_mode declares upload retry semantics. An empty value means
+	// the legacy non-resumable protocol. "restart" provides an idempotent
+	// session but restarts at byte zero; "offset" resumes at committed_offset.
+	UploadResumeMode string `protobuf:"bytes,20,opt,name=upload_resume_mode,json=uploadResumeMode,proto3" json:"upload_resume_mode,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *CapabilitiesResponse) Reset() {
@@ -163,6 +167,13 @@ func (x *CapabilitiesResponse) GetBuildModes() []string {
 		return x.BuildModes
 	}
 	return nil
+}
+
+func (x *CapabilitiesResponse) GetUploadResumeMode() string {
+	if x != nil {
+		return x.UploadResumeMode
+	}
+	return ""
 }
 
 type RemoteBuildRequest struct {
@@ -1328,8 +1339,15 @@ type UploadChunk struct {
 	Metadata       map[string]string `protobuf:"bytes,14,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// provider_config_name identifies which ProviderConfig to use
 	ProviderConfigName string `protobuf:"bytes,15,opt,name=provider_config_name,json=providerConfigName,proto3" json:"provider_config_name,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Additive upload-session fields. The first message is a metadata-only
+	// session request when upload_resume_mode is advertised. idempotency_key is
+	// stable across Job attempts. session_token is the opaque token returned by
+	// the provider, and resume_offset is the last provider-committed byte.
+	IdempotencyKey string `protobuf:"bytes,20,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	SessionToken   string `protobuf:"bytes,21,opt,name=session_token,json=sessionToken,proto3" json:"session_token,omitempty"`
+	ResumeOffset   int64  `protobuf:"varint,22,opt,name=resume_offset,json=resumeOffset,proto3" json:"resume_offset,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *UploadChunk) Reset() {
@@ -1425,6 +1443,27 @@ func (x *UploadChunk) GetProviderConfigName() string {
 	return ""
 }
 
+func (x *UploadChunk) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
+	}
+	return ""
+}
+
+func (x *UploadChunk) GetSessionToken() string {
+	if x != nil {
+		return x.SessionToken
+	}
+	return ""
+}
+
+func (x *UploadChunk) GetResumeOffset() int64 {
+	if x != nil {
+		return x.ResumeOffset
+	}
+	return 0
+}
+
 type UploadProgress struct {
 	state        protoimpl.MessageState `protogen:"open.v1"`
 	BytesWritten int64                  `protobuf:"varint,1,opt,name=bytes_written,json=bytesWritten,proto3" json:"bytes_written,omitempty"`
@@ -1433,9 +1472,16 @@ type UploadProgress struct {
 	Message      string                 `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`
 	// provider_ref is set in the final progress message (phase="done")
 	// It is passed back to RegisterImage.
-	ProviderRef   string `protobuf:"bytes,5,opt,name=provider_ref,json=providerRef,proto3" json:"provider_ref,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ProviderRef string `protobuf:"bytes,5,opt,name=provider_ref,json=providerRef,proto3" json:"provider_ref,omitempty"`
+	// session_token and committed_offset form a durable resume checkpoint.
+	// phase="session" acknowledges the metadata-only first UploadChunk before
+	// the client sends artifact bytes. committed_offset is authoritative and
+	// may be lower than the requested resume_offset.
+	SessionToken    string `protobuf:"bytes,20,opt,name=session_token,json=sessionToken,proto3" json:"session_token,omitempty"`
+	CommittedOffset int64  `protobuf:"varint,21,opt,name=committed_offset,json=committedOffset,proto3" json:"committed_offset,omitempty"`
+	ResumeMode      string `protobuf:"bytes,22,opt,name=resume_mode,json=resumeMode,proto3" json:"resume_mode,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *UploadProgress) Reset() {
@@ -1499,6 +1545,27 @@ func (x *UploadProgress) GetMessage() string {
 func (x *UploadProgress) GetProviderRef() string {
 	if x != nil {
 		return x.ProviderRef
+	}
+	return ""
+}
+
+func (x *UploadProgress) GetSessionToken() string {
+	if x != nil {
+		return x.SessionToken
+	}
+	return ""
+}
+
+func (x *UploadProgress) GetCommittedOffset() int64 {
+	if x != nil {
+		return x.CommittedOffset
+	}
+	return 0
+}
+
+func (x *UploadProgress) GetResumeMode() string {
+	if x != nil {
+		return x.ResumeMode
 	}
 	return ""
 }
@@ -1813,7 +1880,7 @@ var File_provider_proto protoreflect.FileDescriptor
 const file_provider_proto_rawDesc = "" +
 	"\n" +
 	"\x0eprovider.proto\x12\x18imagebuilder.provider.v1\"\a\n" +
-	"\x05Empty\"\xed\x01\n" +
+	"\x05Empty\"\x9b\x02\n" +
 	"\x14CapabilitiesResponse\x12#\n" +
 	"\rprovider_name\x18\x01 \x01(\tR\fproviderName\x12)\n" +
 	"\x10provider_version\x18\x02 \x01(\tR\x0fproviderVersion\x12\x18\n" +
@@ -1822,7 +1889,8 @@ const file_provider_proto_rawDesc = "" +
 	"osFamilies\x12)\n" +
 	"\x10protocol_version\x18\x05 \x01(\tR\x0fprotocolVersion\x12\x1f\n" +
 	"\vbuild_modes\x18\x06 \x03(\tR\n" +
-	"buildModes\"\x9a\a\n" +
+	"buildModes\x12,\n" +
+	"\x12upload_resume_mode\x18\x14 \x01(\tR\x10uploadResumeMode\"\x9a\a\n" +
 	"\x12RemoteBuildRequest\x12\x19\n" +
 	"\bbuild_id\x18\x01 \x01(\tR\abuildId\x12#\n" +
 	"\roperation_ref\x18\x02 \x01(\tR\foperationRef\x12\x1d\n" +
@@ -1944,7 +2012,7 @@ const file_provider_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"H\n" +
 	"\x16ValidateConfigResponse\x12\x14\n" +
 	"\x05valid\x18\x01 \x01(\bR\x05valid\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage\"\x88\x03\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"\xfb\x03\n" +
 	"\vUploadChunk\x12\x12\n" +
 	"\x04data\x18\x01 \x01(\fR\x04data\x12\x16\n" +
 	"\x06offset\x18\x02 \x01(\x03R\x06offset\x12\x12\n" +
@@ -1955,17 +2023,24 @@ const file_provider_proto_rawDesc = "" +
 	"\x10total_size_bytes\x18\f \x01(\x03R\x0etotalSizeBytes\x12\x1b\n" +
 	"\tos_family\x18\r \x01(\tR\bosFamily\x12O\n" +
 	"\bmetadata\x18\x0e \x03(\v23.imagebuilder.provider.v1.UploadChunk.MetadataEntryR\bmetadata\x120\n" +
-	"\x14provider_config_name\x18\x0f \x01(\tR\x12providerConfigName\x1a;\n" +
+	"\x14provider_config_name\x18\x0f \x01(\tR\x12providerConfigName\x12'\n" +
+	"\x0fidempotency_key\x18\x14 \x01(\tR\x0eidempotencyKey\x12#\n" +
+	"\rsession_token\x18\x15 \x01(\tR\fsessionToken\x12#\n" +
+	"\rresume_offset\x18\x16 \x01(\x03R\fresumeOffset\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xa9\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x9a\x02\n" +
 	"\x0eUploadProgress\x12#\n" +
 	"\rbytes_written\x18\x01 \x01(\x03R\fbytesWritten\x12\x1f\n" +
 	"\vtotal_bytes\x18\x02 \x01(\x03R\n" +
 	"totalBytes\x12\x14\n" +
 	"\x05phase\x18\x03 \x01(\tR\x05phase\x12\x18\n" +
 	"\amessage\x18\x04 \x01(\tR\amessage\x12!\n" +
-	"\fprovider_ref\x18\x05 \x01(\tR\vproviderRef\"\x9f\x02\n" +
+	"\fprovider_ref\x18\x05 \x01(\tR\vproviderRef\x12#\n" +
+	"\rsession_token\x18\x14 \x01(\tR\fsessionToken\x12)\n" +
+	"\x10committed_offset\x18\x15 \x01(\x03R\x0fcommittedOffset\x12\x1f\n" +
+	"\vresume_mode\x18\x16 \x01(\tR\n" +
+	"resumeMode\"\x9f\x02\n" +
 	"\x0fRegisterRequest\x12!\n" +
 	"\fprovider_ref\x18\x01 \x01(\tR\vproviderRef\x12\x1d\n" +
 	"\n" +

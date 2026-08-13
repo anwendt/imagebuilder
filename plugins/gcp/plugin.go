@@ -98,6 +98,7 @@ func (e *operationError) ErrorCode() string { return strings.Join(e.codes, ",") 
 
 var _ platform.RemoteBuildCleanupPlugin = (*Plugin)(nil)
 var _ platform.ClosePlugin = (*Plugin)(nil)
+var _ platform.ResumablePlugin = (*Plugin)(nil)
 
 func (p *Plugin) Name() string    { return "gcp" }
 func (p *Plugin) Version() string { return "v0.4.0" }
@@ -185,6 +186,26 @@ func (p *Plugin) Upload(ctx context.Context, artifact *platform.BuildArtifact) (
 		"imageName": imageName, "imageFamily": p.config.imageFamily, "format": string(artifact.Format),
 		"checksum": artifact.Checksum, "os": string(artifact.OS), "arch": artifact.Metadata["arch"],
 	}}, nil
+}
+
+func (p *Plugin) UploadResumable(ctx context.Context, artifact *platform.BuildArtifact, session platform.UploadSession, checkpoint platform.UploadCheckpoint) (*platform.UploadResult, error) {
+	if session.IdempotencyKey == "" {
+		return nil, fmt.Errorf("gcp plugin: upload idempotency key is required")
+	}
+	if session.ResumeToken != "" && session.ResumeToken != session.IdempotencyKey {
+		return nil, fmt.Errorf("gcp plugin: upload resume token does not match idempotency key")
+	}
+	session.ResumeToken, session.CommittedOffset, session.ResumeMode = session.IdempotencyKey, 0, "restart"
+	if checkpoint != nil {
+		if err := checkpoint(session); err != nil {
+			return nil, err
+		}
+	}
+	if artifact.Metadata == nil {
+		artifact.Metadata = map[string]string{}
+	}
+	artifact.Metadata["upload.sessionToken"] = session.ResumeToken
+	return p.Upload(ctx, artifact)
 }
 
 func (p *Plugin) Register(ctx context.Context, result *platform.UploadResult) (*platform.ImageRef, error) {

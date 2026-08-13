@@ -267,7 +267,6 @@ func (a *Adapter) Upload(ctx context.Context, artifact *platform.BuildArtifact) 
 
 	// Read progress responses from the server stream until phase="done".
 	var providerRef string
-	var lastMetadata map[string]string
 	for {
 		progress, err := stream.Recv()
 		if err == io.EOF {
@@ -284,7 +283,6 @@ func (a *Adapter) Upload(ctx context.Context, artifact *platform.BuildArtifact) 
 		if progress.ProviderRef != "" {
 			providerRef = progress.ProviderRef
 		}
-		_ = lastMetadata // populated if provider sends metadata in final progress
 	}
 
 	if providerRef == "" {
@@ -295,6 +293,105 @@ func (a *Adapter) Upload(ctx context.Context, artifact *platform.BuildArtifact) 
 		ProviderRef: providerRef,
 		Metadata:    cloneStringMap(artifact.Metadata),
 	}, nil
+}
+
+// UploadResumable negotiates an idempotent provider session and resumes from
+// the provider's authoritative committed offset. Legacy providers remain
+// available through Upload but never receive a non-zero offset.
+func (a *Adapter) UploadResumable(ctx context.Context, artifact *platform.BuildArtifact, session platform.UploadSession, checkpoint platform.UploadCheckpoint) (*platform.UploadResult, error) {
+	if a.capabilities == nil || a.capabilities.GetUploadResumeMode() == "" {
+		if session.CommittedOffset != 0 {
+			return nil, fmt.Errorf("gRPC provider does not support upload resume")
+		}
+		return a.Upload(ctx, artifact)
+	}
+	if session.IdempotencyKey == "" {
+		return nil, fmt.Errorf("upload idempotency key is required")
+	}
+	stream, err := a.client.UploadArtifact(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC UploadArtifact open stream: %w", err)
+	}
+	header := &providerv1.UploadChunk{
+		Offset:             session.CommittedOffset,
+		Format:             string(artifact.Format),
+		Checksum:           artifact.Checksum,
+		TotalSizeBytes:     artifact.SizeBytes,
+		OsFamily:           string(artifact.OS),
+		Metadata:           artifact.Metadata,
+		ProviderConfigName: artifact.Metadata["providerConfigName"],
+		IdempotencyKey:     session.IdempotencyKey,
+		SessionToken:       session.ResumeToken,
+		ResumeOffset:       session.CommittedOffset,
+	}
+	if err := stream.Send(header); err != nil {
+		return nil, fmt.Errorf("send upload session request: %w", err)
+	}
+	ack, err := stream.Recv()
+	if err != nil {
+		return nil, fmt.Errorf("receive upload session acknowledgement: %w", err)
+	}
+	if ack.GetPhase() != "session" {
+		return nil, fmt.Errorf("gRPC provider returned phase %q before upload session acknowledgement", ack.GetPhase())
+	}
+	accepted := platform.UploadSession{
+		IdempotencyKey:  session.IdempotencyKey,
+		ResumeToken:     ack.GetSessionToken(),
+		CommittedOffset: ack.GetCommittedOffset(),
+		ResumeMode:      ack.GetResumeMode(),
+	}
+	if err := validateAcceptedSession(accepted, artifact.SizeBytes); err != nil {
+		return nil, err
+	}
+	if checkpoint != nil {
+		if err := checkpoint(accepted); err != nil {
+			return nil, fmt.Errorf("persist upload session acknowledgement: %w", err)
+		}
+	}
+	if err := streamArtifactFromOffset(stream, artifact, accepted.CommittedOffset); err != nil {
+		return nil, fmt.Errorf("stream artifact: %w", err)
+	}
+
+	var providerRef string
+	lastCommitted := accepted.CommittedOffset
+	for {
+		progress, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("gRPC UploadArtifact recv: %w", err)
+		}
+		committed := progress.GetCommittedOffset()
+		if committed < lastCommitted || committed > artifact.SizeBytes {
+			return nil, fmt.Errorf("gRPC provider returned invalid committed offset %d after %d", committed, lastCommitted)
+		}
+		lastCommitted = committed
+		accepted.CommittedOffset = committed
+		if progress.GetSessionToken() != "" {
+			if progress.GetSessionToken() != accepted.ResumeToken {
+				return nil, fmt.Errorf("gRPC provider changed upload session token")
+			}
+		}
+		if checkpoint != nil {
+			if err := checkpoint(accepted); err != nil {
+				return nil, fmt.Errorf("persist upload checkpoint: %w", err)
+			}
+		}
+		a.log.Info("upload progress",
+			slog.String("phase", progress.Phase),
+			slog.Int64("written", progress.BytesWritten),
+			slog.Int64("committed", committed),
+			slog.Int64("total", progress.TotalBytes),
+		)
+		if progress.ProviderRef != "" {
+			providerRef = progress.ProviderRef
+		}
+	}
+	if providerRef == "" {
+		return nil, fmt.Errorf("gRPC provider did not return a provider_ref after upload")
+	}
+	return &platform.UploadResult{ProviderRef: providerRef, Metadata: cloneStringMap(artifact.Metadata)}, nil
 }
 
 // Register calls the gRPC RegisterImage RPC.
@@ -422,6 +519,10 @@ func (a *Adapter) CleanupRemoteBuild(ctx context.Context, req *platform.RemoteBu
 // streamArtifact opens artifact.Path and sends it to the upload stream in chunks.
 // The first chunk carries artifact metadata; subsequent chunks carry raw data only.
 func streamArtifact(stream providerv1.PlatformProvider_UploadArtifactClient, artifact *platform.BuildArtifact) error {
+	return streamArtifactFromOffset(stream, artifact, 0)
+}
+
+func streamArtifactFromOffset(stream providerv1.PlatformProvider_UploadArtifactClient, artifact *platform.BuildArtifact, offset int64) error {
 	// Open file for reading.
 	f, err := openFile(artifact.Path)
 	if err != nil {
@@ -429,16 +530,23 @@ func streamArtifact(stream providerv1.PlatformProvider_UploadArtifactClient, art
 	}
 	defer f.Close()
 
+	if offset < 0 || offset > artifact.SizeBytes {
+		return fmt.Errorf("resume offset %d is outside artifact size %d", offset, artifact.SizeBytes)
+	}
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return fmt.Errorf("seek artifact to offset %d: %w", offset, err)
+	}
 	buf := make([]byte, uploadChunkSize)
-	var offset int64
-	first := true
+	currentOffset := offset
+	first := offset == 0
+	sentLast := false
 
 	for {
 		n, readErr := f.Read(buf)
 		if n > 0 {
 			chunk := &providerv1.UploadChunk{
 				Data:   buf[:n],
-				Offset: offset,
+				Offset: currentOffset,
 				Last:   readErr == io.EOF,
 			}
 			if first {
@@ -451,19 +559,53 @@ func streamArtifact(stream providerv1.PlatformProvider_UploadArtifactClient, art
 				first = false
 			}
 			if err := stream.Send(chunk); err != nil {
-				return fmt.Errorf("send chunk at offset %d: %w", offset, err)
+				return fmt.Errorf("send chunk at offset %d: %w", currentOffset, err)
 			}
-			offset += int64(n)
+			sentLast = chunk.Last
+			currentOffset += int64(n)
 		}
 		if readErr == io.EOF {
+			if !sentLast {
+				final := &providerv1.UploadChunk{Offset: currentOffset, Last: true}
+				if first {
+					final.Format = string(artifact.Format)
+					final.Checksum = artifact.Checksum
+					final.TotalSizeBytes = artifact.SizeBytes
+					final.OsFamily = string(artifact.OS)
+					final.Metadata = artifact.Metadata
+					final.ProviderConfigName = artifact.Metadata["providerConfigName"]
+				}
+				if err := stream.Send(final); err != nil {
+					return fmt.Errorf("send final chunk at offset %d: %w", currentOffset, err)
+				}
+			}
 			break
 		}
 		if readErr != nil {
-			return fmt.Errorf("read artifact at offset %d: %w", offset, readErr)
+			return fmt.Errorf("read artifact at offset %d: %w", currentOffset, readErr)
 		}
+	}
+	if currentOffset != artifact.SizeBytes {
+		return fmt.Errorf("artifact ended at offset %d, want declared size %d", currentOffset, artifact.SizeBytes)
 	}
 
 	return stream.CloseSend()
+}
+
+func validateAcceptedSession(session platform.UploadSession, totalSize int64) error {
+	if session.ResumeToken == "" {
+		return fmt.Errorf("gRPC provider returned an empty upload session token")
+	}
+	if session.ResumeMode != "restart" && session.ResumeMode != "offset" {
+		return fmt.Errorf("gRPC provider returned unsupported upload resume mode %q", session.ResumeMode)
+	}
+	if session.CommittedOffset < 0 || session.CommittedOffset > totalSize {
+		return fmt.Errorf("gRPC provider returned committed offset %d outside artifact size %d", session.CommittedOffset, totalSize)
+	}
+	if session.ResumeMode == "restart" && session.CommittedOffset != 0 {
+		return fmt.Errorf("gRPC restart session returned non-zero committed offset %d", session.CommittedOffset)
+	}
+	return nil
 }
 
 func remoteBuildProtoRequest(req *platform.RemoteBuildRequest) *providerv1.RemoteBuildRequest {

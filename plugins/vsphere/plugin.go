@@ -42,7 +42,10 @@ type Plugin struct {
 	client client
 }
 
-var _ platform.RemoteBuildCleanupPlugin = (*Plugin)(nil)
+var (
+	_ platform.RemoteBuildCleanupPlugin = (*Plugin)(nil)
+	_ platform.ResumablePlugin          = (*Plugin)(nil)
+)
 
 type config struct {
 	providerConfigName string
@@ -301,6 +304,26 @@ func (p *Plugin) UploadStream(ctx context.Context, artifact *platform.StreamArti
 	result.Metadata["format"], result.Metadata["checksum"] = string(artifact.Format), artifact.Checksum
 	result.Metadata["datacenter"], result.Metadata["datastore"], result.Metadata["datastorePath"] = p.config.datacenter, p.config.datastore, datastorePath
 	return result, nil
+}
+
+func (p *Plugin) UploadResumable(ctx context.Context, artifact *platform.BuildArtifact, session platform.UploadSession, checkpoint platform.UploadCheckpoint) (*platform.UploadResult, error) {
+	if session.IdempotencyKey == "" {
+		return nil, fmt.Errorf("vsphere plugin: upload idempotency key is required")
+	}
+	if session.ResumeToken != "" && session.ResumeToken != session.IdempotencyKey {
+		return nil, fmt.Errorf("vsphere plugin: upload resume token does not match idempotency key")
+	}
+	session.ResumeToken, session.CommittedOffset, session.ResumeMode = session.IdempotencyKey, 0, "restart"
+	if checkpoint != nil {
+		if err := checkpoint(session); err != nil {
+			return nil, err
+		}
+	}
+	if artifact.Metadata == nil {
+		artifact.Metadata = map[string]string{}
+	}
+	artifact.Metadata["upload.sessionToken"] = session.ResumeToken
+	return p.Upload(ctx, artifact)
 }
 
 func (p *Plugin) Register(ctx context.Context, result *platform.UploadResult) (*platform.ImageRef, error) {

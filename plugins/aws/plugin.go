@@ -54,6 +54,7 @@ type AWSPlugin struct {
 var (
 	_ platform.RemoteBuildPlugin        = (*AWSPlugin)(nil)
 	_ platform.RemoteBuildCleanupPlugin = (*AWSPlugin)(nil)
+	_ platform.ResumablePlugin          = (*AWSPlugin)(nil)
 )
 
 type awsConfig struct {
@@ -241,6 +242,33 @@ func (p *AWSPlugin) UploadStream(ctx context.Context, artifact *platform.StreamA
 		"format": string(artifact.Format), "checksum": artifact.Checksum, "os": string(artifact.OS),
 		"imageName": firstNonEmpty(artifact.Metadata["imageName"], artifact.Metadata["vmimage"], p.config.extraConfig["imageName"], "imagebuilder-"+sanitizeAWSName(buildID)),
 	}}, nil
+}
+
+func (p *AWSPlugin) UploadResumable(ctx context.Context, artifact *platform.BuildArtifact, session platform.UploadSession, checkpoint platform.UploadCheckpoint) (*platform.UploadResult, error) {
+	if err := acceptRestartSession(&session, checkpoint); err != nil {
+		return nil, fmt.Errorf("aws plugin: %w", err)
+	}
+	if artifact.Metadata == nil {
+		artifact.Metadata = map[string]string{}
+	}
+	artifact.Metadata["upload.sessionToken"] = session.ResumeToken
+	return p.Upload(ctx, artifact)
+}
+
+func acceptRestartSession(session *platform.UploadSession, checkpoint platform.UploadCheckpoint) error {
+	if session.IdempotencyKey == "" {
+		return fmt.Errorf("upload idempotency key is required")
+	}
+	if session.ResumeToken != "" && session.ResumeToken != session.IdempotencyKey {
+		return fmt.Errorf("upload resume token does not match idempotency key")
+	}
+	session.ResumeToken = session.IdempotencyKey
+	session.CommittedOffset = 0
+	session.ResumeMode = "restart"
+	if checkpoint != nil {
+		return checkpoint(*session)
+	}
+	return nil
 }
 
 func (p *AWSPlugin) Register(ctx context.Context, result *platform.UploadResult) (*platform.ImageRef, error) {

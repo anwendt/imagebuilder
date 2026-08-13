@@ -172,6 +172,27 @@ type StreamingPlugin interface {
 	UploadStream(ctx context.Context, artifact *StreamArtifact) (*UploadResult, error)
 }
 
+// UploadSession is a durable, non-secret checkpoint for retrying one target
+// upload. ResumeToken is opaque provider state. CommittedOffset is the first
+// byte that still needs to be sent. ResumeMode is "restart" or "offset".
+type UploadSession struct {
+	IdempotencyKey  string
+	ResumeToken     string
+	CommittedOffset int64
+	ResumeMode      string
+}
+
+// UploadCheckpoint is called only for provider-acknowledged session state.
+// Callers must persist the checkpoint before considering it resumable.
+type UploadCheckpoint func(UploadSession) error
+
+// ResumablePlugin is an optional additive capability. Implementations must use
+// IdempotencyKey to identify the same logical upload across process retries.
+type ResumablePlugin interface {
+	Plugin
+	UploadResumable(ctx context.Context, artifact *BuildArtifact, session UploadSession, checkpoint UploadCheckpoint) (*UploadResult, error)
+}
+
 // UploadResult is returned by Upload() and passed to Register().
 type UploadResult struct {
 	// ProviderRef is a provider-specific handle to the uploaded artifact

@@ -91,6 +91,11 @@ message CapabilitiesResponse {
   // build_modes lists execution modes supported by the provider.
   // Omitted means ["local"] for backward compatibility.
   repeated string build_modes = 6;
+
+  // upload_resume_mode declares upload retry semantics. An empty value means
+  // the legacy non-resumable protocol. "restart" provides an idempotent
+  // session but restarts at byte zero; "offset" resumes at committed_offset.
+  string upload_resume_mode = 20;
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +262,14 @@ message UploadChunk {
 
   // provider_config_name identifies which ProviderConfig to use
   string provider_config_name = 15;
+
+  // Additive upload-session fields. The first message is a metadata-only
+  // session request when upload_resume_mode is advertised. idempotency_key is
+  // stable across Job attempts. session_token is the opaque token returned by
+  // the provider, and resume_offset is the last provider-committed byte.
+  string idempotency_key = 20;
+  string session_token = 21;
+  int64 resume_offset = 22;
 }
 
 message UploadProgress {
@@ -268,6 +281,14 @@ message UploadProgress {
   // provider_ref is set in the final progress message (phase="done")
   // It is passed back to RegisterImage.
   string provider_ref  = 5;
+
+  // session_token and committed_offset form a durable resume checkpoint.
+  // phase="session" acknowledges the metadata-only first UploadChunk before
+  // the client sends artifact bytes. committed_offset is authoritative and
+  // may be lower than the requested resume_offset.
+  string session_token = 20;
+  int64 committed_offset = 21;
+  string resume_mode = 22;
 }
 
 // ---------------------------------------------------------------------------

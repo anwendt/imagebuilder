@@ -51,8 +51,8 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
 // PlatformProvider is the gRPC service that every external provider pod must implement.
-// The operator connects to the provider via a Unix socket at /var/run/provider/plugin.sock
-// inside the provider pod (shared via emptyDir volume between operator sidecar and provider).
+// The operator and upload Jobs connect to the provider's controller-managed
+// ClusterIP Service over TCP, optionally protected by mutual TLS.
 type PlatformProviderClient interface {
 	// GetCapabilities is called once after the provider pod becomes ready.
 	// The operator uses the response to populate PlatformProvider.status.capabilities
@@ -181,8 +181,8 @@ func (c *platformProviderClient) CleanupRemoteBuild(ctx context.Context, in *Rem
 // for forward compatibility.
 //
 // PlatformProvider is the gRPC service that every external provider pod must implement.
-// The operator connects to the provider via a Unix socket at /var/run/provider/plugin.sock
-// inside the provider pod (shared via emptyDir volume between operator sidecar and provider).
+// The operator and upload Jobs connect to the provider's controller-managed
+// ClusterIP Service over TCP, optionally protected by mutual TLS.
 type PlatformProviderServer interface {
 	// GetCapabilities is called once after the provider pod becomes ready.
 	// The operator uses the response to populate PlatformProvider.status.capabilities

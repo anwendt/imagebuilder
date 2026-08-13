@@ -159,6 +159,44 @@ progress.Report(ctx, sdk.Progress{
 
 The final `ProviderRef` is passed to `RegisterImage`.
 
+### Upload sessions and retries
+
+Local upload Jobs persist `upload-sessions.json` atomically on the workspace
+PVC. Each target has a deterministic idempotency key scoped to the build,
+provider configuration, format, checksum, and size. A replacement Pod restores
+the session before it calls the provider. Completed upload and registration
+phases are restored from that checkpoint instead of being repeated.
+
+The additive v1 gRPC fields implement a session handshake:
+
+1. the client sends a metadata-only `UploadChunk` with `idempotency_key`, the
+  previous `session_token`, and `resume_offset`;
+2. the provider returns `UploadProgress{phase:"session"}` with its opaque token,
+  authoritative `committed_offset`, and `resume_mode`;
+3. the client atomically persists that acknowledgement before sending bytes;
+4. every subsequent chunk offset is checked exactly, and EOF without a final
+  chunk or a size mismatch fails closed.
+
+`resume_mode` has two deliberately distinct values:
+
+- `restart`: the session is idempotent but retransmits from offset zero;
+- `offset`: the provider durably stores partial data and resumes from the
+  acknowledged byte offset.
+
+The SDK server provides `restart` compatibility for existing `sdk.Provider`
+implementations. Providers must implement `sdk.ResumableProvider` and return
+`UploadResumeMode: "offset"` only when `PrepareUpload` can reconstruct the
+committed offset from durable backend state. In-memory offsets or replica
+affinity are not sufficient. The AWS, Azure, GCP, OpenStack, and vSphere
+reference providers currently use honest idempotent restart sessions; none
+claims byte-offset resume.
+
+Upload Jobs use a bounded `backoffLimit` of three. The uploader exits with code
+75 only for errors classified as transient (transport failures, throttling,
+deadlines, or temporary service failures). A Pod failure policy fails the Job
+immediately for terminal exit code 1; exit code 75 and infrastructure failures
+consume the bounded retry budget.
+
 ## RegisterImage
 
 Register the uploaded artifact as a platform-native image and return:

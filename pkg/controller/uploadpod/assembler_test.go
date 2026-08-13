@@ -54,6 +54,16 @@ func TestAssemble_MountsWorkspacePVCAndCredentials(t *testing.T) {
 	if job.Name != "ubuntu-upload" {
 		t.Fatalf("job name = %q, want ubuntu-upload", job.Name)
 	}
+	if job.Spec.BackoffLimit == nil || *job.Spec.BackoffLimit != 3 {
+		t.Fatalf("backoffLimit = %v, want 3", job.Spec.BackoffLimit)
+	}
+	if job.Spec.PodFailurePolicy == nil || len(job.Spec.PodFailurePolicy.Rules) != 1 {
+		t.Fatalf("podFailurePolicy = %#v", job.Spec.PodFailurePolicy)
+	}
+	rule := job.Spec.PodFailurePolicy.Rules[0]
+	if rule.Action != batchv1.PodFailurePolicyActionFailJob || rule.OnExitCodes == nil || len(rule.OnExitCodes.Values) != 1 || rule.OnExitCodes.Values[0] != 1 {
+		t.Fatalf("terminal failure rule = %#v", rule)
+	}
 	vols := job.Spec.Template.Spec.Volumes
 	if vols[0].PersistentVolumeClaim == nil || vols[0].PersistentVolumeClaim.ClaimName != "ubuntu-workspace" {
 		t.Fatalf("workspace volume = %#v", vols[0])

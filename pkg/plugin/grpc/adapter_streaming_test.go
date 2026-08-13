@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"google.golang.org/grpc"
@@ -34,16 +35,21 @@ type streamingFakeServer struct {
 	deleteOK         bool
 	remoteReq        *providerv1.RemoteBuildRequest
 	remoteCleanupReq *providerv1.RemoteBuildRequest
+	resumeMode       string
+	acceptedOffset   int64
+	firstDataOffset  int64
+	uploaded         []byte
 }
 
 func (s *streamingFakeServer) GetCapabilities(_ context.Context, _ *providerv1.Empty) (*providerv1.CapabilitiesResponse, error) {
 	return &providerv1.CapabilitiesResponse{
-		ProviderName:    "stream-provider",
-		ProviderVersion: "v1.0.0",
-		Formats:         []string{"vmdk"},
-		OsFamilies:      []string{"linux"},
-		ProtocolVersion: "v1",
-		BuildModes:      []string{"local", "remote"},
+		ProviderName:     "stream-provider",
+		ProviderVersion:  "v1.0.0",
+		Formats:          []string{"vmdk"},
+		OsFamilies:       []string{"linux"},
+		ProtocolVersion:  "v1",
+		BuildModes:       []string{"local", "remote"},
+		UploadResumeMode: s.resumeMode,
 	}, nil
 }
 
@@ -58,6 +64,9 @@ func (s *streamingFakeServer) ValidateConfig(_ context.Context, req *providerv1.
 // message with provider_ref set.
 func (s *streamingFakeServer) UploadArtifact(stream providerv1.PlatformProvider_UploadArtifactServer) error {
 	var totalBytes int64
+	var declaredTotal int64
+	var sessionToken string
+	firstData := true
 	for {
 		chunk, err := stream.Recv()
 		if err == io.EOF {
@@ -66,6 +75,22 @@ func (s *streamingFakeServer) UploadArtifact(stream providerv1.PlatformProvider_
 		if err != nil {
 			return err
 		}
+		if chunk.IdempotencyKey != "" {
+			declaredTotal = chunk.TotalSizeBytes
+			sessionToken = chunk.IdempotencyKey
+			if err := stream.Send(&providerv1.UploadProgress{
+				Phase: "session", TotalBytes: declaredTotal, SessionToken: sessionToken,
+				CommittedOffset: s.acceptedOffset, ResumeMode: s.resumeMode,
+			}); err != nil {
+				return err
+			}
+			continue
+		}
+		if firstData {
+			s.firstDataOffset = chunk.Offset
+			firstData = false
+		}
+		s.uploaded = append(s.uploaded, chunk.Data...)
 		totalBytes += int64(len(chunk.Data))
 		if chunk.Last {
 			break
@@ -73,15 +98,25 @@ func (s *streamingFakeServer) UploadArtifact(stream providerv1.PlatformProvider_
 	}
 	// Send one progress message, then the final one with provider_ref.
 	_ = stream.Send(&providerv1.UploadProgress{
-		BytesWritten: totalBytes,
-		TotalBytes:   totalBytes,
-		Phase:        "uploading",
+		BytesWritten:    totalBytes,
+		TotalBytes:      declaredTotal,
+		Phase:           "uploading",
+		SessionToken:    sessionToken,
+		CommittedOffset: s.acceptedOffset,
+		ResumeMode:      s.resumeMode,
 	})
+	committed := totalBytes
+	if declaredTotal > 0 {
+		committed = declaredTotal
+	}
 	return stream.Send(&providerv1.UploadProgress{
-		BytesWritten: totalBytes,
-		TotalBytes:   totalBytes,
-		Phase:        "done",
-		ProviderRef:  s.uploadRef,
+		BytesWritten:    totalBytes,
+		TotalBytes:      declaredTotal,
+		Phase:           "done",
+		ProviderRef:     s.uploadRef,
+		SessionToken:    sessionToken,
+		CommittedOffset: committed,
+		ResumeMode:      s.resumeMode,
 	})
 }
 
@@ -211,6 +246,40 @@ func TestAdapter_Upload_ReturnsProviderRef(t *testing.T) {
 	}
 	if result.ProviderRef != "imagebuilder/build-123/disk.vmdk" {
 		t.Errorf("ProviderRef = %q, want imagebuilder/build-123/disk.vmdk", result.ProviderRef)
+	}
+}
+
+func TestAdapter_UploadResumable_UsesProviderCommittedOffset(t *testing.T) {
+	server := &streamingFakeServer{
+		uploadRef: "provider/upload-1", resumeMode: "offset", acceptedOffset: 5,
+	}
+	adapter := startStreamingServer(t, server)
+	path := filepath.Join(t.TempDir(), "artifact.raw")
+	if err := os.WriteFile(path, []byte("0123456789"), 0o600); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+	artifact := &platform.BuildArtifact{
+		Path: path, Format: platform.FormatRaw, SizeBytes: 10,
+		Metadata: map[string]string{"providerConfigName": "provider-config"},
+	}
+	var checkpoints []platform.UploadSession
+	result, err := adapter.UploadResumable(context.Background(), artifact, platform.UploadSession{
+		IdempotencyKey: "upload-session-1", ResumeToken: "old-token", CommittedOffset: 4,
+	}, func(session platform.UploadSession) error {
+		checkpoints = append(checkpoints, session)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("UploadResumable returned error: %v", err)
+	}
+	if result.ProviderRef != "provider/upload-1" {
+		t.Fatalf("ProviderRef = %q", result.ProviderRef)
+	}
+	if server.firstDataOffset != 5 || string(server.uploaded) != "56789" {
+		t.Fatalf("first offset = %d, uploaded = %q", server.firstDataOffset, server.uploaded)
+	}
+	if len(checkpoints) < 2 || checkpoints[0].CommittedOffset != 5 || checkpoints[len(checkpoints)-1].CommittedOffset != 10 {
+		t.Fatalf("checkpoints = %#v", checkpoints)
 	}
 }
 

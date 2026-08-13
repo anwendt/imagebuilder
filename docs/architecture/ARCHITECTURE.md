@@ -276,6 +276,21 @@ providers by name when processing targets.
     exception because registration must reopen and inspect multiple archive
     members after the initial datastore upload.
 
+    Local uploads use idempotent sessions persisted atomically as
+    `/workspace/upload-sessions.json` on the workspace PVC. The external v1
+    protocol negotiates an opaque resume token and provider-authoritative
+    committed offset before bytes are sent. `restart` sessions safely retransmit
+    from byte zero; only providers with durable backend checkpoints may advertise
+    `offset` resume. Chunk offsets, final markers, and declared size are validated
+    strictly. Upload and registration completion are separate checkpoints, so a
+    replacement Pod does not repeat a completed phase.
+
+    Upload Jobs have three bounded retries. Transient provider/transport errors
+    exit with code 75 and consume that retry budget. Terminal errors exit with
+    code 1 and a Pod failure policy fails the Job immediately. This prevents
+    retries for invalid configuration or unsupported input while still recovering
+    from Pod eviction, network interruption, throttling, and temporary outages.
+
 11. Controller updates VMImage.status:
     - status.phase = Ready
     - status.images[] with one entry per target platform

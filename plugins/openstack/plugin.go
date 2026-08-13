@@ -30,6 +30,7 @@ type Plugin struct {
 var (
 	_ platform.RemoteBuildPlugin        = (*Plugin)(nil)
 	_ platform.RemoteBuildCleanupPlugin = (*Plugin)(nil)
+	_ platform.ResumablePlugin          = (*Plugin)(nil)
 )
 
 type openStackConfig struct {
@@ -229,6 +230,26 @@ func (p *Plugin) UploadStream(ctx context.Context, artifact *platform.StreamArti
 		"imageID": ref.ID, "imageName": ref.Name, "location": ref.Location,
 		"providerConfigName": p.config.providerConfigName, "format": string(artifact.Format), "checksum": artifact.Checksum,
 	}}, nil
+}
+
+func (p *Plugin) UploadResumable(ctx context.Context, artifact *platform.BuildArtifact, session platform.UploadSession, checkpoint platform.UploadCheckpoint) (*platform.UploadResult, error) {
+	if session.IdempotencyKey == "" {
+		return nil, fmt.Errorf("openstack plugin: upload idempotency key is required")
+	}
+	if session.ResumeToken != "" && session.ResumeToken != session.IdempotencyKey {
+		return nil, fmt.Errorf("openstack plugin: upload resume token does not match idempotency key")
+	}
+	session.ResumeToken, session.CommittedOffset, session.ResumeMode = session.IdempotencyKey, 0, "restart"
+	if checkpoint != nil {
+		if err := checkpoint(session); err != nil {
+			return nil, err
+		}
+	}
+	if artifact.Metadata == nil {
+		artifact.Metadata = map[string]string{}
+	}
+	artifact.Metadata["upload.sessionToken"] = session.ResumeToken
+	return p.Upload(ctx, artifact)
 }
 
 func (p *Plugin) Register(ctx context.Context, result *platform.UploadResult) (*platform.ImageRef, error) {

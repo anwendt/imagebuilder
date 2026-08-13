@@ -163,6 +163,107 @@ func TestServer_ImplementsProviderContract(t *testing.T) {
 	}
 }
 
+func TestServer_UploadSessionRestart(t *testing.T) {
+	provider := &fakeProvider{}
+	client, cleanup := startServer(t, provider)
+	defer cleanup()
+
+	stream, err := client.UploadArtifact(context.Background())
+	if err != nil {
+		t.Fatalf("UploadArtifact returned error: %v", err)
+	}
+	if err := stream.Send(&providerv1.UploadChunk{
+		Format: "qcow2", TotalSizeBytes: 5, ProviderConfigName: "example-config",
+		IdempotencyKey: "upload-session-1",
+	}); err != nil {
+		t.Fatalf("send session request: %v", err)
+	}
+	ack, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("receive session acknowledgement: %v", err)
+	}
+	if ack.Phase != "session" || ack.SessionToken != "upload-session-1" || ack.ResumeMode != "restart" || ack.CommittedOffset != 0 {
+		t.Fatalf("session acknowledgement = %#v", ack)
+	}
+	if err := stream.Send(&providerv1.UploadChunk{Data: []byte("hello"), Offset: 0, Last: true}); err != nil {
+		t.Fatalf("send artifact: %v", err)
+	}
+	if err := stream.CloseSend(); err != nil {
+		t.Fatalf("close upload stream: %v", err)
+	}
+	var done *providerv1.UploadProgress
+	for {
+		progress, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("receive upload progress: %v", err)
+		}
+		if progress.Phase == "done" {
+			done = progress
+		}
+	}
+	if done == nil || done.CommittedOffset != 5 || done.SessionToken != "upload-session-1" {
+		t.Fatalf("done progress = %#v", done)
+	}
+	if provider.uploaded.String() != "hello" {
+		t.Fatalf("uploaded body = %q", provider.uploaded.String())
+	}
+}
+
+func TestServer_UploadRejectsInvalidOffset(t *testing.T) {
+	client, cleanup := startServer(t, &fakeProvider{})
+	defer cleanup()
+	stream, err := client.UploadArtifact(context.Background())
+	if err != nil {
+		t.Fatalf("UploadArtifact returned error: %v", err)
+	}
+	if err := stream.Send(&providerv1.UploadChunk{Format: "qcow2", TotalSizeBytes: 5, IdempotencyKey: "upload-session-2"}); err != nil {
+		t.Fatalf("send session request: %v", err)
+	}
+	if _, err := stream.Recv(); err != nil {
+		t.Fatalf("receive session acknowledgement: %v", err)
+	}
+	if err := stream.Send(&providerv1.UploadChunk{Data: []byte("hello"), Offset: 1, Last: true}); err != nil {
+		t.Fatalf("send invalid artifact chunk: %v", err)
+	}
+	_ = stream.CloseSend()
+	for {
+		_, err := stream.Recv()
+		if err == nil {
+			continue
+		}
+		if !strings.Contains(err.Error(), "does not match expected offset 0") {
+			t.Fatalf("receive error = %v", err)
+		}
+		break
+	}
+}
+
+func TestServer_UploadRejectsEOFWithoutFinalChunk(t *testing.T) {
+	client, cleanup := startServer(t, &fakeProvider{})
+	defer cleanup()
+	stream, err := client.UploadArtifact(context.Background())
+	if err != nil {
+		t.Fatalf("UploadArtifact returned error: %v", err)
+	}
+	if err := stream.Send(&providerv1.UploadChunk{Data: []byte("hello"), Offset: 0, Format: "qcow2", TotalSizeBytes: 5}); err != nil {
+		t.Fatalf("send artifact chunk: %v", err)
+	}
+	_ = stream.CloseSend()
+	for {
+		_, err := stream.Recv()
+		if err == nil {
+			continue
+		}
+		if !strings.Contains(err.Error(), "without final chunk") {
+			t.Fatalf("receive error = %v", err)
+		}
+		break
+	}
+}
+
 func TestServer_RemoteBuildErrorClassification(t *testing.T) {
 	for _, test := range []struct {
 		name       string

@@ -97,13 +97,28 @@ func (s *Server) GetCapabilities(ctx context.Context, _ *providerv1.Empty) (*pro
 	if caps.ProviderVersion == "" {
 		return nil, fmt.Errorf("provider capabilities must include provider version")
 	}
+	resumeMode := caps.UploadResumeMode
+	if resumeMode == "" {
+		// Every SDK server supports a durable client-owned idempotency token and
+		// safe retransmission. Providers opt into byte-offset resume separately.
+		resumeMode = "restart"
+	}
+	if resumeMode != "restart" && resumeMode != "offset" {
+		return nil, fmt.Errorf("provider capabilities include unsupported upload resume mode %q", resumeMode)
+	}
+	if resumeMode == "offset" {
+		if _, ok := s.provider.(ResumableProvider); !ok {
+			return nil, fmt.Errorf("provider advertises offset upload resume without implementing ResumableProvider")
+		}
+	}
 	return &providerv1.CapabilitiesResponse{
-		ProviderName:    caps.ProviderName,
-		ProviderVersion: caps.ProviderVersion,
-		Formats:         caps.Formats,
-		OsFamilies:      caps.OSFamilies,
-		BuildModes:      caps.BuildModes,
-		ProtocolVersion: ProtocolVersion,
+		ProviderName:     caps.ProviderName,
+		ProviderVersion:  caps.ProviderVersion,
+		Formats:          caps.Formats,
+		OsFamilies:       caps.OSFamilies,
+		BuildModes:       caps.BuildModes,
+		ProtocolVersion:  ProtocolVersion,
+		UploadResumeMode: resumeMode,
 	}, nil
 }
 
@@ -126,20 +141,69 @@ func (s *Server) UploadArtifact(stream providerv1.PlatformProvider_UploadArtifac
 	if err != nil {
 		return fmt.Errorf("receive first upload chunk: %w", err)
 	}
-	reader, writer := io.Pipe()
-	copyErr := make(chan error, 1)
-	go func() {
-		copyErr <- copyUploadChunks(stream, writer, first)
-	}()
-
-	result, uploadErr := s.provider.UploadArtifact(stream.Context(), ArtifactInfo{
+	artifact := ArtifactInfo{
 		Format:             first.GetFormat(),
 		Checksum:           first.GetChecksum(),
 		TotalSizeBytes:     first.GetTotalSizeBytes(),
 		OSFamily:           first.GetOsFamily(),
 		Metadata:           cloneStringMap(first.GetMetadata()),
 		ProviderConfigName: first.GetProviderConfigName(),
-	}, reader, uploadProgressReporter{stream: stream})
+		IdempotencyKey:     first.GetIdempotencyKey(),
+	}
+	if artifact.TotalSizeBytes < 0 {
+		return fmt.Errorf("upload total size must not be negative")
+	}
+
+	session := UploadSession{}
+	resumable, sessionProtocol := s.provider.(ResumableProvider)
+	if first.GetIdempotencyKey() != "" {
+		session = UploadSession{
+			IdempotencyKey:  first.GetIdempotencyKey(),
+			ResumeToken:     first.GetSessionToken(),
+			CommittedOffset: first.GetResumeOffset(),
+			ResumeMode:      "restart",
+		}
+		if session.CommittedOffset < 0 || session.CommittedOffset > artifact.TotalSizeBytes {
+			return fmt.Errorf("resume offset %d is outside artifact size %d", session.CommittedOffset, artifact.TotalSizeBytes)
+		}
+		if sessionProtocol {
+			session, err = resumable.PrepareUpload(stream.Context(), artifact, session)
+			if err != nil {
+				return fmt.Errorf("prepare resumable upload: %w", err)
+			}
+		} else {
+			session.ResumeToken = session.IdempotencyKey
+			session.CommittedOffset = 0
+		}
+		if err := validateUploadSession(session, artifact.TotalSizeBytes); err != nil {
+			return err
+		}
+		if err := stream.Send(&providerv1.UploadProgress{
+			TotalBytes:      artifact.TotalSizeBytes,
+			Phase:           "session",
+			Message:         "upload session accepted",
+			SessionToken:    session.ResumeToken,
+			CommittedOffset: session.CommittedOffset,
+			ResumeMode:      session.ResumeMode,
+		}); err != nil {
+			return fmt.Errorf("acknowledge upload session: %w", err)
+		}
+	}
+
+	reader, writer := io.Pipe()
+	copyErr := make(chan error, 1)
+	go func() {
+		copyErr <- copyUploadChunks(stream, writer, first, artifact.TotalSizeBytes, session.CommittedOffset, first.GetIdempotencyKey() != "")
+	}()
+
+	reporter := uploadProgressReporter{stream: stream, session: session}
+	var result UploadResult
+	var uploadErr error
+	if sessionProtocol && first.GetIdempotencyKey() != "" {
+		result, uploadErr = resumable.UploadArtifactResumable(stream.Context(), artifact, session, reader, reporter)
+	} else {
+		result, uploadErr = s.provider.UploadArtifact(stream.Context(), artifact, reader, reporter)
+	}
 	if uploadErr != nil {
 		_ = reader.CloseWithError(uploadErr)
 		<-copyErr
@@ -152,11 +216,14 @@ func (s *Server) UploadArtifact(stream providerv1.PlatformProvider_UploadArtifac
 		return fmt.Errorf("upload result provider ref is required")
 	}
 	return stream.Send(&providerv1.UploadProgress{
-		BytesWritten: first.GetTotalSizeBytes(),
-		TotalBytes:   first.GetTotalSizeBytes(),
-		Phase:        "done",
-		Message:      "upload completed",
-		ProviderRef:  result.ProviderRef,
+		BytesWritten:    first.GetTotalSizeBytes(),
+		TotalBytes:      first.GetTotalSizeBytes(),
+		Phase:           "done",
+		Message:         "upload completed",
+		ProviderRef:     result.ProviderRef,
+		SessionToken:    session.ResumeToken,
+		CommittedOffset: first.GetTotalSizeBytes(),
+		ResumeMode:      session.ResumeMode,
 	})
 }
 
@@ -347,46 +414,91 @@ func sdkRemoteProvisionerSource(source *providerv1.RemoteProvisionerSource) *Rem
 }
 
 type uploadProgressReporter struct {
-	stream providerv1.PlatformProvider_UploadArtifactServer
+	stream  providerv1.PlatformProvider_UploadArtifactServer
+	session UploadSession
 }
 
 func (r uploadProgressReporter) Report(_ context.Context, progress Progress) error {
+	committedOffset := int64(0)
+	if r.session.ResumeMode == "offset" {
+		committedOffset = progress.BytesWritten
+	}
 	return r.stream.Send(&providerv1.UploadProgress{
-		BytesWritten: progress.BytesWritten,
-		TotalBytes:   progress.TotalBytes,
-		Phase:        progress.Phase,
-		Message:      progress.Message,
+		BytesWritten:    progress.BytesWritten,
+		TotalBytes:      progress.TotalBytes,
+		Phase:           progress.Phase,
+		Message:         progress.Message,
+		SessionToken:    r.session.ResumeToken,
+		CommittedOffset: committedOffset,
+		ResumeMode:      r.session.ResumeMode,
 	})
 }
 
-func copyUploadChunks(stream providerv1.PlatformProvider_UploadArtifactServer, writer *io.PipeWriter, first *providerv1.UploadChunk) error {
-	defer writer.Close()
-	if len(first.GetData()) > 0 {
-		if _, err := writer.Write(first.GetData()); err != nil {
-			return err
+func copyUploadChunks(stream providerv1.PlatformProvider_UploadArtifactServer, writer *io.PipeWriter, first *providerv1.UploadChunk, totalSize, startOffset int64, sessionProtocol bool) error {
+	expectedOffset := startOffset
+	writeChunk := func(chunk *providerv1.UploadChunk) error {
+		if chunk.GetOffset() != expectedOffset {
+			return fmt.Errorf("upload chunk offset %d does not match expected offset %d", chunk.GetOffset(), expectedOffset)
 		}
-	}
-	if first.GetLast() {
-		return nil
-	}
-	for {
-		chunk, err := stream.Recv()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			_ = writer.CloseWithError(err)
-			return fmt.Errorf("receive upload chunk: %w", err)
+		if int64(len(chunk.GetData())) > totalSize-expectedOffset {
+			return fmt.Errorf("upload chunk at offset %d exceeds artifact size %d", expectedOffset, totalSize)
 		}
 		if len(chunk.GetData()) > 0 {
 			if _, err := writer.Write(chunk.GetData()); err != nil {
 				return err
 			}
+			expectedOffset += int64(len(chunk.GetData()))
+		}
+		if chunk.GetLast() && expectedOffset != totalSize {
+			return fmt.Errorf("final upload chunk ended at offset %d, want %d", expectedOffset, totalSize)
+		}
+		return nil
+	}
+	defer writer.Close()
+	if !sessionProtocol {
+		if err := writeChunk(first); err != nil {
+			_ = writer.CloseWithError(err)
+			return err
+		}
+		if first.GetLast() {
+			return nil
+		}
+	}
+	for {
+		chunk, err := stream.Recv()
+		if err == io.EOF {
+			err = fmt.Errorf("upload stream ended at offset %d without final chunk", expectedOffset)
+			_ = writer.CloseWithError(err)
+			return err
+		}
+		if err != nil {
+			_ = writer.CloseWithError(err)
+			return fmt.Errorf("receive upload chunk: %w", err)
+		}
+		if err := writeChunk(chunk); err != nil {
+			_ = writer.CloseWithError(err)
+			return err
 		}
 		if chunk.GetLast() {
 			return nil
 		}
 	}
+}
+
+func validateUploadSession(session UploadSession, totalSize int64) error {
+	if session.IdempotencyKey == "" || session.ResumeToken == "" {
+		return fmt.Errorf("upload session idempotency key and resume token are required")
+	}
+	if session.ResumeMode != "restart" && session.ResumeMode != "offset" {
+		return fmt.Errorf("unsupported upload resume mode %q", session.ResumeMode)
+	}
+	if session.CommittedOffset < 0 || session.CommittedOffset > totalSize {
+		return fmt.Errorf("committed offset %d is outside artifact size %d", session.CommittedOffset, totalSize)
+	}
+	if session.ResumeMode == "restart" && session.CommittedOffset != 0 {
+		return fmt.Errorf("restart upload session must begin at offset zero")
+	}
+	return nil
 }
 
 func cloneStringMap(in map[string]string) map[string]string {
