@@ -287,6 +287,34 @@ func TestHelmDevelopmentProfileEmitsSecurityWarning(t *testing.T) {
 	}
 }
 
+func TestHelmSupportsNamespaceScopedOperatorRBAC(t *testing.T) {
+	values, err := os.ReadFile(filepath.Join(repoRoot, "charts", "imagebuilder", "values.yaml"))
+	if err != nil {
+		t.Fatalf("read values: %v", err)
+	}
+	if !strings.Contains(string(values), "namespaceScopedMode: false") {
+		t.Fatal("namespace-scoped mode must be opt-in")
+	}
+	deployment, err := os.ReadFile(filepath.Join(repoRoot, "charts", "imagebuilder", "templates", "deployment.yaml"))
+	if err != nil {
+		t.Fatalf("read deployment: %v", err)
+	}
+	for _, want := range []string{"--namespace-scoped-mode=", "--watch-namespace="} {
+		if !strings.Contains(string(deployment), want) {
+			t.Fatalf("deployment missing %q", want)
+		}
+	}
+	rbac, err := os.ReadFile(filepath.Join(repoRoot, "charts", "imagebuilder", "templates", "rbac-scoped.yaml"))
+	if err != nil {
+		t.Fatalf("read scoped RBAC: %v", err)
+	}
+	for _, want := range []string{"kind: Role", "kind: RoleBinding", `resources: ["secrets"]`, "-cluster-read"} {
+		if !strings.Contains(string(rbac), want) {
+			t.Fatalf("scoped RBAC missing %q", want)
+		}
+	}
+}
+
 func parseNetworkPolicies(t *testing.T, raw string) map[string]*networkingv1.NetworkPolicy {
 	t.Helper()
 	out := map[string]*networkingv1.NetworkPolicy{}

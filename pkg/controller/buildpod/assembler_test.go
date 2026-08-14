@@ -113,6 +113,9 @@ func TestAssemble_JobName(t *testing.T) {
 	if job.Name != want {
 		t.Errorf("job name = %q, want %q", job.Name, want)
 	}
+	if job.Spec.ActiveDeadlineSeconds == nil || *job.Spec.ActiveDeadlineSeconds != 7200 {
+		t.Fatalf("activeDeadlineSeconds = %v, want 7200", job.Spec.ActiveDeadlineSeconds)
+	}
 }
 
 func TestAssemble_RevisionChangesJobAndWorkspaceNames(t *testing.T) {

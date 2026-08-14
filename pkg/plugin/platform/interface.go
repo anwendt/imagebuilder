@@ -127,6 +127,11 @@ type PluginConfig struct {
 
 	// Extra holds provider-specific key-value config from ProviderConfigSpec.extra
 	Extra map[string]string
+
+	// Endpoint allowlists are resolved from ProviderConfig.networkAccess and
+	// must be applied to every provider-specific endpoint override.
+	AllowedPrivateCIDRs []string
+	AllowedDNSNames     []string
 }
 
 // BuildArtifact is the result of a successful build step, ready for upload.

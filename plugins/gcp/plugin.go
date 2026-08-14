@@ -30,6 +30,7 @@ import (
 	"github.com/anwendt/imagebuilder/pkg/plugin"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
 	providererrors "github.com/anwendt/imagebuilder/pkg/provider/errors"
+	"github.com/anwendt/imagebuilder/pkg/security/netguard"
 )
 
 const defaultGCSObjectPrefix = "imagebuilder"
@@ -157,6 +158,17 @@ func (p *Plugin) Init(ctx context.Context, cfg platform.PluginConfig) error {
 	}
 	if p.config.project == "" {
 		return fmt.Errorf("gcp plugin: ProviderConfig extra project or credentials projectId is required")
+	}
+	endpointOptions := netguard.Options{AllowedPrivateCIDRs: cfg.AllowedPrivateCIDRs, AllowedDNSNames: cfg.AllowedDNSNames}
+	for _, endpoint := range []struct{ name, value string }{
+		{"endpoint", cfg.Endpoint},
+		{"storageEndpoint", cfg.Extra["storageEndpoint"]},
+		{"computeEndpoint", cfg.Extra["computeEndpoint"]},
+		{"storageUploadEndpoint", cfg.Extra["storageUploadEndpoint"]},
+	} {
+		if err := netguard.ValidatePublicHTTPSURL(ctx, "gcp "+endpoint.name, endpoint.value, endpointOptions); err != nil {
+			return fmt.Errorf("gcp plugin: endpoint rejected: %w", err)
+		}
 	}
 	client, err := newSDKClient(ctx, cfg, p.config)
 	if err != nil {

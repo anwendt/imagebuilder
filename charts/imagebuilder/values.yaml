@@ -2,6 +2,10 @@ nameOverride: ""
 fullnameOverride: ""
 developmentProfileAcknowledged: false
 
+operator:
+  namespaceScopedMode: false
+  watchNamespace: ""
+
 namespace:
   create: true
   name: imagebuilder-system

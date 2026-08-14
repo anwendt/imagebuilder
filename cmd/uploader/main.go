@@ -5,10 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +22,7 @@ import (
 	plugingrpc "github.com/anwendt/imagebuilder/pkg/plugin/grpc"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
 	providererrors "github.com/anwendt/imagebuilder/pkg/provider/errors"
+	providersdk "github.com/anwendt/imagebuilder/pkg/provider/sdk"
 	"github.com/anwendt/imagebuilder/pkg/security/netguard"
 
 	_ "github.com/anwendt/imagebuilder/plugins/aws"
@@ -83,6 +86,16 @@ type uploadSessionFile struct {
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	ctx := context.Background()
+	if raw := strings.TrimSpace(os.Getenv("UPLOAD_DEADLINE_SECONDS")); raw != "" {
+		seconds, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || seconds <= 0 {
+			slog.Error("invalid upload deadline", slog.String("value", raw))
+			os.Exit(1)
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(seconds)*time.Second)
+		defer cancel()
+	}
 
 	result, err := run(ctx, os.Getenv)
 	if err != nil {
@@ -136,6 +149,9 @@ func run(ctx context.Context, getenv func(string) string) (runResult, error) {
 	if err != nil {
 		return runResult{}, err
 	}
+	if err := verifyArtifactFile(artifact); err != nil {
+		return runResult{}, fmt.Errorf("verify build artifact before upload: %w", err)
+	}
 	targets, err := readTargets(getenv("UPLOAD_TARGETS_JSON"))
 	if err != nil {
 		return runResult{}, err
@@ -164,6 +180,25 @@ func run(ctx context.Context, getenv func(string) string) (runResult, error) {
 		return result, failures
 	}
 	return result, nil
+}
+
+func verifyArtifactFile(artifact *platform.BuildArtifact) error {
+	if artifact == nil || artifact.Path == "" {
+		return fmt.Errorf("artifact path is required")
+	}
+	file, err := os.Open(artifact.Path) // #nosec G304 -- controller-owned build result path.
+	if err != nil {
+		return fmt.Errorf("open artifact: %w", err)
+	}
+	defer file.Close()
+	reader, err := providersdk.NewValidatingReader(file, artifact.SizeBytes, artifact.Checksum, nil)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(io.Discard, reader); err != nil {
+		return fmt.Errorf("read artifact: %w", err)
+	}
+	return reader.Verify()
 }
 
 type uploadTargetFailure struct {
@@ -223,7 +258,10 @@ func processUploadTarget(ctx context.Context, workspace, sessionPath string, ses
 	if err := validateProviderEndpoint(ctx, target); err != nil {
 		return v1alpha1.ImageStatus{}, v1alpha1.UploadOperationStatus{}, false, err
 	}
-	if err := providerPlugin.Init(ctx, platform.PluginConfig{ProviderConfigName: target.ProviderConfigName, SecretData: secretData, Region: target.Region, Endpoint: target.Endpoint, Insecure: target.Insecure, Extra: target.Extra}); err != nil {
+	if err := validateProviderExtraEndpoints(ctx, target); err != nil {
+		return v1alpha1.ImageStatus{}, v1alpha1.UploadOperationStatus{}, false, err
+	}
+	if err := providerPlugin.Init(ctx, platform.PluginConfig{ProviderConfigName: target.ProviderConfigName, SecretData: secretData, Region: target.Region, Endpoint: target.Endpoint, Insecure: target.Insecure, Extra: target.Extra, AllowedPrivateCIDRs: target.AllowedPrivateCIDRs, AllowedDNSNames: target.AllowedDNSNames}); err != nil {
 		return v1alpha1.ImageStatus{}, v1alpha1.UploadOperationStatus{}, false, fmt.Errorf("init provider %q: %w", target.Provider, err)
 	}
 	if err := providerPlugin.Validate(ctx, v1alpha1.TargetSpec{ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: target.ProviderConfigName}, Format: target.Format, Tags: target.Tags}); err != nil {
@@ -342,13 +380,18 @@ func cleanupUploadedArtifacts(ctx context.Context, workspace string, getenv func
 		if err := validateProviderEndpoint(ctx, target); err != nil {
 			return runResult{}, err
 		}
+		if err := validateProviderExtraEndpoints(ctx, target); err != nil {
+			return runResult{}, err
+		}
 		if err := providerPlugin.Init(ctx, platform.PluginConfig{
-			ProviderConfigName: target.ProviderConfigName,
-			SecretData:         secretData,
-			Region:             target.Region,
-			Endpoint:           target.Endpoint,
-			Insecure:           target.Insecure,
-			Extra:              target.Extra,
+			ProviderConfigName:  target.ProviderConfigName,
+			SecretData:          secretData,
+			Region:              target.Region,
+			Endpoint:            target.Endpoint,
+			Insecure:            target.Insecure,
+			Extra:               target.Extra,
+			AllowedPrivateCIDRs: target.AllowedPrivateCIDRs,
+			AllowedDNSNames:     target.AllowedDNSNames,
 		}); err != nil {
 			return runResult{}, fmt.Errorf("init provider %q: %w", target.Provider, err)
 		}
@@ -438,6 +481,19 @@ func validateProviderEndpointWithOptions(ctx context.Context, target uploadpod.T
 	}
 	if err := netguard.ValidatePublicHTTPSURL(ctx, "provider endpoint", target.Endpoint, opts); err != nil {
 		return fmt.Errorf("provider endpoint for %q rejected by SSRF protection: %w", target.ProviderConfigName, err)
+	}
+	return nil
+}
+
+func validateProviderExtraEndpoints(ctx context.Context, target uploadpod.TargetConfig) error {
+	if !strings.EqualFold(target.Provider, "gcp") {
+		return nil
+	}
+	opts := netguard.Options{AllowedPrivateCIDRs: target.AllowedPrivateCIDRs, AllowedDNSNames: target.AllowedDNSNames}
+	for _, key := range []string{"storageEndpoint", "computeEndpoint", "storageUploadEndpoint"} {
+		if err := netguard.ValidatePublicHTTPSURL(ctx, "provider extra "+key, target.Extra[key], opts); err != nil {
+			return fmt.Errorf("provider endpoint for %q rejected by SSRF protection: %w", target.ProviderConfigName, err)
+		}
 	}
 	return nil
 }
@@ -656,46 +712,56 @@ func writeUploadSessions(path string, sessions []uploadSessionRecord) error {
 		return fmt.Errorf("marshal upload sessions: %w", err)
 	}
 	data = append(data, '\n')
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".upload-sessions-*.tmp")
+	return writeCheckpointWithBackup(path, data, validUploadSessionData)
+}
+
+func validUploadSessionData(data []byte) bool {
+	var state uploadSessionFile
+	return json.Unmarshal(data, &state) == nil && state.Version == 1
+}
+
+func writeCheckpointWithBackup(path string, data []byte, valid func([]byte) bool) error {
+	if current, err := os.ReadFile(path); err == nil && valid(current) { // #nosec G304 -- controller-owned workspace checkpoint.
+		if err := writeAtomicFile(path+".bak", current); err != nil {
+			return fmt.Errorf("commit checkpoint backup: %w", err)
+		}
+	} else if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read current checkpoint: %w", err)
+	}
+	return writeAtomicFile(path, data)
+}
+
+func writeAtomicFile(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".imagebuilder-checkpoint-*.tmp")
 	if err != nil {
-		return fmt.Errorf("create upload session checkpoint: %w", err)
+		return err
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
 	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("protect upload session checkpoint: %w", err)
+		return err
 	}
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("write upload session checkpoint: %w", err)
+		return err
 	}
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("sync upload session checkpoint: %w", err)
+		return err
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close upload session checkpoint: %w", err)
-	}
-	backupPath := path + ".bak"
-	if err := os.Remove(backupPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove previous upload session backup: %w", err)
-	}
-	if err := os.Rename(path, backupPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("backup previous upload session checkpoint: %w", err)
+		return err
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("commit upload session checkpoint: %w", err)
+		return err
 	}
 	directory, err := os.Open(filepath.Dir(path))
 	if err != nil {
-		return fmt.Errorf("open upload checkpoint directory: %w", err)
+		return err
 	}
 	defer directory.Close()
-	if err := directory.Sync(); err != nil {
-		return fmt.Errorf("sync upload checkpoint directory: %w", err)
-	}
-	return nil
+	return directory.Sync()
 }
 
 func recordUploadOperation(workspace string, op uploadOperationRecord) error {
@@ -733,19 +799,70 @@ func recordUploadOperation(workspace string, op uploadOperationRecord) error {
 		}
 		return 0
 	})
-	return writeJSON(path, ops)
+	data, err := json.MarshalIndent(ops, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal upload operations: %w", err)
+	}
+	return writeCheckpointWithBackup(path, append(data, '\n'), validUploadOperationsData)
 }
 
 func readUploadOperations(path string) ([]uploadOperationRecord, error) {
-	data, err := os.ReadFile(path) // #nosec G304 -- Path points at the upload operations file in the controller-owned workspace.
+	operations, primaryErr := readUploadOperationsFile(path)
+	if primaryErr == nil {
+		return operations, nil
+	}
+	operations, backupErr := readUploadOperationsFile(path + ".bak")
+	if backupErr == nil {
+		slog.Warn("recovered upload operations from backup checkpoint", slog.String("path", path+".bak"), slog.Any("primaryError", primaryErr))
+		return operations, nil
+	}
+	operations, sessionErr := reconstructUploadOperationsFromSessions(filepath.Join(filepath.Dir(path), sessionsName))
+	if sessionErr == nil && len(operations) > 0 {
+		slog.Warn("reconstructed upload operations from session checkpoint", slog.String("path", path), slog.Any("primaryError", primaryErr), slog.Any("backupError", backupErr))
+		return operations, nil
+	}
+	if os.IsNotExist(primaryErr) && os.IsNotExist(backupErr) {
+		return nil, os.ErrNotExist
+	}
+	return nil, fmt.Errorf("read upload operations: primary: %v; backup: %v; sessions: %v", primaryErr, backupErr, sessionErr)
+}
+
+func readUploadOperationsFile(path string) ([]uploadOperationRecord, error) {
+	data, err := os.ReadFile(path) // #nosec G304 -- controller-owned workspace checkpoint.
 	if err != nil {
 		return nil, err
 	}
 	var ops []uploadOperationRecord
 	if err := json.Unmarshal(data, &ops); err != nil {
-		return nil, fmt.Errorf("parse upload operations: %w", err)
+		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	return ops, nil
+}
+
+func validUploadOperationsData(data []byte) bool {
+	var operations []uploadOperationRecord
+	return json.Unmarshal(data, &operations) == nil
+}
+
+func reconstructUploadOperationsFromSessions(sessionPath string) ([]uploadOperationRecord, error) {
+	sessions, err := readUploadSessions(sessionPath)
+	if err != nil {
+		return nil, err
+	}
+	operations := make([]uploadOperationRecord, 0, len(sessions))
+	for _, session := range sessions {
+		if session.ProviderRef == "" {
+			continue
+		}
+		metadata := cloneStringMap(session.Metadata)
+		if metadata == nil {
+			metadata = map[string]string{}
+		}
+		metadata["providerRef"] = session.ProviderRef
+		metadata["providerConfigName"] = session.ProviderConfigName
+		operations = append(operations, uploadOperationRecord{Provider: session.Provider, ProviderConfigName: session.ProviderConfigName, Format: session.Format, ProviderRef: session.ProviderRef, Metadata: metadata})
+	}
+	return operations, nil
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

@@ -236,6 +236,11 @@ message ValidateConfigRequest {
 
   // extra holds provider-specific key-value config
   map<string, string> extra = 6;
+
+  // Endpoint allowlists resolved from ProviderConfig.networkAccess. Providers
+  // must apply them to provider-specific endpoint overrides as well.
+  repeated string allowed_private_cidrs = 20;
+  repeated string allowed_dns_names = 21;
 }
 
 message ValidateConfigResponse {

@@ -195,6 +195,14 @@ provider rebuilds part state with `ListParts`; Azure and GCP rotate checkpoints
 whose backend session no longer exists. GCP also requires resumable session URIs
 and redirects to match the configured upload origin.
 
+The core performs a full local size/SHA-256 preflight before opening any upload
+session. Provider implementations still validate backend acknowledgements and
+must not register an artifact whose upload did not complete successfully.
+
+Provider-specific endpoint overrides must use `PluginConfig` and `sdk.Config`
+allowlists. Never construct an authenticated client for an unvalidated custom
+endpoint.
+
 Upload Jobs use a bounded `backoffLimit` of three. The uploader exits with code
 75 only for errors classified as transient (transport failures, throttling,
 deadlines, or temporary service failures). A Pod failure policy fails the Job

@@ -1,25 +1,23 @@
-{{- if not .Values.operator.namespaceScopedMode }}
+{{- if .Values.operator.namespaceScopedMode }}
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: {{ include "imagebuilder.fullname" . }}
+  namespace: {{ default (include "imagebuilder.namespace" .) .Values.operator.watchNamespace }}
   labels:
     {{- include "imagebuilder.labels" . | nindent 4 }}
 rules:
   - apiGroups: ["imagebuilder.io"]
-    # controller-runtime adds and removes finalizers with a normal resource
-    # Update, so the two reconciled resource kinds require update in every
-    # namespace watched by this cluster-scoped operator.
-    resources: ["vmimages", "platformproviders"]
+    resources: ["vmimages"]
     verbs: ["get", "list", "watch", "update"]
   - apiGroups: ["imagebuilder.io"]
     resources: ["providerconfigs"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["imagebuilder.io"]
-    resources: ["vmimages/status", "platformproviders/status", "providerconfigs/status"]
+    resources: ["vmimages/status", "providerconfigs/status"]
     verbs: ["get", "update", "patch"]
   - apiGroups: ["imagebuilder.io"]
-    resources: ["vmimages/finalizers", "platformproviders/finalizers"]
+    resources: ["vmimages/finalizers"]
     verbs: ["update"]
   - apiGroups: ["batch"]
     resources: ["jobs"]
@@ -45,6 +43,39 @@ rules:
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "imagebuilder.fullname" . }}
+  namespace: {{ default (include "imagebuilder.namespace" .) .Values.operator.watchNamespace }}
+  labels:
+    {{- include "imagebuilder.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "imagebuilder.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "imagebuilder.serviceAccountName" . }}
+    namespace: {{ include "imagebuilder.namespace" . }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "imagebuilder.fullname" . }}-cluster-read
+  labels:
+    {{- include "imagebuilder.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["imagebuilder.io"]
+    resources: ["platformproviders"]
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: ["imagebuilder.io"]
+    resources: ["platformproviders/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["imagebuilder.io"]
+    resources: ["platformproviders/finalizers"]
+    verbs: ["update"]
   - apiGroups: ["kyverno.io"]
     resources: ["clusterpolicies"]
     verbs: ["get"]
@@ -58,15 +89,15 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ include "imagebuilder.fullname" . }}
+  name: {{ include "imagebuilder.fullname" . }}-cluster-read
   labels:
     {{- include "imagebuilder.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ include "imagebuilder.fullname" . }}
+  name: {{ include "imagebuilder.fullname" . }}-cluster-read
 subjects:
   - kind: ServiceAccount
     name: {{ include "imagebuilder.serviceAccountName" . }}
     namespace: {{ include "imagebuilder.namespace" . }}
-  {{- end }}
+{{- end }}

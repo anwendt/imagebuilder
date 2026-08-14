@@ -287,6 +287,10 @@ providers by name when processing targets.
     validated strictly. Upload and registration completion are separate
     checkpoints, so a replacement Pod does not repeat a completed phase.
 
+    Before any target receives bytes, the uploader reads the complete local
+    artifact and verifies its declared size and SHA-256. This preserves whole-
+    artifact integrity even when a provider resumes from a suffix offset.
+
     AWS reconstructs committed parts with `ListParts`; Azure verifies the
     persisted Page Blob; GCP queries the resumable endpoint and binds every
     session URI and redirect to the configured upload origin. Missing or expired
@@ -318,6 +322,23 @@ providers by name when processing targets.
     Kubernetes API token automounting. The same policy is enforced by admission
     and reconciliation, so webhook unavailability cannot create a privileged
     provider Pod.
+
+    ProviderConfig network policy is applied to `spec.endpoint` and every GCP
+    endpoint override (`storageEndpoint`, `computeEndpoint`, and
+    `storageUploadEndpoint`) at admission, controller runtime, uploader runtime,
+    and inside the provider before authenticated clients are constructed.
+
+    A terminal upload failure first reconciles the idempotent provider cleanup
+    Job while retaining the workspace PVC. Only after cleanup succeeds does the
+    controller mark the VMImage Failed and release generated artifact storage.
+
+    Build and upload Jobs carry `activeDeadlineSeconds`; the upload container
+    also uses a matching context deadline. `spec.build.timeout` is therefore a
+    hard total budget rather than a controller polling hint.
+
+    Session and operation records use atomic temp-file commits, fsync, and a
+    previous valid generation. Corrupt operation records are reconstructed from
+    durable upload sessions for provider cleanup.
 
 11. Controller updates VMImage.status:
     - status.phase = Ready

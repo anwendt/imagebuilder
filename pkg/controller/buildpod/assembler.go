@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -76,6 +77,7 @@ func Assemble(img *v1alpha1.VMImage, scheme *runtime.Scheme) (*batchv1.Job, erro
 		},
 		Spec: batchv1.JobSpec{
 			BackoffLimit:            &backoffLimit,
+			ActiveDeadlineSeconds:   int64Ptr(buildDeadlineSeconds(img)),
 			TTLSecondsAfterFinished: &ttl,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
@@ -115,6 +117,15 @@ func Assemble(img *v1alpha1.VMImage, scheme *runtime.Scheme) (*batchv1.Job, erro
 
 	return job, nil
 }
+
+func buildDeadlineSeconds(img *v1alpha1.VMImage) int64 {
+	if img != nil && img.Spec.Build.Timeout != nil && img.Spec.Build.Timeout.Duration > 0 {
+		return max(int64(img.Spec.Build.Timeout.Duration/time.Second), 1)
+	}
+	return int64((2 * time.Hour) / time.Second)
+}
+
+func int64Ptr(value int64) *int64 { return &value }
 
 func buildAffinity() *corev1.Affinity {
 	return &corev1.Affinity{

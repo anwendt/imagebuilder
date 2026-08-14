@@ -2,6 +2,14 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "type": "object",
   "properties": {
+    "operator": {
+      "type": "object",
+      "properties": {
+        "namespaceScopedMode": {"type": "boolean"},
+        "watchNamespace": {"type": "string"}
+      },
+      "required": ["namespaceScopedMode", "watchNamespace"]
+    },
     "developmentProfileAcknowledged": {
       "type": "boolean",
       "description": "Records explicit acknowledgement when development values disable production security guardrails."

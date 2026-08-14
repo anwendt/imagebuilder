@@ -111,7 +111,7 @@ func (p *SDKProvider) ValidateConfig(ctx context.Context, cfg sdk.Config) error 
 	}
 	p.mu.Unlock()
 	plugin := &Plugin{}
-	if err := plugin.Init(ctx, platform.PluginConfig{ProviderConfigName: cfg.ProviderConfigName, SecretData: cfg.Credentials, Region: cfg.Region, Endpoint: cfg.Endpoint, Insecure: cfg.Insecure, Extra: cfg.Extra}); err != nil {
+	if err := plugin.Init(ctx, platform.PluginConfig{ProviderConfigName: cfg.ProviderConfigName, SecretData: cfg.Credentials, Region: cfg.Region, Endpoint: cfg.Endpoint, Insecure: cfg.Insecure, Extra: cfg.Extra, AllowedPrivateCIDRs: cfg.AllowedPrivateCIDRs, AllowedDNSNames: cfg.AllowedDNSNames}); err != nil {
 		return err
 	}
 	p.mu.Lock()

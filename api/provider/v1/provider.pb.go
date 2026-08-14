@@ -1196,9 +1196,13 @@ type ValidateConfigRequest struct {
 	Endpoint string `protobuf:"bytes,4,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
 	Insecure bool   `protobuf:"varint,5,opt,name=insecure,proto3" json:"insecure,omitempty"`
 	// extra holds provider-specific key-value config
-	Extra         map[string]string `protobuf:"bytes,6,rep,name=extra,proto3" json:"extra,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Extra map[string]string `protobuf:"bytes,6,rep,name=extra,proto3" json:"extra,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Endpoint allowlists resolved from ProviderConfig.networkAccess. Providers
+	// must apply them to provider-specific endpoint overrides as well.
+	AllowedPrivateCidrs []string `protobuf:"bytes,20,rep,name=allowed_private_cidrs,json=allowedPrivateCidrs,proto3" json:"allowed_private_cidrs,omitempty"`
+	AllowedDnsNames     []string `protobuf:"bytes,21,rep,name=allowed_dns_names,json=allowedDnsNames,proto3" json:"allowed_dns_names,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *ValidateConfigRequest) Reset() {
@@ -1269,6 +1273,20 @@ func (x *ValidateConfigRequest) GetInsecure() bool {
 func (x *ValidateConfigRequest) GetExtra() map[string]string {
 	if x != nil {
 		return x.Extra
+	}
+	return nil
+}
+
+func (x *ValidateConfigRequest) GetAllowedPrivateCidrs() []string {
+	if x != nil {
+		return x.AllowedPrivateCidrs
+	}
+	return nil
+}
+
+func (x *ValidateConfigRequest) GetAllowedDnsNames() []string {
+	if x != nil {
+		return x.AllowedDnsNames
 	}
 	return nil
 }
@@ -2006,14 +2024,16 @@ const file_provider_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"P\n" +
 	"\x1aRemoteBuildCleanupResponse\x12\x18\n" +
 	"\acleaned\x18\x01 \x01(\bR\acleaned\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage\"\xc9\x03\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"\xa9\x04\n" +
 	"\x15ValidateConfigRequest\x120\n" +
 	"\x14provider_config_name\x18\x01 \x01(\tR\x12providerConfigName\x12b\n" +
 	"\vcredentials\x18\x02 \x03(\v2@.imagebuilder.provider.v1.ValidateConfigRequest.CredentialsEntryR\vcredentials\x12\x16\n" +
 	"\x06region\x18\x03 \x01(\tR\x06region\x12\x1a\n" +
 	"\bendpoint\x18\x04 \x01(\tR\bendpoint\x12\x1a\n" +
 	"\binsecure\x18\x05 \x01(\bR\binsecure\x12P\n" +
-	"\x05extra\x18\x06 \x03(\v2:.imagebuilder.provider.v1.ValidateConfigRequest.ExtraEntryR\x05extra\x1a>\n" +
+	"\x05extra\x18\x06 \x03(\v2:.imagebuilder.provider.v1.ValidateConfigRequest.ExtraEntryR\x05extra\x122\n" +
+	"\x15allowed_private_cidrs\x18\x14 \x03(\tR\x13allowedPrivateCidrs\x12*\n" +
+	"\x11allowed_dns_names\x18\x15 \x03(\tR\x0fallowedDnsNames\x1a>\n" +
 	"\x10CredentialsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\x1a8\n" +

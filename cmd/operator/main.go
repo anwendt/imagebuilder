@@ -12,6 +12,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/discovery"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -76,6 +78,8 @@ func main() {
 		allowedProviderServiceAccounts    string
 		forbidProviderServiceAccountToken bool
 		logLevel                          string
+		watchNamespace                    string
+		namespaceScopedMode               bool
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "Metrics endpoint address")
@@ -95,7 +99,17 @@ func main() {
 	flag.BoolVar(&forbidProviderServiceAccountToken, "forbid-provider-serviceaccount-token", false, "Forbid PlatformProvider pods from automounting Kubernetes API tokens")
 	// OR-012: log level must be configurable at runtime without redeployment.
 	flag.StringVar(&logLevel, "log-level", "info", "Log level: debug, info, warn, error")
+	flag.StringVar(&watchNamespace, "watch-namespace", os.Getenv("POD_NAMESPACE"), "Namespace watched in namespace-scoped mode")
+	flag.BoolVar(&namespaceScopedMode, "namespace-scoped-mode", false, "Restrict namespaced cache and reconciliation to one namespace")
 	flag.Parse()
+	if namespaceScopedMode && strings.TrimSpace(watchNamespace) == "" {
+		fmt.Fprintln(os.Stderr, "--watch-namespace is required when --namespace-scoped-mode=true")
+		os.Exit(2)
+	}
+	if namespaceScopedMode && (schedulerNamespace != watchNamespace || providerNamespace != watchNamespace) {
+		fmt.Fprintln(os.Stderr, "namespace-scoped mode requires scheduler-namespace and provider-namespace to equal watch-namespace")
+		os.Exit(2)
+	}
 	_ = deprecatedMaxPerNode
 	allowedProviderRegistryList := splitCSV(allowedProviderRegistries)
 	allowedProviderServiceAccountList := splitCSV(allowedProviderServiceAccounts)
@@ -137,13 +151,17 @@ func main() {
 	}
 	slog.Info("Kubernetes compatibility check passed", slog.String("minimumVersion", kubecompat.MinimumKubernetesVersion))
 
-	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
+	managerOptions := ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         leaderElect,
 		LeaderElectionID:       "imagebuilder.io",
-	})
+	}
+	if namespaceScopedMode {
+		managerOptions.Cache = cache.Options{DefaultNamespaces: map[string]cache.Config{watchNamespace: {}}}
+	}
+	mgr, err := ctrl.NewManager(restConfig, managerOptions)
 	if err != nil {
 		slog.Error("unable to create manager", slog.Any("error", err))
 		os.Exit(1)

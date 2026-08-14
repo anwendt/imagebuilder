@@ -44,6 +44,7 @@ import (
 	"github.com/anwendt/imagebuilder/pkg/plugin"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
 	providererrors "github.com/anwendt/imagebuilder/pkg/provider/errors"
+	"github.com/anwendt/imagebuilder/pkg/security/netguard"
 )
 
 const (
@@ -750,8 +751,21 @@ func (r *VMImageReconciler) reconcileUploading(ctx context.Context, img *v1alpha
 		if detail, err := r.uploadFailureFromJob(ctx, img.Namespace, job); err == nil && detail != "" {
 			reason = fmt.Sprintf("upload Job failed: %s", detail)
 		}
+		done, cleanupErr := r.cleanupLocalUpload(ctx, img)
+		if cleanupErr != nil {
+			setStep(img, "Cleanup", "Failed", "UploadCleanupFailed", cleanupErr.Error(), "")
+			return ctrl.Result{RequeueAfter: requeueAfter}, cleanupErr
+		}
+		if !done {
+			setStep(img, "Cleanup", "Running", "UploadCleanupPending", "Cleaning provider resources before releasing artifact storage", "")
+			if err := r.Status().Update(ctx, img); err != nil {
+				return ctrl.Result{}, fmt.Errorf("update upload cleanup status: %w", err)
+			}
+			return ctrl.Result{RequeueAfter: requeueAfter}, nil
+		}
 		img.Status.UploadOperations = markUploadOperations(img.Status.UploadOperations, "Failed", reason)
 		setStep(img, "Upload", "Failed", "UploadJobFailed", reason, "")
+		setStep(img, "Cleanup", "Succeeded", "UploadCleanupComplete", "Provider resources cleaned before artifact storage release", "")
 		observeUploadDuration(img, "false")
 		observability.FailuresTotal.WithLabelValues("Upload", "UploadJobFailed", metricProvider(img)).Inc()
 		return r.setFailed(ctx, img, reason)
@@ -1091,18 +1105,52 @@ func (r *VMImageReconciler) initProviderForTarget(ctx context.Context, namespace
 	if err := r.Get(ctx, types.NamespacedName{Name: target.ProviderConfigRef.Name, Namespace: namespace}, cfg); err != nil {
 		return fmt.Errorf("get ProviderConfig %q: %w", target.ProviderConfigRef.Name, err)
 	}
+	if err := validateRuntimeProviderEndpoints(ctx, cfg); err != nil {
+		return err
+	}
 	secretData, err := r.providerSecretData(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	return providerPlugin.Init(ctx, platform.PluginConfig{
-		ProviderConfigName: cfg.Name,
-		SecretData:         secretData,
-		Region:             cfg.Spec.Region,
-		Endpoint:           cfg.Spec.Endpoint,
-		Insecure:           cfg.Spec.Insecure,
-		Extra:              cfg.Spec.Extra,
+		ProviderConfigName:  cfg.Name,
+		SecretData:          secretData,
+		Region:              cfg.Spec.Region,
+		Endpoint:            cfg.Spec.Endpoint,
+		Insecure:            cfg.Spec.Insecure,
+		Extra:               cfg.Spec.Extra,
+		AllowedPrivateCIDRs: providerAllowedPrivateCIDRs(cfg),
+		AllowedDNSNames:     providerAllowedDNSNames(cfg),
 	})
+}
+
+func validateRuntimeProviderEndpoints(ctx context.Context, cfg *v1alpha1.ProviderConfig) error {
+	options := netguard.Options{AllowedPrivateCIDRs: providerAllowedPrivateCIDRs(cfg), AllowedDNSNames: providerAllowedDNSNames(cfg)}
+	if err := netguard.ValidatePublicHTTPSURL(ctx, "ProviderConfig endpoint", cfg.Spec.Endpoint, options); err != nil {
+		return fmt.Errorf("ProviderConfig %q endpoint rejected: %w", cfg.Name, err)
+	}
+	if strings.EqualFold(cfg.Spec.Provider, "gcp") {
+		for _, key := range []string{"storageEndpoint", "computeEndpoint", "storageUploadEndpoint"} {
+			if err := netguard.ValidatePublicHTTPSURL(ctx, "ProviderConfig extra "+key, cfg.Spec.Extra[key], options); err != nil {
+				return fmt.Errorf("ProviderConfig %q endpoint rejected: %w", cfg.Name, err)
+			}
+		}
+	}
+	return nil
+}
+
+func providerAllowedPrivateCIDRs(cfg *v1alpha1.ProviderConfig) []string {
+	if cfg == nil || cfg.Spec.NetworkAccess == nil {
+		return nil
+	}
+	return append([]string(nil), cfg.Spec.NetworkAccess.AllowedPrivateCIDRs...)
+}
+
+func providerAllowedDNSNames(cfg *v1alpha1.ProviderConfig) []string {
+	if cfg == nil || cfg.Spec.NetworkAccess == nil {
+		return nil
+	}
+	return append([]string(nil), cfg.Spec.NetworkAccess.AllowedDNSNames...)
 }
 
 func (r *VMImageReconciler) providerSecretData(ctx context.Context, cfg *v1alpha1.ProviderConfig) (map[string][]byte, error) {

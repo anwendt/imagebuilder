@@ -124,12 +124,14 @@ func (s *Server) GetCapabilities(ctx context.Context, _ *providerv1.Empty) (*pro
 
 func (s *Server) ValidateConfig(ctx context.Context, req *providerv1.ValidateConfigRequest) (*providerv1.ValidateConfigResponse, error) {
 	if err := s.provider.ValidateConfig(ctx, Config{
-		ProviderConfigName: req.GetProviderConfigName(),
-		Credentials:        cloneBytesMap(req.GetCredentials()),
-		Region:             req.GetRegion(),
-		Endpoint:           req.GetEndpoint(),
-		Insecure:           req.GetInsecure(),
-		Extra:              cloneStringMap(req.GetExtra()),
+		ProviderConfigName:  req.GetProviderConfigName(),
+		Credentials:         cloneBytesMap(req.GetCredentials()),
+		Region:              req.GetRegion(),
+		Endpoint:            req.GetEndpoint(),
+		Insecure:            req.GetInsecure(),
+		Extra:               cloneStringMap(req.GetExtra()),
+		AllowedPrivateCIDRs: append([]string(nil), req.GetAllowedPrivateCidrs()...),
+		AllowedDNSNames:     append([]string(nil), req.GetAllowedDnsNames()...),
 	}); err != nil {
 		return &providerv1.ValidateConfigResponse{Valid: false, Message: err.Error()}, nil
 	}

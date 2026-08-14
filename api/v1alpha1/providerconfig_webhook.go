@@ -15,6 +15,7 @@ package v1alpha1
 
 import (
 	"context"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -61,6 +62,13 @@ func (r *ProviderConfig) validateProviderConfig() (admission.Warnings, error) {
 	// AS-049: SSRF check — endpoint must not resolve to a private / metadata IP.
 	if err := validateProviderEndpoint("spec.endpoint", r.Spec.Endpoint, r.Spec.NetworkAccess); err != nil {
 		errs = append(errs, err)
+	}
+	if strings.EqualFold(strings.TrimSpace(r.Spec.Provider), "gcp") {
+		for _, key := range []string{"storageEndpoint", "computeEndpoint", "storageUploadEndpoint"} {
+			if err := validateProviderEndpoint("spec.extra."+key, r.Spec.Extra[key], r.Spec.NetworkAccess); err != nil {
+				errs = append(errs, err)
+			}
+		}
 	}
 
 	// AS-036: warn (non-blocking) if TLS verification is disabled.

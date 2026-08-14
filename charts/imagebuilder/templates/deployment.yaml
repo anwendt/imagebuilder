@@ -6,6 +6,15 @@
 {{- end }}
 {{- end }}
 {{- end }}
+{{- if .Values.operator.namespaceScopedMode }}
+{{- $watchNamespace := default (include "imagebuilder.namespace" .) .Values.operator.watchNamespace }}
+{{- if ne $watchNamespace .Values.providerNamespace }}
+{{- fail "namespace-scoped mode requires providerNamespace to equal operator.watchNamespace" }}
+{{- end }}
+{{- if ne $watchNamespace .Values.schedulerNamespace }}
+{{- fail "namespace-scoped mode requires schedulerNamespace to equal operator.watchNamespace" }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -32,6 +41,8 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - --leader-elect={{ .Values.leaderElection.enabled }}
+            - --namespace-scoped-mode={{ .Values.operator.namespaceScopedMode }}
+            - --watch-namespace={{ default (include "imagebuilder.namespace" .) .Values.operator.watchNamespace }}
             - --max-concurrent-builds={{ .Values.maxConcurrentBuilds }}
             - --scheduler-namespace={{ .Values.schedulerNamespace }}
             - --provider-namespace={{ .Values.providerNamespace }}

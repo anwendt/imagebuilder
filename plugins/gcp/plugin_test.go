@@ -84,6 +84,15 @@ func TestPluginCapabilities(t *testing.T) {
 		t.Fatalf("modes=%v", p.SupportedBuildModes())
 	}
 }
+
+func TestInitRejectsUnsafeEndpointOverride(t *testing.T) {
+	p := &Plugin{}
+	err := p.Init(context.Background(), platform.PluginConfig{ProviderConfigName: "gcp-prod", Extra: map[string]string{"project": "test-project", "gcsBucket": "images", "storageUploadEndpoint": "https://169.254.169.254/upload"}})
+	if err == nil || !strings.Contains(err.Error(), "endpoint rejected") {
+		t.Fatalf("error = %v, want unsafe endpoint rejection", err)
+	}
+}
+
 func TestValidateRequiresGCEArchive(t *testing.T) {
 	p := initializedPlugin(&fakeImageClient{})
 	if err := p.Validate(context.Background(), v1alpha1.TargetSpec{Format: "raw"}); err == nil {

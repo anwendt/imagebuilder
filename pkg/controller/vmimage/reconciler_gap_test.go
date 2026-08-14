@@ -1093,7 +1093,7 @@ func TestReconcile_Uploading_MaterializesProviderMTLSSecret(t *testing.T) {
 	}
 }
 
-func TestReconcile_Uploading_UploadJobFailed_SetsFailed(t *testing.T) {
+func TestReconcile_Uploading_UploadJobFailed_CleansBeforeFailed(t *testing.T) {
 	jobName := "upload-fails-upload"
 	img := newImg("upload-fails", "default", v1alpha1.PhaseUploading)
 	img.Finalizers = []string{"imagebuilder.io/cleanup"}
@@ -1122,8 +1122,23 @@ func TestReconcile_Uploading_UploadJobFailed_SetsFailed(t *testing.T) {
 
 	updated := &v1alpha1.VMImage{}
 	c.Get(context.Background(), types.NamespacedName{Name: "upload-fails", Namespace: "default"}, updated) //nolint:errcheck
+	if updated.Status.Phase != v1alpha1.PhaseUploading {
+		t.Fatalf("phase = %q, want Uploading while cleanup runs", updated.Status.Phase)
+	}
+	cleanupJob := &batchv1.Job{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "upload-fails-upload-cleanup", Namespace: "default"}, cleanupJob); err != nil {
+		t.Fatalf("cleanup Job was not created: %v", err)
+	}
+	cleanupJob.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+	if err := c.Status().Update(context.Background(), cleanupJob); err != nil {
+		t.Fatalf("complete cleanup Job: %v", err)
+	}
+	reconcileOnce(t, r, "upload-fails", "default")
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "upload-fails", Namespace: "default"}, updated); err != nil {
+		t.Fatalf("get failed image: %v", err)
+	}
 	if updated.Status.Phase != v1alpha1.PhaseFailed {
-		t.Fatalf("phase = %q, want Failed", updated.Status.Phase)
+		t.Fatalf("phase = %q, want Failed after cleanup", updated.Status.Phase)
 	}
 	var found bool
 	for _, cond := range updated.Status.Conditions {

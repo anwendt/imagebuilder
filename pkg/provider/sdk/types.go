@@ -23,12 +23,14 @@ type Capabilities struct {
 }
 
 type Config struct {
-	ProviderConfigName string
-	Credentials        map[string][]byte
-	Region             string
-	Endpoint           string
-	Insecure           bool
-	Extra              map[string]string
+	ProviderConfigName  string
+	Credentials         map[string][]byte
+	Region              string
+	Endpoint            string
+	Insecure            bool
+	Extra               map[string]string
+	AllowedPrivateCIDRs []string
+	AllowedDNSNames     []string
 }
 
 type ArtifactInfo struct {

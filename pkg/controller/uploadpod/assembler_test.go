@@ -57,6 +57,9 @@ func TestAssemble_MountsWorkspacePVCAndCredentials(t *testing.T) {
 	if job.Spec.BackoffLimit == nil || *job.Spec.BackoffLimit != 3 {
 		t.Fatalf("backoffLimit = %v, want 3", job.Spec.BackoffLimit)
 	}
+	if job.Spec.ActiveDeadlineSeconds == nil || *job.Spec.ActiveDeadlineSeconds <= 0 {
+		t.Fatalf("activeDeadlineSeconds = %v, want positive remaining deadline", job.Spec.ActiveDeadlineSeconds)
+	}
 	if job.Spec.PodFailurePolicy == nil || len(job.Spec.PodFailurePolicy.Rules) != 1 {
 		t.Fatalf("podFailurePolicy = %#v", job.Spec.PodFailurePolicy)
 	}
@@ -74,6 +77,15 @@ func TestAssemble_MountsWorkspacePVCAndCredentials(t *testing.T) {
 	container := job.Spec.Template.Spec.Containers[0]
 	if container.Name != "upload" {
 		t.Fatalf("container name = %q, want upload", container.Name)
+	}
+	deadlineEnv := ""
+	for _, env := range container.Env {
+		if env.Name == "UPLOAD_DEADLINE_SECONDS" {
+			deadlineEnv = env.Value
+		}
+	}
+	if deadlineEnv == "" {
+		t.Fatal("UPLOAD_DEADLINE_SECONDS is missing")
 	}
 	if container.Image != "registry.example.test/uploader:v1" {
 		t.Fatalf("container image = %q", container.Image)

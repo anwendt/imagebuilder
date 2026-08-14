@@ -974,6 +974,17 @@ func TestProviderConfigWebhook_NoEndpoint_Valid(t *testing.T) {
 	}
 }
 
+func TestProviderConfigWebhook_RejectsUnsafeGCPEndpointOverrides(t *testing.T) {
+	pc := &ProviderConfig{Spec: ProviderConfigSpec{
+		Provider: "gcp", Credentials: CredentialsSpec{SecretRef: SecretRef{Name: "gcp-creds"}},
+		Extra: map[string]string{"project": "project", "storageUploadEndpoint": "https://169.254.169.254/upload"},
+	}}
+	_, err := pc.ValidateCreate()
+	if err == nil || !strings.Contains(err.Error(), "spec.extra.storageUploadEndpoint") {
+		t.Fatalf("error = %v, want GCP upload endpoint rejection", err)
+	}
+}
+
 func TestProviderConfigWebhook_ValidHTTPSEndpoint(t *testing.T) {
 	pc := &ProviderConfig{
 		Spec: ProviderConfigSpec{

@@ -214,12 +214,14 @@ func (a *Adapter) Init(ctx context.Context, cfg platform.PluginConfig) error {
 		creds[k] = v
 	}
 	req := &providerv1.ValidateConfigRequest{
-		ProviderConfigName: cfg.ProviderConfigName,
-		Credentials:        creds,
-		Region:             cfg.Region,
-		Endpoint:           cfg.Endpoint,
-		Insecure:           cfg.Insecure,
-		Extra:              cfg.Extra,
+		ProviderConfigName:  cfg.ProviderConfigName,
+		Credentials:         creds,
+		Region:              cfg.Region,
+		Endpoint:            cfg.Endpoint,
+		Insecure:            cfg.Insecure,
+		Extra:               cfg.Extra,
+		AllowedPrivateCidrs: append([]string(nil), cfg.AllowedPrivateCIDRs...),
+		AllowedDnsNames:     append([]string(nil), cfg.AllowedDNSNames...),
 	}
 	resp, err := a.client.ValidateConfig(ctx, req)
 	if err != nil {

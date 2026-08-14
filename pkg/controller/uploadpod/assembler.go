@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -89,6 +91,7 @@ func assemble(img *v1alpha1.VMImage, configs []v1alpha1.ProviderConfig, connecti
 	}
 
 	backoffLimit := int32(0)
+	deadlineSeconds := uploadDeadlineSeconds(img, cleanupOnly)
 	var podFailurePolicy *batchv1.PodFailurePolicy
 	if !cleanupOnly {
 		// Replacement Pods reuse the workspace PVC upload-session checkpoint.
@@ -113,6 +116,7 @@ func assemble(img *v1alpha1.VMImage, configs []v1alpha1.ProviderConfig, connecti
 		},
 		Spec: batchv1.JobSpec{
 			BackoffLimit:            &backoffLimit,
+			ActiveDeadlineSeconds:   &deadlineSeconds,
 			PodFailurePolicy:        podFailurePolicy,
 			TTLSecondsAfterFinished: &ttl,
 			Template: corev1.PodTemplateSpec{
@@ -137,6 +141,7 @@ func assemble(img *v1alpha1.VMImage, configs []v1alpha1.ProviderConfig, connecti
 								{Name: "WORKSPACE_DIR", Value: workspaceMount},
 								{Name: "UPLOAD_TARGETS_JSON", Value: string(targetData)},
 								{Name: "UPLOAD_CLEANUP_ONLY", Value: fmt.Sprintf("%t", cleanupOnly)},
+								{Name: "UPLOAD_DEADLINE_SECONDS", Value: strconv.FormatInt(deadlineSeconds, 10)},
 							},
 							VolumeMounts:    uploadVolumeMounts(configs, connections),
 							SecurityContext: restrictedSecCtx(),
@@ -152,6 +157,21 @@ func assemble(img *v1alpha1.VMImage, configs []v1alpha1.ProviderConfig, connecti
 		return nil, fmt.Errorf("set owner reference: %w", err)
 	}
 	return job, nil
+}
+
+func uploadDeadlineSeconds(img *v1alpha1.VMImage, cleanupOnly bool) int64 {
+	if cleanupOnly {
+		return int64((30 * time.Minute) / time.Second)
+	}
+	total := 2 * time.Hour
+	if img != nil && img.Spec.Build.Timeout != nil && img.Spec.Build.Timeout.Duration > 0 {
+		total = img.Spec.Build.Timeout.Duration
+	}
+	remaining := total
+	if img != nil && img.Status.StartTime != nil {
+		remaining = total - time.Since(img.Status.StartTime.Time)
+	}
+	return max(int64(remaining/time.Second), 1)
 }
 
 func uploadVolumeMounts(configs []v1alpha1.ProviderConfig, connections map[string]ProviderConnection) []corev1.VolumeMount {

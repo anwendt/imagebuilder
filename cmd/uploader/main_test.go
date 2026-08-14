@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -34,6 +36,11 @@ func (r fakeResolver) LookupHost(_ context.Context, host string) ([]string, erro
 	return addrs, nil
 }
 
+func testSHA256(data []byte) string {
+	digest := sha256.Sum256(data)
+	return fmt.Sprintf("sha256:%x", digest[:])
+}
+
 func TestReadSecretData_ExpandsJSONCredentialsFile(t *testing.T) {
 	dir := t.TempDir()
 	raw := []byte(`{"accessKeyId":"id","secretAccessKey":"secret","sessionToken":"token"}`)
@@ -50,6 +57,17 @@ func TestReadSecretData_ExpandsJSONCredentialsFile(t *testing.T) {
 	}
 	if string(data["secretAccessKey"]) != "secret" {
 		t.Fatalf("secretAccessKey = %q, want secret", string(data["secretAccessKey"]))
+	}
+}
+
+func TestVerifyArtifactFileRejectsChecksumMismatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "artifact.raw")
+	if err := os.WriteFile(path, []byte("actual artifact"), 0o600); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+	err := verifyArtifactFile(&platform.BuildArtifact{Path: path, SizeBytes: int64(len("actual artifact")), Checksum: testSHA256([]byte("different artifact"))})
+	if err == nil || !strings.Contains(err.Error(), "SHA-256") {
+		t.Fatalf("error = %v, want checksum mismatch", err)
 	}
 }
 
@@ -149,10 +167,15 @@ func TestValidateProviderEndpoint_AllowsEmptyEndpoint(t *testing.T) {
 
 func TestRun_ReportsUploadBytes(t *testing.T) {
 	workspace := t.TempDir()
+	artifactPath := filepath.Join(workspace, "artifact.vmdk")
+	artifactData := make([]byte, 1234)
+	if err := os.WriteFile(artifactPath, artifactData, 0o600); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
 	if err := writeJSON(filepath.Join(workspace, resultFileName), v1alpha1.ArtifactStatus{
-		Path:      "/workspace/artifact.vmdk",
+		Path:      artifactPath,
 		Format:    "vmdk",
-		Checksum:  "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Checksum:  testSHA256(artifactData),
 		SizeBytes: 1234,
 		OS:        "linux",
 	}); err != nil {
@@ -218,7 +241,12 @@ func TestRun_ReportsUploadBytes(t *testing.T) {
 
 func TestRun_RegisterRetryUsesStableIdempotencyKey(t *testing.T) {
 	workspace := t.TempDir()
-	if err := writeJSON(filepath.Join(workspace, resultFileName), v1alpha1.ArtifactStatus{Path: "/workspace/artifact.vmdk", Format: "vmdk", Checksum: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", SizeBytes: 1234, OS: "linux", Metadata: map[string]string{"buildID": "register-retry"}}); err != nil {
+	artifactPath := filepath.Join(workspace, "artifact.vmdk")
+	artifactData := make([]byte, 1234)
+	if err := os.WriteFile(artifactPath, artifactData, 0o600); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+	if err := writeJSON(filepath.Join(workspace, resultFileName), v1alpha1.ArtifactStatus{Path: artifactPath, Format: "vmdk", Checksum: testSHA256(artifactData), SizeBytes: 1234, OS: "linux", Metadata: map[string]string{"buildID": "register-retry"}}); err != nil {
 		t.Fatalf("write build result: %v", err)
 	}
 	credentials := filepath.Join(workspace, "credentials")
@@ -278,9 +306,45 @@ func TestUploadSessions_RecoversPreviousCheckpointFromBackup(t *testing.T) {
 	}
 }
 
+func TestUploadOperations_RecoversBackupAndSessions(t *testing.T) {
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, operationsName)
+	first := uploadOperationRecord{Provider: "aws", ProviderConfigName: "aws-a", Format: "vmdk", ProviderRef: "artifact-1"}
+	second := uploadOperationRecord{Provider: "azure", ProviderConfigName: "azure-a", Format: "vhd", ProviderRef: "artifact-2"}
+	if err := recordUploadOperation(workspace, first); err != nil {
+		t.Fatalf("record first operation: %v", err)
+	}
+	if err := recordUploadOperation(workspace, second); err != nil {
+		t.Fatalf("record second operation: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("{corrupt"), 0o600); err != nil {
+		t.Fatalf("corrupt operations: %v", err)
+	}
+	recovered, err := readUploadOperations(path)
+	if err != nil || len(recovered) != 1 || recovered[0].ProviderRef != first.ProviderRef {
+		t.Fatalf("backup recovery = %#v, error=%v", recovered, err)
+	}
+	if err := os.Remove(path + ".bak"); err != nil {
+		t.Fatalf("remove operations backup: %v", err)
+	}
+	sessions := []uploadSessionRecord{{Provider: "gcp", ProviderConfigName: "gcp-a", Format: "gcetarball", ProviderRef: "gs://bucket/object", IdempotencyKey: "key", Phase: "uploaded", Metadata: map[string]string{"bucket": "bucket"}}}
+	if err := writeUploadSessions(filepath.Join(workspace, sessionsName), sessions); err != nil {
+		t.Fatalf("write sessions: %v", err)
+	}
+	recovered, err = readUploadOperations(path)
+	if err != nil || len(recovered) != 1 || recovered[0].ProviderRef != "gs://bucket/object" {
+		t.Fatalf("session reconstruction = %#v, error=%v", recovered, err)
+	}
+}
+
 func TestRun_ContinuesIndependentTargetsAfterTransientFailure(t *testing.T) {
 	workspace := t.TempDir()
-	if err := writeJSON(filepath.Join(workspace, resultFileName), v1alpha1.ArtifactStatus{Path: "/workspace/artifact.vmdk", Format: "vmdk", Checksum: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", SizeBytes: 1234, OS: "linux", Metadata: map[string]string{"buildID": "multi-target"}}); err != nil {
+	artifactPath := filepath.Join(workspace, "artifact.vmdk")
+	artifactData := make([]byte, 1234)
+	if err := os.WriteFile(artifactPath, artifactData, 0o600); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+	if err := writeJSON(filepath.Join(workspace, resultFileName), v1alpha1.ArtifactStatus{Path: artifactPath, Format: "vmdk", Checksum: testSHA256(artifactData), SizeBytes: 1234, OS: "linux", Metadata: map[string]string{"buildID": "multi-target"}}); err != nil {
 		t.Fatalf("write build result: %v", err)
 	}
 	for _, name := range []string{"multi-bad", "multi-good"} {
@@ -346,7 +410,7 @@ func TestRun_UsesPlatformProviderGRPCService(t *testing.T) {
 	if err := writeJSON(filepath.Join(workspace, resultFileName), v1alpha1.ArtifactStatus{
 		Path:      artifactPath,
 		Format:    "vmdk",
-		Checksum:  "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Checksum:  testSHA256(artifactData),
 		SizeBytes: int64(len(artifactData)),
 		OS:        "linux",
 		Metadata:  map[string]string{"imageName": "ubuntu-grpc"},
@@ -421,7 +485,7 @@ func TestRun_TransientUploadFailureResumesDurableSession(t *testing.T) {
 		t.Fatalf("write artifact: %v", err)
 	}
 	if err := writeJSON(filepath.Join(workspace, resultFileName), v1alpha1.ArtifactStatus{
-		Path: artifactPath, Format: "vmdk", Checksum: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Path: artifactPath, Format: "vmdk", Checksum: testSHA256(artifactData),
 		SizeBytes: int64(len(artifactData)), OS: "linux", Metadata: map[string]string{"buildID": "retry-build"},
 	}); err != nil {
 		t.Fatalf("write build result: %v", err)
