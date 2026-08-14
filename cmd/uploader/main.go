@@ -41,6 +41,7 @@ const (
 type uploadResultFile struct {
 	Images     []v1alpha1.ImageStatus           `json:"images"`
 	Operations []v1alpha1.UploadOperationStatus `json:"operations,omitempty"`
+	Error      string                           `json:"error,omitempty"`
 }
 
 type runResult struct {
@@ -85,13 +86,14 @@ func main() {
 	result, err := run(ctx, os.Getenv)
 	if err != nil {
 		slog.Error("upload failed", slog.Any("error", err))
-		_ = writeJSON(terminationLog, map[string]string{"error": err.Error()})
+		workspace := envOrDefault(os.Getenv, "WORKSPACE_DIR", defaultWorkspace)
+		_ = writeJSON(terminationLog, uploadResultFile{Error: err.Error(), Operations: failedUploadOperations(workspace, err.Error())})
 		if providererrors.IsTransient(err) {
 			os.Exit(temporaryFailureExitCode)
 		}
 		os.Exit(1)
 	}
-	payload := uploadResultFile(result)
+	payload := uploadResultFile{Images: result.Images, Operations: result.Operations}
 	if err := writeJSON(terminationLog, payload); err != nil {
 		slog.Warn("write termination message", slog.Any("error", err))
 	}
@@ -99,6 +101,29 @@ func main() {
 	if err := writeJSON(filepath.Join(workspace, uploadResultName), payload); err != nil {
 		slog.Warn("write upload result", slog.Any("error", err))
 	}
+}
+
+func failedUploadOperations(workspace, reason string) []v1alpha1.UploadOperationStatus {
+	sessions, err := readUploadSessions(filepath.Join(workspace, sessionsName))
+	if err != nil {
+		return nil
+	}
+	now := metav1.Now()
+	operations := make([]v1alpha1.UploadOperationStatus, 0, len(sessions))
+	for _, session := range sessions {
+		phase := "Uploading"
+		if session.Phase == "uploaded" {
+			phase = "Registering"
+		} else if session.Phase == "registered" {
+			phase = "Succeeded"
+		}
+		operations = append(operations, v1alpha1.UploadOperationStatus{
+			Provider: session.Provider, ProviderConfig: session.ProviderConfigName, Format: session.Format,
+			Phase: phase, OperationRef: session.ProviderRef, ResumeMode: session.ResumeMode,
+			CommittedBytes: session.CommittedOffset, LastTransitionTime: now, LastRetryReason: reason,
+		})
+	}
+	return operations
 }
 
 func run(ctx context.Context, getenv func(string) string) (runResult, error) {
@@ -222,6 +247,7 @@ func run(ctx context.Context, getenv func(string) string) (runResult, error) {
 		}
 		uploadResult.Metadata["providerRef"] = uploadResult.ProviderRef
 		uploadResult.Metadata["providerConfigName"] = target.ProviderConfigName
+		uploadResult.Metadata["register.idempotencyKey"] = session.IdempotencyKey
 		for key, value := range target.Tags {
 			uploadResult.Metadata["target.tag."+key] = value
 		}
@@ -250,6 +276,7 @@ func run(ctx context.Context, getenv func(string) string) (runResult, error) {
 			Phase: "Succeeded", OperationRef: uploadResult.ProviderRef, ImageRef: imageRef.ID,
 			LastTransitionTime: metav1.Now(), UploadMilliseconds: uploadMilliseconds,
 			UploadBytes: artifact.SizeBytes, RegisterMilliseconds: registerMilliseconds,
+			ResumeMode: session.ResumeMode, CommittedBytes: session.CommittedOffset,
 		}
 		image := v1alpha1.ImageStatus{
 			Provider: target.Provider, ProviderConfig: target.ProviderConfigName, ImageRef: imageRef.ID,
@@ -404,7 +431,10 @@ func providerTLSConfig(config *uploadpod.GRPCTLSConfig) (*plugingrpc.ProviderTLS
 }
 
 func validateProviderEndpoint(ctx context.Context, target uploadpod.TargetConfig) error {
-	return validateProviderEndpointWithOptions(ctx, target, netguard.Options{})
+	return validateProviderEndpointWithOptions(ctx, target, netguard.Options{
+		AllowedPrivateCIDRs: target.AllowedPrivateCIDRs,
+		AllowedDNSNames:     target.AllowedDNSNames,
+	})
 }
 
 func validateProviderEndpointWithOptions(ctx context.Context, target uploadpod.TargetConfig, opts netguard.Options) error {

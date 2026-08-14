@@ -225,6 +225,24 @@ type ProviderConfigSpec struct {
 	// Extra holds provider-specific configuration as raw JSON
 	// +optional
 	Extra map[string]string `json:"extra,omitempty"`
+
+	// NetworkAccess permits explicitly-scoped private provider endpoints.
+	// Loopback, link-local, and cloud metadata ranges remain permanently blocked.
+	// +optional
+	NetworkAccess *ProviderNetworkAccessSpec `json:"networkAccess,omitempty"`
+}
+
+type ProviderNetworkAccessSpec struct {
+	// AllowedPrivateCIDRs permits resolved private addresses only inside these CIDRs.
+	// +optional
+	// +kubebuilder:validation:MaxItems=32
+	AllowedPrivateCIDRs []string `json:"allowedPrivateCIDRs,omitempty"`
+
+	// AllowedDNSNames permits exact names or a leading wildcard such as *.corp.example.
+	// The DNS name and resolved address must both satisfy this policy.
+	// +optional
+	// +kubebuilder:validation:MaxItems=32
+	AllowedDNSNames []string `json:"allowedDNSNames,omitempty"`
 }
 
 type CredentialsSpec struct {

@@ -29,3 +29,12 @@ func validateNoSSRF(fieldPath, rawURL string) error {
 		AllowUnresolved: true,
 	})
 }
+
+func validateProviderEndpoint(fieldPath, rawURL string, access *ProviderNetworkAccessSpec) error {
+	options := netguard.Options{AllowUnresolved: true}
+	if access != nil {
+		options.AllowedPrivateCIDRs = access.AllowedPrivateCIDRs
+		options.AllowedDNSNames = access.AllowedDNSNames
+	}
+	return netguard.ValidatePublicHTTPSURL(context.Background(), fieldPath, rawURL, options)
+}

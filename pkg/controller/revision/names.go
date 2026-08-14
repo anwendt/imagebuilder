@@ -32,3 +32,12 @@ func BuildID(uid, buildRevision string) string {
 	digest := sha256.Sum256([]byte(buildRevision))
 	return fmt.Sprintf("%s-%x", uid, digest[:6])
 }
+
+// Hash is a stable non-secret label value for grouping revision resources.
+func Hash(buildRevision string) string {
+	if buildRevision == "" {
+		return "initial"
+	}
+	digest := sha256.Sum256([]byte(buildRevision))
+	return fmt.Sprintf("%x", digest[:6])
+}

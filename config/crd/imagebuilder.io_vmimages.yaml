@@ -320,6 +320,23 @@ spec:
                       changes must include a revision change.
                     maxLength: 128
                     type: string
+                  revisionRetention:
+                    description: |-
+                      RevisionRetention garbage-collects Jobs and generated workspace PVCs from
+                      older revisions. Omitted preserves existing retention behavior.
+                    properties:
+                      maxCount:
+                        description: MaxCount is the maximum number of historical
+                          revision groups retained.
+                        format: int32
+                        maximum: 100
+                        minimum: 0
+                        type: integer
+                      ttl:
+                        description: TTL removes historical revision resources older
+                          than this duration.
+                        type: string
+                    type: object
                   security:
                     description: |-
                       Security configures build-container security exceptions. Defaults are
@@ -1064,12 +1081,27 @@ spec:
                   contain credentials, presigned URLs, or other secret material.
                 items:
                   properties:
+                    committedBytes:
+                      description: CommittedBytes is the provider-acknowledged durable
+                        upload offset.
+                      format: int64
+                      minimum: 0
+                      type: integer
                     format:
                       description: Format requested for this target.
                       type: string
                     imageRef:
                       description: ImageRef is the final registered image reference
                         when known.
+                      type: string
+                    lastRetryReason:
+                      description: LastRetryReason is a non-sensitive summary from
+                        the failed uploader attempt.
+                      type: string
+                    lastRetryTime:
+                      description: LastRetryTime records the latest observed upload
+                        retry.
+                      format: date-time
                       type: string
                     lastTransitionTime:
                       description: LastTransitionTime follows the Kubernetes condition
@@ -1104,6 +1136,19 @@ spec:
                       description: RegisterMilliseconds records provider registration
                         duration when reported by the upload job.
                       format: int64
+                      type: integer
+                    resumeMode:
+                      description: ResumeMode is "restart" or "offset" and never contains
+                        provider credentials.
+                      enum:
+                      - restart
+                      - offset
+                      type: string
+                    retryCount:
+                      description: RetryCount is the number of failed upload Pods
+                        for this Job.
+                      format: int32
+                      minimum: 0
                       type: integer
                     uploadBytes:
                       description: UploadBytes records the uploaded artifact size

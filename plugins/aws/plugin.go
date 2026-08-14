@@ -13,6 +13,7 @@ package aws
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -49,6 +50,22 @@ type AWSPlugin struct {
 	config       awsConfig
 	localClient  awsLocalImageClient
 	remoteClient awsRemoteBuildClient
+}
+
+const awsResumePartSize int64 = 64 * 1024 * 1024
+
+type awsMultipartSession struct {
+	UploadID string             `json:"uploadId"`
+	Bucket   string             `json:"bucket"`
+	Key      string             `json:"key"`
+	Size     int64              `json:"size"`
+	Offset   int64              `json:"offset"`
+	Parts    []awsCompletedPart `json:"parts"`
+}
+
+type awsCompletedPart struct {
+	Number int32  `json:"number"`
+	ETag   string `json:"etag"`
 }
 
 var (
@@ -245,14 +262,83 @@ func (p *AWSPlugin) UploadStream(ctx context.Context, artifact *platform.StreamA
 }
 
 func (p *AWSPlugin) UploadResumable(ctx context.Context, artifact *platform.BuildArtifact, session platform.UploadSession, checkpoint platform.UploadCheckpoint) (*platform.UploadResult, error) {
-	if err := acceptRestartSession(&session, checkpoint); err != nil {
-		return nil, fmt.Errorf("aws plugin: %w", err)
+	accepted, err := p.PrepareUpload(ctx, artifact, session)
+	if err != nil {
+		return nil, err
 	}
-	if artifact.Metadata == nil {
-		artifact.Metadata = map[string]string{}
+	if checkpoint != nil {
+		if err := checkpoint(accepted); err != nil {
+			return nil, err
+		}
 	}
-	artifact.Metadata["upload.sessionToken"] = session.ResumeToken
-	return p.Upload(ctx, artifact)
+	file, err := os.Open(artifact.Path) // #nosec G304 -- controller-owned workspace artifact.
+	if err != nil {
+		return nil, fmt.Errorf("aws plugin: open resumable artifact: %w", err)
+	}
+	defer file.Close()
+	if _, err := file.Seek(accepted.CommittedOffset, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("aws plugin: seek resumable artifact: %w", err)
+	}
+	return p.UploadStreamResumable(ctx, &platform.StreamArtifact{
+		Reader: file, Format: artifact.Format, Checksum: artifact.Checksum,
+		SizeBytes: artifact.SizeBytes, OS: artifact.OS, Metadata: artifact.Metadata,
+	}, accepted, checkpoint)
+}
+
+func (p *AWSPlugin) PrepareUpload(ctx context.Context, artifact *platform.BuildArtifact, requested platform.UploadSession) (platform.UploadSession, error) {
+	if requested.IdempotencyKey == "" {
+		return platform.UploadSession{}, fmt.Errorf("aws plugin: upload idempotency key is required")
+	}
+	if artifact == nil || artifact.SizeBytes <= 0 || artifact.Metadata["buildID"] == "" {
+		return platform.UploadSession{}, fmt.Errorf("aws plugin: resumable artifact metadata, build ID, and positive size are required")
+	}
+	bucket := strings.TrimSpace(p.config.extraConfig["s3Bucket"])
+	if bucket == "" {
+		return platform.UploadSession{}, fmt.Errorf("aws plugin: ProviderConfig extra s3Bucket is required")
+	}
+	client, ok := p.localClient.(*awsSDKLocalImageClient)
+	if !ok {
+		return restartUploadSession(requested)
+	}
+	key := localUploadKey(p.config.extraConfig, artifact.Metadata["buildID"], artifact.Format)
+	state, err := client.prepareMultipartSession(ctx, bucket, key, artifact.SizeBytes, requested.ResumeToken)
+	if err != nil {
+		return platform.UploadSession{}, fmt.Errorf("aws plugin: prepare S3 multipart upload: %w", err)
+	}
+	token, err := json.Marshal(state)
+	if err != nil {
+		return platform.UploadSession{}, fmt.Errorf("aws plugin: encode multipart session: %w", err)
+	}
+	return platform.UploadSession{IdempotencyKey: requested.IdempotencyKey, ResumeToken: string(token), CommittedOffset: state.Offset, ResumeMode: "offset"}, nil
+}
+
+func (p *AWSPlugin) UploadStreamResumable(ctx context.Context, artifact *platform.StreamArtifact, session platform.UploadSession, checkpoint platform.UploadCheckpoint) (*platform.UploadResult, error) {
+	client, ok := p.localClient.(*awsSDKLocalImageClient)
+	if !ok {
+		return nil, fmt.Errorf("aws plugin: configured client does not support S3 multipart resume")
+	}
+	var state awsMultipartSession
+	if err := json.Unmarshal([]byte(session.ResumeToken), &state); err != nil {
+		return nil, fmt.Errorf("aws plugin: decode multipart session: %w", err)
+	}
+	if err := client.uploadMultipartResume(ctx, artifact.Reader, &state, func(updated awsMultipartSession) error {
+		token, err := json.Marshal(updated)
+		if err != nil {
+			return err
+		}
+		if checkpoint != nil {
+			return checkpoint(platform.UploadSession{IdempotencyKey: session.IdempotencyKey, ResumeToken: string(token), CommittedOffset: updated.Offset, ResumeMode: "offset"})
+		}
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("aws plugin: resume S3 multipart upload: %w", err)
+	}
+	buildID := artifact.Metadata["buildID"]
+	return &platform.UploadResult{ProviderRef: state.Key, Metadata: map[string]string{
+		"bucket": state.Bucket, "key": state.Key, "buildID": buildID, "format": string(artifact.Format),
+		"checksum": artifact.Checksum, "os": string(artifact.OS),
+		"imageName": firstNonEmpty(artifact.Metadata["imageName"], artifact.Metadata["vmimage"], p.config.extraConfig["imageName"], "imagebuilder-"+sanitizeAWSName(buildID)),
+	}}, nil
 }
 
 func acceptRestartSession(session *platform.UploadSession, checkpoint platform.UploadCheckpoint) error {
@@ -269,6 +355,13 @@ func acceptRestartSession(session *platform.UploadSession, checkpoint platform.U
 		return checkpoint(*session)
 	}
 	return nil
+}
+
+func restartUploadSession(requested platform.UploadSession) (platform.UploadSession, error) {
+	if err := acceptRestartSession(&requested, nil); err != nil {
+		return platform.UploadSession{}, err
+	}
+	return requested, nil
 }
 
 func (p *AWSPlugin) Register(ctx context.Context, result *platform.UploadResult) (*platform.ImageRef, error) {
@@ -310,6 +403,19 @@ func (p *AWSPlugin) Cleanup(ctx context.Context, artifact *platform.BuildArtifac
 	client := p.localClient
 	if client == nil {
 		return nil
+	}
+	if token := artifact.Metadata["upload.sessionToken"]; token != "" {
+		var state awsMultipartSession
+		if json.Unmarshal([]byte(token), &state) == nil && state.UploadID != "" {
+			if sdkClient, ok := client.(*awsSDKLocalImageClient); ok {
+				_, err := sdkClient.s3.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
+					Bucket: awssdk.String(state.Bucket), Key: awssdk.String(state.Key), UploadId: awssdk.String(state.UploadID),
+				})
+				if err != nil {
+					return fmt.Errorf("aws plugin: abort multipart upload: %w", err)
+				}
+			}
+		}
 	}
 	bucket := firstNonEmpty(
 		artifact.Metadata["aws.s3Bucket"],
@@ -616,6 +722,7 @@ type awsLocalRegisterInput struct {
 	SnapshotID     string
 	SourceSnapshot bool
 	OSArch         string
+	IdempotencyKey string
 }
 
 func newAWSLocalImageClient(ctx context.Context, cfg awsConfig) (awsLocalImageClient, error) {
@@ -738,6 +845,78 @@ func (c *awsSDKLocalImageClient) multipartUpload(ctx context.Context, bucket, ke
 	return nil
 }
 
+func (c *awsSDKLocalImageClient) prepareMultipartSession(ctx context.Context, bucket, key string, size int64, token string) (awsMultipartSession, error) {
+	if token != "" {
+		var state awsMultipartSession
+		if err := json.Unmarshal([]byte(token), &state); err != nil {
+			return awsMultipartSession{}, fmt.Errorf("decode existing session: %w", err)
+		}
+		if state.UploadID == "" || state.Bucket != bucket || state.Key != key || state.Size != size || state.Offset < 0 || state.Offset > size || state.Offset%awsResumePartSize != 0 {
+			return awsMultipartSession{}, fmt.Errorf("existing multipart session does not match artifact")
+		}
+		return state, nil
+	}
+	input := &s3.CreateMultipartUploadInput{Bucket: awssdk.String(bucket), Key: awssdk.String(key), Metadata: map[string]string{"imagebuilder-size": strconv.FormatInt(size, 10)}}
+	applyMultipartS3Encryption(input, c.kmsKeyID)
+	created, err := c.s3.CreateMultipartUpload(ctx, input)
+	if err != nil {
+		return awsMultipartSession{}, err
+	}
+	if created.UploadId == nil || *created.UploadId == "" {
+		return awsMultipartSession{}, fmt.Errorf("AWS returned no upload ID")
+	}
+	return awsMultipartSession{UploadID: *created.UploadId, Bucket: bucket, Key: key, Size: size}, nil
+}
+
+func (c *awsSDKLocalImageClient) uploadMultipartResume(ctx context.Context, body io.Reader, state *awsMultipartSession, checkpoint func(awsMultipartSession) error) error {
+	if state == nil || state.UploadID == "" || state.Offset > state.Size {
+		return fmt.Errorf("invalid multipart session")
+	}
+	buffer := make([]byte, awsResumePartSize)
+	partNumber := int32(state.Offset/awsResumePartSize) + 1
+	for state.Offset < state.Size {
+		partBytes := min(awsResumePartSize, state.Size-state.Offset)
+		n, err := io.ReadFull(body, buffer[:partBytes])
+		if err != nil {
+			return fmt.Errorf("read multipart part %d: %w", partNumber, err)
+		}
+		out, err := c.s3.UploadPart(ctx, &s3.UploadPartInput{
+			Bucket: awssdk.String(state.Bucket), Key: awssdk.String(state.Key), UploadId: awssdk.String(state.UploadID),
+			PartNumber: awssdk.Int32(partNumber), Body: bytes.NewReader(buffer[:n]),
+		})
+		if err != nil {
+			return fmt.Errorf("upload part %d: %w", partNumber, err)
+		}
+		etag := ""
+		if out.ETag != nil {
+			etag = *out.ETag
+		}
+		entry := awsCompletedPart{Number: partNumber, ETag: etag}
+		if len(state.Parts) >= int(partNumber) {
+			state.Parts[partNumber-1] = entry
+		} else {
+			state.Parts = append(state.Parts, entry)
+		}
+		state.Offset += int64(n)
+		if err := checkpoint(*state); err != nil {
+			return fmt.Errorf("checkpoint part %d: %w", partNumber, err)
+		}
+		partNumber++
+	}
+	parts := make([]s3types.CompletedPart, 0, len(state.Parts))
+	for _, part := range state.Parts {
+		parts = append(parts, s3types.CompletedPart{ETag: awssdk.String(part.ETag), PartNumber: awssdk.Int32(part.Number)})
+	}
+	_, err := c.s3.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
+		Bucket: awssdk.String(state.Bucket), Key: awssdk.String(state.Key), UploadId: awssdk.String(state.UploadID),
+		MultipartUpload: &s3types.CompletedMultipartUpload{Parts: parts},
+	})
+	if err != nil {
+		return fmt.Errorf("complete multipart upload: %w", err)
+	}
+	return nil
+}
+
 func (c *awsSDKLocalImageClient) RegisterAMI(ctx context.Context, input awsLocalRegisterInput) (*platform.ImageRef, error) {
 	timeout := input.Timeout
 	if timeout <= 0 {
@@ -784,12 +963,16 @@ func (c *awsSDKLocalImageClient) RegisterAMI(ctx context.Context, input awsLocal
 }
 
 func (c *awsSDKLocalImageClient) findLocalAMI(ctx context.Context, input awsLocalRegisterInput) (*platform.ImageRef, error) {
+	filters := []ec2types.Filter{
+		{Name: awssdk.String("name"), Values: []string{input.ImageName}},
+		{Name: awssdk.String("tag:imagebuilder.io/build-id"), Values: []string{input.BuildID}},
+	}
+	if input.IdempotencyKey != "" {
+		filters = append(filters, ec2types.Filter{Name: awssdk.String("tag:imagebuilder.io/idempotency-key"), Values: []string{input.IdempotencyKey}})
+	}
 	out, err := c.ec2.DescribeImages(ctx, &ec2.DescribeImagesInput{
-		Owners: []string{"self"},
-		Filters: []ec2types.Filter{
-			{Name: awssdk.String("name"), Values: []string{input.ImageName}},
-			{Name: awssdk.String("tag:imagebuilder.io/build-id"), Values: []string{input.BuildID}},
-		},
+		Owners:  []string{"self"},
+		Filters: filters,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("describe existing local-build AMI: %w", err)
@@ -1040,18 +1223,19 @@ func localRegisterInput(cfg awsConfig, result *platform.UploadResult) (awsLocalR
 	}
 	kmsKeyID := strings.TrimSpace(firstNonEmpty(cfg.extraConfig["local.kmsKeyId"], cfg.extraConfig["kmsKeyId"]))
 	return awsLocalRegisterInput{
-		Bucket:     bucket,
-		Key:        key,
-		BuildID:    buildID,
-		ImageName:  sanitizeAWSName(firstNonEmpty(result.Metadata["imageName"], "imagebuilder-"+buildID)),
-		Format:     platform.ImageFormat(firstNonEmpty(result.Metadata["format"], string(platform.FormatVMDK))),
-		OS:         platform.OSFamily(result.Metadata["os"]),
-		Checksum:   result.Metadata["checksum"],
-		Tags:       localRegisterTags(cfg, result.Metadata),
-		Timeout:    timeout,
-		VolumeSize: volumeSize,
-		KMSKeyID:   kmsKeyID,
-		OSArch:     result.Metadata["arch"],
+		Bucket:         bucket,
+		Key:            key,
+		BuildID:        buildID,
+		ImageName:      sanitizeAWSName(firstNonEmpty(result.Metadata["imageName"], "imagebuilder-"+buildID)),
+		Format:         platform.ImageFormat(firstNonEmpty(result.Metadata["format"], string(platform.FormatVMDK))),
+		OS:             platform.OSFamily(result.Metadata["os"]),
+		Checksum:       result.Metadata["checksum"],
+		Tags:           localRegisterTags(cfg, result.Metadata),
+		Timeout:        timeout,
+		VolumeSize:     volumeSize,
+		KMSKeyID:       kmsKeyID,
+		OSArch:         result.Metadata["arch"],
+		IdempotencyKey: result.Metadata["register.idempotencyKey"],
 	}, nil
 }
 
@@ -1138,6 +1322,9 @@ func localBuildTags(input awsLocalRegisterInput) []ec2types.Tag {
 	tags := []ec2types.Tag{
 		{Key: awssdk.String("imagebuilder.io/build-id"), Value: awssdk.String(input.BuildID)},
 		{Key: awssdk.String("Name"), Value: awssdk.String(input.ImageName)},
+	}
+	if input.IdempotencyKey != "" {
+		tags = append(tags, ec2types.Tag{Key: awssdk.String("imagebuilder.io/idempotency-key"), Value: awssdk.String(input.IdempotencyKey)})
 	}
 	for key, value := range input.Tags {
 		if strings.HasPrefix(strings.ToLower(key), "aws:") {

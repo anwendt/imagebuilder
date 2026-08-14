@@ -1,6 +1,7 @@
 package gcp
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -19,6 +20,8 @@ import (
 	"time"
 
 	"cloud.google.com/go/storage"
+	"golang.org/x/oauth2"
+	oauthgoogle "golang.org/x/oauth2/google"
 	"google.golang.org/api/compute/v1"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
@@ -30,6 +33,16 @@ import (
 )
 
 const defaultGCSObjectPrefix = "imagebuilder"
+
+const gcsResumeChunkSize int64 = 16 * 1024 * 1024
+
+type gcsResumeSession struct {
+	SessionURI string `json:"sessionUri"`
+	Bucket     string `json:"bucket"`
+	Object     string `json:"object"`
+	Size       int64  `json:"size"`
+	Offset     int64  `json:"offset"`
+}
 
 func init() {
 	if err := plugin.RegisterFactory(&Plugin{}, func() platform.Plugin { return &Plugin{} }); err != nil {
@@ -189,23 +202,76 @@ func (p *Plugin) Upload(ctx context.Context, artifact *platform.BuildArtifact) (
 }
 
 func (p *Plugin) UploadResumable(ctx context.Context, artifact *platform.BuildArtifact, session platform.UploadSession, checkpoint platform.UploadCheckpoint) (*platform.UploadResult, error) {
-	if session.IdempotencyKey == "" {
-		return nil, fmt.Errorf("gcp plugin: upload idempotency key is required")
+	accepted, err := p.PrepareUpload(ctx, artifact, session)
+	if err != nil {
+		return nil, err
 	}
-	if session.ResumeToken != "" && session.ResumeToken != session.IdempotencyKey {
-		return nil, fmt.Errorf("gcp plugin: upload resume token does not match idempotency key")
-	}
-	session.ResumeToken, session.CommittedOffset, session.ResumeMode = session.IdempotencyKey, 0, "restart"
 	if checkpoint != nil {
-		if err := checkpoint(session); err != nil {
+		if err := checkpoint(accepted); err != nil {
 			return nil, err
 		}
 	}
-	if artifact.Metadata == nil {
-		artifact.Metadata = map[string]string{}
+	file, err := os.Open(artifact.Path) // #nosec G304 -- controller-owned workspace artifact.
+	if err != nil {
+		return nil, err
 	}
-	artifact.Metadata["upload.sessionToken"] = session.ResumeToken
-	return p.Upload(ctx, artifact)
+	defer file.Close()
+	if _, err := file.Seek(accepted.CommittedOffset, io.SeekStart); err != nil {
+		return nil, err
+	}
+	return p.UploadStreamResumable(ctx, &platform.StreamArtifact{Reader: file, Format: artifact.Format, Checksum: artifact.Checksum, SizeBytes: artifact.SizeBytes, OS: artifact.OS, Metadata: artifact.Metadata}, accepted, checkpoint)
+}
+
+func (p *Plugin) PrepareUpload(ctx context.Context, artifact *platform.BuildArtifact, requested platform.UploadSession) (platform.UploadSession, error) {
+	if requested.IdempotencyKey == "" || artifact == nil || artifact.SizeBytes <= 0 || artifact.Metadata["buildID"] == "" {
+		return platform.UploadSession{}, fmt.Errorf("gcp plugin: valid artifact, build ID, and idempotency key are required")
+	}
+	client, ok := p.client.(*sdkClient)
+	if !ok {
+		return restartUploadSession(requested)
+	}
+	object := path.Join(p.config.objectPrefix, sanitizeName(artifact.Metadata["buildID"])+"-"+checksumToken(artifact.Checksum)+".tar.gz")
+	state, err := client.prepareGCSResumeSession(ctx, p.config.bucket, object, artifact.SizeBytes, requested.ResumeToken)
+	if err != nil {
+		return platform.UploadSession{}, fmt.Errorf("gcp plugin: prepare resumable GCS upload: %w", err)
+	}
+	token, err := json.Marshal(state)
+	if err != nil {
+		return platform.UploadSession{}, err
+	}
+	return platform.UploadSession{IdempotencyKey: requested.IdempotencyKey, ResumeToken: string(token), CommittedOffset: state.Offset, ResumeMode: "offset"}, nil
+}
+
+func (p *Plugin) UploadStreamResumable(ctx context.Context, artifact *platform.StreamArtifact, session platform.UploadSession, checkpoint platform.UploadCheckpoint) (*platform.UploadResult, error) {
+	client, ok := p.client.(*sdkClient)
+	if !ok {
+		return nil, fmt.Errorf("gcp plugin: configured client does not support GCS session resume")
+	}
+	var state gcsResumeSession
+	if err := json.Unmarshal([]byte(session.ResumeToken), &state); err != nil {
+		return nil, fmt.Errorf("gcp plugin: decode resumable session: %w", err)
+	}
+	if err := client.uploadGCSResume(ctx, artifact.Reader, &state, func(updated gcsResumeSession) error {
+		token, err := json.Marshal(updated)
+		if err != nil {
+			return err
+		}
+		if checkpoint != nil {
+			return checkpoint(platform.UploadSession{IdempotencyKey: session.IdempotencyKey, ResumeToken: string(token), CommittedOffset: updated.Offset, ResumeMode: "offset"})
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	uri := gcsImportURL(state.Bucket, state.Object)
+	buildID := artifact.Metadata["buildID"]
+	imageName := firstNonEmpty(artifact.Metadata["imageName"], artifact.Metadata["vmimage"], p.config.imageName, "imagebuilder-"+sanitizeName(buildID))
+	return &platform.UploadResult{ProviderRef: uri, Metadata: map[string]string{
+		"providerConfigName": p.config.providerConfigName, "project": p.config.project,
+		"bucket": state.Bucket, "object": state.Object, "gcsURI": uri, "buildID": buildID,
+		"imageName": imageName, "imageFamily": p.config.imageFamily, "format": string(artifact.Format),
+		"checksum": artifact.Checksum, "os": string(artifact.OS), "arch": artifact.Metadata["arch"],
+	}}, nil
 }
 
 func (p *Plugin) Register(ctx context.Context, result *platform.UploadResult) (*platform.ImageRef, error) {
@@ -350,6 +416,9 @@ func (p *Plugin) imageInput(metadata map[string]string) createImageInput {
 	if source := strings.TrimSpace(metadata["sourceIdentity"]); source != "" {
 		labels["source-id"] = identityLabel(source)
 	}
+	if key := strings.TrimSpace(metadata["register.idempotencyKey"]); key != "" {
+		labels["registration-id"] = identityLabel(key)
+	}
 	return createImageInput{
 		Project: p.config.project, Name: sanitizeName(name),
 		Family:      sanitizeOptionalName(firstNonEmpty(metadata["imageFamily"], p.config.imageFamily)),
@@ -368,9 +437,11 @@ func remoteReady(req *platform.RemoteBuildRequest, ref *platform.ImageRef) *plat
 }
 
 type sdkClient struct {
-	project string
-	storage *storage.Client
-	compute *compute.Service
+	project        string
+	storage        *storage.Client
+	compute        *compute.Service
+	httpClient     *http.Client
+	uploadEndpoint string
 }
 
 func (c *sdkClient) Close() error {
@@ -383,6 +454,20 @@ func (c *sdkClient) Close() error {
 func newSDKClient(ctx context.Context, cfg platform.PluginConfig, parsed config) (*sdkClient, error) {
 	var commonOpts []option.ClientOption
 	credentials := credentialsJSON(cfg.SecretData)
+	var authenticatedHTTP *http.Client
+	var err error
+	if len(credentials) > 0 {
+		creds, credentialErr := oauthgoogle.CredentialsFromJSON(ctx, credentials, storage.ScopeReadWrite)
+		if credentialErr != nil {
+			return nil, credentialErr
+		}
+		authenticatedHTTP = oauth2.NewClient(ctx, creds.TokenSource)
+	} else {
+		authenticatedHTTP, err = oauthgoogle.DefaultClient(ctx, storage.ScopeReadWrite)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if len(credentials) > 0 {
 		commonOpts = append(commonOpts, option.WithCredentialsJSON(credentials))
 	}
@@ -403,7 +488,8 @@ func newSDKClient(ctx context.Context, cfg platform.PluginConfig, parsed config)
 		_ = storageClient.Close()
 		return nil, err
 	}
-	return &sdkClient{project: parsed.project, storage: storageClient, compute: computeService}, nil
+	uploadEndpoint := strings.TrimRight(firstNonEmpty(cfg.Extra["storageUploadEndpoint"], "https://storage.googleapis.com/upload/storage/v1"), "/")
+	return &sdkClient{project: parsed.project, storage: storageClient, compute: computeService, httpClient: authenticatedHTTP, uploadEndpoint: uploadEndpoint}, nil
 }
 
 func (c *sdkClient) UploadObject(ctx context.Context, bucket, object, filePath string) (string, error) {
@@ -444,6 +530,130 @@ func (c *sdkClient) UploadObject(ctx context.Context, bucket, object, filePath s
 		return "", err
 	}
 	return gcsImportURL(bucket, object), nil
+}
+
+func (c *sdkClient) prepareGCSResumeSession(ctx context.Context, bucket, object string, size int64, token string) (gcsResumeSession, error) {
+	if token != "" {
+		var state gcsResumeSession
+		if err := json.Unmarshal([]byte(token), &state); err != nil {
+			return gcsResumeSession{}, fmt.Errorf("decode existing session: %w", err)
+		}
+		if state.SessionURI == "" || state.Bucket != bucket || state.Object != object || state.Size != size {
+			return gcsResumeSession{}, fmt.Errorf("existing GCS session does not match artifact")
+		}
+		offset, complete, err := c.queryGCSResumeOffset(ctx, state.SessionURI, size)
+		if err != nil {
+			return gcsResumeSession{}, err
+		}
+		if complete {
+			offset = size
+		}
+		state.Offset = offset
+		return state, nil
+	}
+	endpoint := fmt.Sprintf("%s/b/%s/o?uploadType=resumable&name=%s", c.uploadEndpoint, url.PathEscape(bucket), url.QueryEscape(object))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(`{"contentType":"application/gzip"}`))
+	if err != nil {
+		return gcsResumeSession{}, err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	req.Header.Set("X-Upload-Content-Type", "application/gzip")
+	req.Header.Set("X-Upload-Content-Length", strconv.FormatInt(size, 10))
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return gcsResumeSession{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return gcsResumeSession{}, fmt.Errorf("start resumable upload: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	sessionURI := resp.Header.Get("Location")
+	if sessionURI == "" {
+		return gcsResumeSession{}, fmt.Errorf("start resumable upload: response has no Location header")
+	}
+	return gcsResumeSession{SessionURI: sessionURI, Bucket: bucket, Object: object, Size: size}, nil
+}
+
+func (c *sdkClient) queryGCSResumeOffset(ctx context.Context, sessionURI string, size int64) (int64, bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, sessionURI, nil)
+	if err != nil {
+		return 0, false, err
+	}
+	req.Header.Set("Content-Length", "0")
+	req.Header.Set("Content-Range", fmt.Sprintf("bytes */%d", size))
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return size, true, nil
+	}
+	if resp.StatusCode != http.StatusPermanentRedirect {
+		return 0, false, fmt.Errorf("query resumable upload: HTTP %d", resp.StatusCode)
+	}
+	return gcsRangeOffset(resp.Header.Get("Range")), false, nil
+}
+
+func (c *sdkClient) uploadGCSResume(ctx context.Context, body io.Reader, state *gcsResumeSession, checkpoint func(gcsResumeSession) error) error {
+	buffer := make([]byte, gcsResumeChunkSize)
+	for state.Offset < state.Size {
+		count := min(gcsResumeChunkSize, state.Size-state.Offset)
+		n, err := io.ReadFull(body, buffer[:count])
+		if err != nil {
+			return fmt.Errorf("read GCS chunk at %d: %w", state.Offset, err)
+		}
+		start, end := state.Offset, state.Offset+int64(n)-1
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, state.SessionURI, bytes.NewReader(buffer[:n]))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/gzip")
+		req.Header.Set("Content-Length", strconv.Itoa(n))
+		req.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, state.Size))
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		switch {
+		case resp.StatusCode == http.StatusPermanentRedirect:
+			state.Offset = gcsRangeOffset(resp.Header.Get("Range"))
+		case resp.StatusCode >= 200 && resp.StatusCode < 300:
+			state.Offset = state.Size
+		default:
+			return fmt.Errorf("upload GCS chunk at %d: HTTP %d", start, resp.StatusCode)
+		}
+		if state.Offset <= start {
+			return fmt.Errorf("GCS did not commit chunk at offset %d", start)
+		}
+		if err := checkpoint(*state); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func gcsRangeOffset(header string) int64 {
+	parts := strings.Split(strings.TrimSpace(header), "-")
+	if len(parts) != 2 {
+		return 0
+	}
+	end, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || end < 0 {
+		return 0
+	}
+	return end + 1
+}
+
+func restartUploadSession(requested platform.UploadSession) (platform.UploadSession, error) {
+	if requested.IdempotencyKey == "" {
+		return platform.UploadSession{}, fmt.Errorf("upload idempotency key is required")
+	}
+	requested.ResumeToken, requested.CommittedOffset, requested.ResumeMode = requested.IdempotencyKey, 0, "restart"
+	return requested, nil
 }
 func existingObjectMatches(ctx context.Context, object *storage.ObjectHandle, size int64, crc uint32) error {
 	attrs, err := object.Attrs(ctx)
@@ -710,7 +920,7 @@ func validateTargetLabels(labels map[string]string) error {
 	return nil
 }
 func reservedLabelKey(key string) bool {
-	return key == "managed-by" || key == "build-id" || key == "source-id"
+	return key == "managed-by" || key == "build-id" || key == "source-id" || key == "registration-id"
 }
 func sanitizeLabel(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
@@ -729,7 +939,7 @@ func matchesIdentityLabels(actual, expected map[string]string) bool {
 	if actual["managed-by"] != "imagebuilder" {
 		return false
 	}
-	for _, key := range []string{"build-id", "source-id"} {
+	for _, key := range []string{"build-id", "source-id", "registration-id"} {
 		if expected[key] != "" && actual[key] != expected[key] {
 			return false
 		}

@@ -2,6 +2,8 @@ package vsphere
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -22,6 +24,7 @@ import (
 	"github.com/vmware/govmomi/vapi/library"
 	"github.com/vmware/govmomi/vapi/rest"
 	"github.com/vmware/govmomi/vim25"
+	"github.com/vmware/govmomi/vim25/mo"
 	"github.com/vmware/govmomi/vim25/soap"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
@@ -551,9 +554,6 @@ func (c *govmomiClient) RegisterImage(ctx context.Context, input registerInput) 
 }
 
 func (c *govmomiClient) importOVF(ctx context.Context, input registerInput) (*platform.ImageRef, error) {
-	if input.ArtifactPath == "" {
-		return nil, fmt.Errorf("artifact path is required to import %s as a vSphere template", input.Format)
-	}
 	if c.cfg.contentLibrary != "" || c.cfg.contentLibraryID != "" {
 		return c.publishContentLibraryItem(ctx, input)
 	}
@@ -587,6 +587,28 @@ func (c *govmomiClient) importOVF(ctx context.Context, input registerInput) (*pl
 	if opts.Name == nil || *opts.Name == "" {
 		name := strings.TrimSuffix(filepath.Base(input.ArtifactPath), filepath.Ext(input.ArtifactPath))
 		opts.Name = &name
+	}
+	idempotencyMarker := registrationMarker(input.Metadata["register.idempotencyKey"])
+	if idempotencyMarker != "" {
+		existing, findErr := finder.VirtualMachine(ctx, *opts.Name)
+		if findErr == nil {
+			var properties mo.VirtualMachine
+			if err := existing.Properties(ctx, existing.Reference(), []string{"config.annotation"}, &properties); err != nil {
+				return nil, fmt.Errorf("inspect existing vSphere template %q: %w", *opts.Name, err)
+			}
+			if properties.Config == nil || !strings.Contains(properties.Config.Annotation, idempotencyMarker) {
+				return nil, fmt.Errorf("vSphere VM/template %q already exists with a different registration identity", *opts.Name)
+			}
+			return &platform.ImageRef{ID: existing.Reference().String(), Name: *opts.Name, Location: input.Datacenter, Tags: cloneStringMap(input.Tags)}, nil
+		}
+		var notFound *find.NotFoundError
+		if !errors.As(findErr, &notFound) {
+			return nil, fmt.Errorf("find existing vSphere template %q: %w", *opts.Name, findErr)
+		}
+		opts.Annotation = strings.TrimSpace(strings.Join([]string{c.cfg.annotation, idempotencyMarker}, "\n"))
+	}
+	if input.ArtifactPath == "" {
+		return nil, fmt.Errorf("artifact path is required to import %s as a vSphere template", input.Format)
 	}
 	archive, fpath := artifactArchive(input.ArtifactPath, input.Format)
 	imp := importer.Importer{
@@ -643,8 +665,46 @@ func (c *govmomiClient) importOVF(ctx context.Context, input registerInput) (*pl
 }
 
 func (c *govmomiClient) publishContentLibraryItem(ctx context.Context, input registerInput) (*platform.ImageRef, error) {
-	archive, fpath := artifactArchive(input.ArtifactPath, input.Format)
 	itemName := firstNonEmpty(input.ImageName, strings.TrimSuffix(filepath.Base(input.ArtifactPath), filepath.Ext(input.ArtifactPath)))
+	restClient := rest.NewClient(c.vc.Client)
+	if err := restClient.Login(ctx, url.UserPassword(c.cfg.username, c.cfg.password)); err != nil {
+		return nil, fmt.Errorf("login to vSphere REST API: %w", err)
+	}
+	manager := library.NewManager(restClient)
+	libraryID := c.cfg.contentLibraryID
+	if libraryID == "" {
+		lib, err := manager.GetLibraryByName(ctx, c.cfg.contentLibrary)
+		if err != nil {
+			return nil, fmt.Errorf("find content library %q: %w", c.cfg.contentLibrary, err)
+		}
+		libraryID = lib.ID
+	}
+	idempotencyMarker := registrationMarker(input.Metadata["register.idempotencyKey"])
+	if idempotencyMarker != "" {
+		ids, err := manager.FindLibraryItems(ctx, library.FindItem{LibraryID: libraryID, Name: itemName})
+		if err != nil {
+			return nil, fmt.Errorf("find existing content library item %q: %w", itemName, err)
+		}
+		conflict := false
+		for _, id := range ids {
+			item, err := manager.GetLibraryItem(ctx, id)
+			if err != nil {
+				return nil, fmt.Errorf("read existing content library item %q: %w", itemName, err)
+			}
+			if item.Description == nil || !strings.Contains(*item.Description, idempotencyMarker) {
+				conflict = true
+				continue
+			}
+			return &platform.ImageRef{ID: id, Name: itemName, Location: firstNonEmpty(c.cfg.contentLibrary, c.cfg.contentLibraryID), Tags: cloneStringMap(input.Tags)}, nil
+		}
+		if conflict {
+			return nil, fmt.Errorf("content library item %q already exists with a different registration identity", itemName)
+		}
+	}
+	if input.ArtifactPath == "" {
+		return nil, fmt.Errorf("artifact path is required to publish %s to the content library", input.Format)
+	}
+	archive, fpath := artifactArchive(input.ArtifactPath, input.Format)
 	manifest := map[string]*library.Checksum{}
 	mf := strings.Replace(filepath.Base(input.ArtifactPath), filepath.Ext(input.ArtifactPath), ".mf", 1)
 	if input.Format == platform.FormatOVA {
@@ -660,24 +720,12 @@ func (c *govmomiClient) publishContentLibraryItem(ctx context.Context, input reg
 	} else if c.cfg.requireManifest {
 		return nil, fmt.Errorf("required OVA/OVF manifest %q is missing: %w", mf, err)
 	}
-
-	restClient := rest.NewClient(c.vc.Client)
-	if err := restClient.Login(ctx, url.UserPassword(c.cfg.username, c.cfg.password)); err != nil {
-		return nil, fmt.Errorf("login to vSphere REST API: %w", err)
-	}
-	manager := library.NewManager(restClient)
-	libraryID := c.cfg.contentLibraryID
-	if libraryID == "" {
-		lib, err := manager.GetLibraryByName(ctx, c.cfg.contentLibrary)
-		if err != nil {
-			return nil, fmt.Errorf("find content library %q: %w", c.cfg.contentLibrary, err)
-		}
-		libraryID = lib.ID
-	}
+	description := idempotencyMarker
 	itemID, err := manager.CreateLibraryItem(ctx, library.Item{
-		Name:      itemName,
-		LibraryID: libraryID,
-		Type:      library.ItemTypeOVF,
+		Name:        itemName,
+		LibraryID:   libraryID,
+		Type:        library.ItemTypeOVF,
+		Description: &description,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create content library item: %w", err)
@@ -728,6 +776,14 @@ func (c *govmomiClient) publishContentLibraryItem(ctx context.Context, input reg
 		Location: firstNonEmpty(c.cfg.contentLibrary, c.cfg.contentLibraryID),
 		Tags:     tags,
 	}, nil
+}
+
+func registrationMarker(idempotencyKey string) string {
+	if strings.TrimSpace(idempotencyKey) == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte(idempotencyKey))
+	return fmt.Sprintf("imagebuilder-registration-id:%x", digest[:16])
 }
 
 func (c *govmomiClient) uploadLibraryArchiveFile(ctx context.Context, restClient *rest.Client, manager *library.Manager, session string, archive importer.Archive, name string, manifest map[string]*library.Checksum) error {

@@ -193,6 +193,15 @@ type ResumablePlugin interface {
 	UploadResumable(ctx context.Context, artifact *BuildArtifact, session UploadSession, checkpoint UploadCheckpoint) (*UploadResult, error)
 }
 
+// ResumableStreamingPlugin is implemented when provider-native durable state
+// can resume a sequential stream at CommittedOffset. PrepareUpload must
+// reconstruct backend state without relying on process memory.
+type ResumableStreamingPlugin interface {
+	StreamingPlugin
+	PrepareUpload(ctx context.Context, artifact *BuildArtifact, requested UploadSession) (UploadSession, error)
+	UploadStreamResumable(ctx context.Context, artifact *StreamArtifact, session UploadSession, checkpoint UploadCheckpoint) (*UploadResult, error)
+}
+
 // UploadResult is returned by Upload() and passed to Register().
 type UploadResult struct {
 	// ProviderRef is a provider-specific handle to the uploaded artifact

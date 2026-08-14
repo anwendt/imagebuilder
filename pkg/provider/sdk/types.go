@@ -68,6 +68,7 @@ type RegisterInput struct {
 	Tags               map[string]string
 	ProviderConfigName string
 	Format             string
+	IdempotencyKey     string
 }
 
 type ImageRef struct {
@@ -83,10 +84,13 @@ type DeleteInput struct {
 }
 
 type Progress struct {
-	BytesWritten int64
-	TotalBytes   int64
-	Phase        string
-	Message      string
+	BytesWritten    int64
+	TotalBytes      int64
+	Phase           string
+	Message         string
+	SessionToken    string
+	CommittedOffset int64
+	ResumeMode      string
 }
 
 type ProgressReporter interface {

@@ -220,7 +220,7 @@ func TestHelmChartImagesAreDigestConfigurable(t *testing.T) {
 	for _, want := range []string{
 		"builderImage:",
 		"uploaderImage:",
-		"  digest: \"\"",
+		"  digest: \"sha256:",
 	} {
 		if !strings.Contains(valuesText, want) {
 			t.Fatalf("values.yaml missing %q", want)

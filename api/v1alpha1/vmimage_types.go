@@ -403,6 +403,11 @@ type BuildSpec struct {
 	// +optional
 	Revision string `json:"revision,omitempty"`
 
+	// RevisionRetention garbage-collects Jobs and generated workspace PVCs from
+	// older revisions. Omitted preserves existing retention behavior.
+	// +optional
+	RevisionRetention *BuildRevisionRetentionSpec `json:"revisionRetention,omitempty"`
+
 	// Mode selects where the build is executed. local uses the Kubernetes build
 	// Job and local backend. remote delegates the build lifecycle to a provider
 	// that advertises remote build support. Defaults to local.
@@ -453,6 +458,18 @@ type BuildSpec struct {
 	// hardened and do not expose host devices.
 	// +optional
 	Security *BuildSecuritySpec `json:"security,omitempty"`
+}
+
+type BuildRevisionRetentionSpec struct {
+	// MaxCount is the maximum number of historical revision groups retained.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100
+	MaxCount *int32 `json:"maxCount,omitempty"`
+
+	// TTL removes historical revision resources older than this duration.
+	// +optional
+	TTL *metav1.Duration `json:"ttl,omitempty"`
 }
 
 type SourceCacheSpec struct {
@@ -925,6 +942,29 @@ type UploadOperationStatus struct {
 	// RegisterMilliseconds records provider registration duration when reported by the upload job.
 	// +optional
 	RegisterMilliseconds int64 `json:"registerMilliseconds,omitempty"`
+
+	// ResumeMode is "restart" or "offset" and never contains provider credentials.
+	// +optional
+	// +kubebuilder:validation:Enum=restart;offset
+	ResumeMode string `json:"resumeMode,omitempty"`
+
+	// CommittedBytes is the provider-acknowledged durable upload offset.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	CommittedBytes int64 `json:"committedBytes,omitempty"`
+
+	// RetryCount is the number of failed upload Pods for this Job.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	RetryCount int32 `json:"retryCount,omitempty"`
+
+	// LastRetryTime records the latest observed upload retry.
+	// +optional
+	LastRetryTime *metav1.Time `json:"lastRetryTime,omitempty"`
+
+	// LastRetryReason is a non-sensitive summary from the failed uploader attempt.
+	// +optional
+	LastRetryReason string `json:"lastRetryReason,omitempty"`
 }
 
 // +kubebuilder:object:root=true

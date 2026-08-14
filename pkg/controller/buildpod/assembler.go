@@ -596,6 +596,7 @@ func jobLabels(img *v1alpha1.VMImage) map[string]string {
 		"app.kubernetes.io/managed-by": "imagebuilder",
 		"imagebuilder.io/vmimage":      img.Name,
 		"imagebuilder.io/job-kind":     "build",
+		"imagebuilder.io/revision":     revision.Hash(img.Spec.Build.Revision),
 	}
 }
 

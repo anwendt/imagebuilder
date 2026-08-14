@@ -48,16 +48,18 @@ type ProviderConnection struct {
 }
 
 type TargetConfig struct {
-	ProviderConfigName string            `json:"providerConfigName"`
-	Provider           string            `json:"provider"`
-	Region             string            `json:"region,omitempty"`
-	Endpoint           string            `json:"endpoint,omitempty"`
-	Insecure           bool              `json:"insecure,omitempty"`
-	Extra              map[string]string `json:"extra,omitempty"`
-	Format             string            `json:"format"`
-	Tags               map[string]string `json:"tags,omitempty"`
-	CredentialsPath    string            `json:"credentialsPath"`
-	GRPC               *GRPCConfig       `json:"grpc,omitempty"`
+	ProviderConfigName  string            `json:"providerConfigName"`
+	Provider            string            `json:"provider"`
+	Region              string            `json:"region,omitempty"`
+	Endpoint            string            `json:"endpoint,omitempty"`
+	Insecure            bool              `json:"insecure,omitempty"`
+	Extra               map[string]string `json:"extra,omitempty"`
+	Format              string            `json:"format"`
+	Tags                map[string]string `json:"tags,omitempty"`
+	CredentialsPath     string            `json:"credentialsPath"`
+	GRPC                *GRPCConfig       `json:"grpc,omitempty"`
+	AllowedPrivateCIDRs []string          `json:"allowedPrivateCIDRs,omitempty"`
+	AllowedDNSNames     []string          `json:"allowedDNSNames,omitempty"`
 }
 
 func Assemble(img *v1alpha1.VMImage, configs []v1alpha1.ProviderConfig, scheme *runtime.Scheme) (*batchv1.Job, error) {
@@ -252,6 +254,10 @@ func targetConfigs(img *v1alpha1.VMImage, configs []v1alpha1.ProviderConfig, con
 			Tags:               target.Tags,
 			CredentialsPath:    fmt.Sprintf("/credentials/%s", cfg.Name),
 		}
+		if cfg.Spec.NetworkAccess != nil {
+			targetConfig.AllowedPrivateCIDRs = append([]string(nil), cfg.Spec.NetworkAccess.AllowedPrivateCIDRs...)
+			targetConfig.AllowedDNSNames = append([]string(nil), cfg.Spec.NetworkAccess.AllowedDNSNames...)
+		}
 		if connection, ok := connections[cfg.Spec.Provider]; ok {
 			targetConfig.GRPC = &GRPCConfig{Address: connection.Address}
 			if connection.TLSSecretName != "" {
@@ -323,6 +329,7 @@ func jobLabels(img *v1alpha1.VMImage) map[string]string {
 		"app.kubernetes.io/managed-by": "imagebuilder",
 		"imagebuilder.io/vmimage":      img.Name,
 		"imagebuilder.io/job-kind":     "upload",
+		"imagebuilder.io/revision":     revision.Hash(img.Spec.Build.Revision),
 	}
 }
 

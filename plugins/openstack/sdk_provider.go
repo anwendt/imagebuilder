@@ -242,6 +242,9 @@ func mergeOpenStackRegisterMetadata(metadata map[string]string, input sdk.Regist
 	if input.Format != "" {
 		metadata["format"] = input.Format
 	}
+	if input.IdempotencyKey != "" {
+		metadata["register.idempotencyKey"] = input.IdempotencyKey
+	}
 	for key, value := range input.Tags {
 		metadata["tag."+key] = value
 	}

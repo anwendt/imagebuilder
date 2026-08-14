@@ -22,6 +22,7 @@ type SDKProvider struct {
 
 var (
 	_ sdk.Provider                   = (*SDKProvider)(nil)
+	_ sdk.ResumableProvider          = (*SDKProvider)(nil)
 	_ sdk.RemoteBuildProvider        = (*SDKProvider)(nil)
 	_ sdk.RemoteBuildCleanupProvider = (*SDKProvider)(nil)
 )
@@ -45,12 +46,63 @@ func (p *SDKProvider) Capabilities(context.Context) (sdk.Capabilities, error) {
 		families = append(families, string(family))
 	}
 	return sdk.Capabilities{
-		ProviderName:    plugin.Name(),
-		ProviderVersion: plugin.Version(),
-		Formats:         formats,
-		OSFamilies:      families,
-		BuildModes:      plugin.SupportedBuildModes(),
+		ProviderName:     plugin.Name(),
+		ProviderVersion:  plugin.Version(),
+		Formats:          formats,
+		OSFamilies:       families,
+		BuildModes:       plugin.SupportedBuildModes(),
+		UploadResumeMode: "offset",
 	}, nil
+}
+
+func (p *SDKProvider) PrepareUpload(ctx context.Context, artifact sdk.ArtifactInfo, requested sdk.UploadSession) (sdk.UploadSession, error) {
+	plugin, err := p.pluginForConfig(artifact.ProviderConfigName)
+	if err != nil {
+		return sdk.UploadSession{}, err
+	}
+	accepted, err := plugin.PrepareUpload(ctx, awsPlatformArtifact(artifact), platform.UploadSession{
+		IdempotencyKey: requested.IdempotencyKey, ResumeToken: requested.ResumeToken,
+		CommittedOffset: requested.CommittedOffset, ResumeMode: requested.ResumeMode,
+	})
+	if err != nil {
+		return sdk.UploadSession{}, err
+	}
+	return sdk.UploadSession{IdempotencyKey: accepted.IdempotencyKey, ResumeToken: accepted.ResumeToken, CommittedOffset: accepted.CommittedOffset, ResumeMode: accepted.ResumeMode}, nil
+}
+
+func (p *SDKProvider) UploadArtifactResumable(ctx context.Context, artifact sdk.ArtifactInfo, session sdk.UploadSession, body io.Reader, progress sdk.ProgressReporter) (sdk.UploadResult, error) {
+	plugin, err := p.pluginForConfig(artifact.ProviderConfigName)
+	if err != nil {
+		return sdk.UploadResult{}, err
+	}
+	metadata := cloneStringMap(artifact.Metadata)
+	latestToken := session.ResumeToken
+	result, err := plugin.UploadStreamResumable(ctx, &platform.StreamArtifact{
+		Reader: body, Format: platform.ImageFormat(artifact.Format), Checksum: artifact.Checksum,
+		SizeBytes: artifact.TotalSizeBytes, OS: platform.OSFamily(artifact.OSFamily), Metadata: metadata,
+	}, platform.UploadSession{IdempotencyKey: session.IdempotencyKey, ResumeToken: session.ResumeToken, CommittedOffset: session.CommittedOffset, ResumeMode: session.ResumeMode}, func(updated platform.UploadSession) error {
+		latestToken = updated.ResumeToken
+		if progress == nil {
+			return nil
+		}
+		return progress.Report(ctx, sdk.Progress{BytesWritten: updated.CommittedOffset, TotalBytes: artifact.TotalSizeBytes, Phase: "uploading", Message: "resuming S3 multipart upload", SessionToken: updated.ResumeToken, CommittedOffset: updated.CommittedOffset, ResumeMode: updated.ResumeMode})
+	})
+	if err != nil {
+		return sdk.UploadResult{}, err
+	}
+	if result.Metadata == nil {
+		result.Metadata = map[string]string{}
+	}
+	result.Metadata["providerConfigName"], result.Metadata["format"] = artifact.ProviderConfigName, artifact.Format
+	result.Metadata["upload.sessionToken"] = latestToken
+	p.mu.Lock()
+	p.uploads[result.ProviderRef] = result
+	p.mu.Unlock()
+	return sdk.UploadResult{ProviderRef: result.ProviderRef, Metadata: cloneStringMap(result.Metadata)}, nil
+}
+
+func awsPlatformArtifact(artifact sdk.ArtifactInfo) *platform.BuildArtifact {
+	return &platform.BuildArtifact{Format: platform.ImageFormat(artifact.Format), Checksum: artifact.Checksum, SizeBytes: artifact.TotalSizeBytes, OS: platform.OSFamily(artifact.OSFamily), Metadata: cloneStringMap(artifact.Metadata)}
 }
 
 func (p *SDKProvider) ValidateConfig(ctx context.Context, config sdk.Config) error {
@@ -247,6 +299,9 @@ func mergeRegisterMetadata(metadata map[string]string, input sdk.RegisterInput) 
 	}
 	if input.Format != "" {
 		metadata["format"] = input.Format
+	}
+	if input.IdempotencyKey != "" {
+		metadata["register.idempotencyKey"] = input.IdempotencyKey
 	}
 	for key, value := range input.Tags {
 		metadata[key] = value

@@ -1,3 +1,11 @@
+{{- if .Values.imageDigestEnforcement.enabled }}
+{{- $images := dict "operator" .Values.image "builder" .Values.builderImage "uploader" .Values.uploaderImage "ansible" .Values.provisionerImages.ansible "chef" .Values.provisionerImages.chef "custom" .Values.provisionerImages.custom "puppet" .Values.provisionerImages.puppet "saltstack" .Values.provisionerImages.saltstack }}
+{{- range $name, $image := $images }}
+{{- if not (regexMatch "^sha256:[0-9a-fA-F]{64}$" ($image.digest | default "")) }}
+{{- fail (printf "imageDigestEnforcement requires %s image digest to be sha256-pinned" $name) }}
+{{- end }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

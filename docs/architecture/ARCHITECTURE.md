@@ -281,15 +281,27 @@ providers by name when processing targets.
     protocol negotiates an opaque resume token and provider-authoritative
     committed offset before bytes are sent. `restart` sessions safely retransmit
     from byte zero; only providers with durable backend checkpoints may advertise
-    `offset` resume. Chunk offsets, final markers, and declared size are validated
-    strictly. Upload and registration completion are separate checkpoints, so a
-    replacement Pod does not repeat a completed phase.
+    `offset` resume. AWS S3 multipart, Azure Page Blob, and GCP resumable-upload
+    sessions continue at provider-confirmed offsets. OpenStack and vSphere retain
+    safe restart semantics. Chunk offsets, final markers, and declared size are
+    validated strictly. Upload and registration completion are separate
+    checkpoints, so a replacement Pod does not repeat a completed phase.
 
     Upload Jobs have three bounded retries. Transient provider/transport errors
     exit with code 75 and consume that retry budget. Terminal errors exit with
     code 1 and a Pod failure policy fails the Job immediately. This prevents
     retries for invalid configuration or unsupported input while still recovering
     from Pod eviction, network interruption, throttling, and temporary outages.
+    Non-secret retry count, resume mode, committed bytes, retry time, and reason
+    are exposed per target in `status.uploadOperations`.
+
+    Registration carries the same durable idempotency key. Providers recover an
+    already-created image after a lost response instead of creating a duplicate.
+
+    ProviderConfig `networkAccess` permits explicitly scoped private CIDRs and
+    DNS names for on-premises endpoints. Loopback, link-local, metadata,
+    carrier-grade NAT, unspecified, and multicast ranges remain permanently
+    blocked at admission and runtime.
 
 11. Controller updates VMImage.status:
     - status.phase = Ready
@@ -317,6 +329,8 @@ providers by name when processing targets.
     - Controller clears attempt-local status and returns to Pending
     - Build/upload Jobs, remote build IDs, and generated workspace PVCs use a
       revision hash so old and new attempts cannot collide
+    - Optional `build.revisionRetention.maxCount` and `ttl` garbage-collect
+      labeled historical Jobs and generated workspace PVCs
 ```
 
 ### 4.2 Provider Registration Flow

@@ -59,7 +59,7 @@ func (r *ProviderConfig) validateProviderConfig() (admission.Warnings, error) {
 	var warnings admission.Warnings
 
 	// AS-049: SSRF check — endpoint must not resolve to a private / metadata IP.
-	if err := validateNoSSRF("spec.endpoint", r.Spec.Endpoint); err != nil {
+	if err := validateProviderEndpoint("spec.endpoint", r.Spec.Endpoint, r.Spec.NetworkAccess); err != nil {
 		errs = append(errs, err)
 	}
 

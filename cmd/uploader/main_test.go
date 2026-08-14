@@ -106,8 +106,22 @@ func TestValidateProviderEndpoint_RejectsDNSNameResolvingToBlockedRange(t *testi
 	if err == nil {
 		t.Fatal("validateProviderEndpointWithOptions returned nil, want error")
 	}
-	if !strings.Contains(err.Error(), "blocked range") {
-		t.Fatalf("error = %q, want blocked range rejection", err.Error())
+	if !strings.Contains(err.Error(), "outside the configured CIDR allowlist") {
+		t.Fatalf("error = %q, want private CIDR rejection", err.Error())
+	}
+}
+
+func TestValidateProviderEndpoint_AllowsScopedPrivateEndpoint(t *testing.T) {
+	target := uploadpod.TargetConfig{
+		ProviderConfigName: "vsphere-prod", Endpoint: "https://vcenter.corp.example/sdk",
+		AllowedPrivateCIDRs: []string{"10.20.0.0/24"}, AllowedDNSNames: []string{"*.corp.example"},
+	}
+	err := validateProviderEndpointWithOptions(context.Background(), target, netguard.Options{
+		Resolver:            fakeResolver{"vcenter.corp.example": {"10.20.0.5"}},
+		AllowedPrivateCIDRs: target.AllowedPrivateCIDRs, AllowedDNSNames: target.AllowedDNSNames,
+	})
+	if err != nil {
+		t.Fatalf("scoped private endpoint rejected: %v", err)
 	}
 }
 
@@ -199,6 +213,46 @@ func TestRun_ReportsUploadBytes(t *testing.T) {
 	}
 	if len(retried.Images) != 1 || len(retried.Operations) != 1 {
 		t.Fatalf("retried result = %#v", retried)
+	}
+}
+
+func TestRun_RegisterRetryUsesStableIdempotencyKey(t *testing.T) {
+	workspace := t.TempDir()
+	if err := writeJSON(filepath.Join(workspace, resultFileName), v1alpha1.ArtifactStatus{Path: "/workspace/artifact.vmdk", Format: "vmdk", Checksum: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", SizeBytes: 1234, OS: "linux", Metadata: map[string]string{"buildID": "register-retry"}}); err != nil {
+		t.Fatalf("write build result: %v", err)
+	}
+	credentials := filepath.Join(workspace, "credentials")
+	if err := os.Mkdir(credentials, 0o700); err != nil {
+		t.Fatalf("mkdir credentials: %v", err)
+	}
+	targets := `[{"provider":"register-retry","providerConfigName":"register-retry-cfg","format":"vmdk","credentialsPath":"` + credentials + `"}]`
+	provider := &registerRetryProvider{}
+	registry := plugin.Default()
+	if err := registry.Register(provider); err != nil {
+		t.Fatalf("register provider: %v", err)
+	}
+	t.Cleanup(func() { registry.Deregister("register-retry") })
+	getenv := func(key string) string {
+		if key == "WORKSPACE_DIR" {
+			return workspace
+		}
+		if key == "UPLOAD_TARGETS_JSON" {
+			return targets
+		}
+		return ""
+	}
+	if _, err := run(context.Background(), getenv); err == nil || !providererrors.IsTransient(err) {
+		t.Fatalf("first run error = %v, want transient", err)
+	}
+	result, err := run(context.Background(), getenv)
+	if err != nil {
+		t.Fatalf("retry returned error: %v", err)
+	}
+	if provider.uploads != 1 || provider.registers != 2 || len(provider.keys) != 2 || provider.keys[0] == "" || provider.keys[0] != provider.keys[1] {
+		t.Fatalf("uploads=%d registers=%d keys=%#v", provider.uploads, provider.registers, provider.keys)
+	}
+	if len(result.Images) != 1 || result.Images[0].ImageRef != "image-idempotent" {
+		t.Fatalf("result = %#v", result)
 	}
 }
 
@@ -391,6 +445,37 @@ type uploadBytesProvider struct {
 	uploads   int
 	registers int
 }
+
+type registerRetryProvider struct {
+	uploads   int
+	registers int
+	keys      []string
+}
+
+func (p *registerRetryProvider) Name() string    { return "register-retry" }
+func (p *registerRetryProvider) Version() string { return "v0.0.0-test" }
+func (p *registerRetryProvider) SupportedFormats() []platform.ImageFormat {
+	return []platform.ImageFormat{platform.FormatVMDK}
+}
+func (p *registerRetryProvider) SupportedOS() []platform.OSFamily {
+	return []platform.OSFamily{platform.OSFamilyLinux}
+}
+func (p *registerRetryProvider) Init(context.Context, platform.PluginConfig) error   { return nil }
+func (p *registerRetryProvider) Validate(context.Context, v1alpha1.TargetSpec) error { return nil }
+func (p *registerRetryProvider) Upload(context.Context, *platform.BuildArtifact) (*platform.UploadResult, error) {
+	p.uploads++
+	return &platform.UploadResult{ProviderRef: "artifact-idempotent", Metadata: map[string]string{}}, nil
+}
+func (p *registerRetryProvider) Register(_ context.Context, result *platform.UploadResult) (*platform.ImageRef, error) {
+	p.registers++
+	p.keys = append(p.keys, result.Metadata["register.idempotencyKey"])
+	if p.registers == 1 {
+		return nil, providererrors.Transient(errors.New("registration response lost"), 0)
+	}
+	return &platform.ImageRef{ID: "image-idempotent"}, nil
+}
+func (p *registerRetryProvider) Cleanup(context.Context, *platform.BuildArtifact) error { return nil }
+func (p *registerRetryProvider) HealthCheck(context.Context) error                      { return nil }
 
 type uploaderGRPCServer struct {
 	providerv1.UnimplementedPlatformProviderServer

@@ -87,6 +87,27 @@ spec:
               insecure:
                 description: Insecure disables TLS verification (development only)
                 type: boolean
+              networkAccess:
+                description: |-
+                  NetworkAccess permits explicitly-scoped private provider endpoints.
+                  Loopback, link-local, and cloud metadata ranges remain permanently blocked.
+                properties:
+                  allowedDNSNames:
+                    description: |-
+                      AllowedDNSNames permits exact names or a leading wildcard such as *.corp.example.
+                      The DNS name and resolved address must both satisfy this policy.
+                    items:
+                      type: string
+                    maxItems: 32
+                    type: array
+                  allowedPrivateCIDRs:
+                    description: AllowedPrivateCIDRs permits resolved private addresses
+                      only inside these CIDRs.
+                    items:
+                      type: string
+                    maxItems: 32
+                    type: array
+                type: object
               provider:
                 description: |-
                   Provider is the name of the PlatformProvider this config belongs to

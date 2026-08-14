@@ -73,6 +73,21 @@ func TestValidatePublicHTTPSURL(t *testing.T) {
 			rawURL: "https://images.example.test/source.img",
 			opts:   netguard.Options{Resolver: fakeResolver{"images.example.test": {"93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"}}},
 		},
+		{
+			name:   "allows scoped private endpoint",
+			rawURL: "https://vcenter.corp.example/sdk",
+			opts:   netguard.Options{Resolver: fakeResolver{"vcenter.corp.example": {"10.20.0.5"}}, AllowedPrivateCIDRs: []string{"10.20.0.0/24"}, AllowedDNSNames: []string{"*.corp.example"}},
+		},
+		{
+			name: "permanent metadata range overrides allowlist", rawURL: "https://metadata.corp.example/",
+			opts:    netguard.Options{Resolver: fakeResolver{"metadata.corp.example": {"169.254.169.254"}}, AllowedPrivateCIDRs: []string{"169.254.0.0/16"}, AllowedDNSNames: []string{"*.corp.example"}},
+			wantErr: true, wantErrSubstr: "permanently blocked",
+		},
+		{
+			name: "requires DNS allowlist match", rawURL: "https://vcenter.other.example/sdk",
+			opts:    netguard.Options{Resolver: fakeResolver{"vcenter.other.example": {"10.20.0.5"}}, AllowedPrivateCIDRs: []string{"10.20.0.0/24"}, AllowedDNSNames: []string{"*.corp.example"}},
+			wantErr: true, wantErrSubstr: "DNS allowlist",
+		},
 	}
 
 	for _, tt := range tests {

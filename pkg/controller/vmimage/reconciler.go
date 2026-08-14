@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -191,12 +192,91 @@ func (r *VMImageReconciler) reconcileSpecGeneration(ctx context.Context, img *v1
 	if err := r.Status().Update(ctx, img); err != nil {
 		return true, ctrl.Result{}, fmt.Errorf("reset status for rebuild: %w", err)
 	}
+	if err := r.garbageCollectHistoricalRevisions(ctx, img); err != nil {
+		return true, ctrl.Result{}, fmt.Errorf("garbage collect historical revisions: %w", err)
+	}
 	r.recordEvent(img, corev1.EventTypeNormal, "RebuildRequested", "Build revision changed from %q to %q", previousRevision, img.Spec.Build.Revision)
 	log.Info("build revision changed; status reset for rebuild",
 		slog.String("previousRevision", previousRevision),
 		slog.String("revision", img.Spec.Build.Revision),
 		slog.Int64("generation", img.Generation))
 	return true, ctrl.Result{RequeueAfter: time.Nanosecond}, nil
+}
+
+func (r *VMImageReconciler) garbageCollectHistoricalRevisions(ctx context.Context, img *v1alpha1.VMImage) error {
+	policy := img.Spec.Build.RevisionRetention
+	if policy == nil || (policy.MaxCount == nil && policy.TTL == nil) {
+		return nil
+	}
+	current := revision.Hash(img.Spec.Build.Revision)
+	type revisionGroup struct {
+		created time.Time
+		jobs    []*batchv1.Job
+		pvcs    []*corev1.PersistentVolumeClaim
+	}
+	groups := map[string]*revisionGroup{}
+	ensure := func(hash string, created time.Time) *revisionGroup {
+		group := groups[hash]
+		if group == nil {
+			group = &revisionGroup{created: created}
+			groups[hash] = group
+		} else if created.After(group.created) {
+			group.created = created
+		}
+		return group
+	}
+	jobs := &batchv1.JobList{}
+	if err := r.List(ctx, jobs, client.InNamespace(img.Namespace), client.MatchingLabels{"app.kubernetes.io/managed-by": "imagebuilder", "imagebuilder.io/vmimage": img.Name}); err != nil {
+		return fmt.Errorf("list revision Jobs: %w", err)
+	}
+	for i := range jobs.Items {
+		hash := jobs.Items[i].Labels["imagebuilder.io/revision"]
+		if hash == "" || hash == current {
+			continue
+		}
+		group := ensure(hash, jobs.Items[i].CreationTimestamp.Time)
+		group.jobs = append(group.jobs, &jobs.Items[i])
+	}
+	pvcs := &corev1.PersistentVolumeClaimList{}
+	if err := r.List(ctx, pvcs, client.InNamespace(img.Namespace), client.MatchingLabels{"app.kubernetes.io/managed-by": "imagebuilder", "imagebuilder.io/vmimage": img.Name}); err != nil {
+		return fmt.Errorf("list revision PVCs: %w", err)
+	}
+	for i := range pvcs.Items {
+		hash := pvcs.Items[i].Labels["imagebuilder.io/revision"]
+		if hash == "" || hash == current {
+			continue
+		}
+		group := ensure(hash, pvcs.Items[i].CreationTimestamp.Time)
+		group.pvcs = append(group.pvcs, &pvcs.Items[i])
+	}
+	type groupEntry struct {
+		hash  string
+		group *revisionGroup
+	}
+	entries := make([]groupEntry, 0, len(groups))
+	for hash, group := range groups {
+		entries = append(entries, groupEntry{hash: hash, group: group})
+	}
+	sort.SliceStable(entries, func(i, j int) bool { return entries[i].group.created.After(entries[j].group.created) })
+	now := time.Now()
+	for index, entry := range entries {
+		deleteByCount := policy.MaxCount != nil && index >= int(*policy.MaxCount)
+		deleteByAge := policy.TTL != nil && policy.TTL.Duration >= 0 && now.Sub(entry.group.created) >= policy.TTL.Duration
+		if !deleteByCount && !deleteByAge {
+			continue
+		}
+		for _, job := range entry.group.jobs {
+			if err := r.Delete(ctx, job, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !apierrors.IsNotFound(err) {
+				return fmt.Errorf("delete historical Job %q: %w", job.Name, err)
+			}
+		}
+		for _, pvc := range entry.group.pvcs {
+			if err := r.Delete(ctx, pvc); err != nil && !apierrors.IsNotFound(err) {
+				return fmt.Errorf("delete historical PVC %q: %w", pvc.Name, err)
+			}
+		}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -677,6 +757,20 @@ func (r *VMImageReconciler) reconcileUploading(ctx context.Context, img *v1alpha
 		return r.setFailed(ctx, img, reason)
 	}
 	if !isJobSucceeded(job) {
+		if job.Status.Failed > maxUploadRetryCount(img.Status.UploadOperations) {
+			if reported, err := r.uploadRetryOperationsFromJob(ctx, img.Namespace, job); err == nil && len(reported) > 0 {
+				now := metav1.Now()
+				for i := range reported {
+					reported[i].RetryCount = job.Status.Failed
+					reported[i].LastRetryTime = &now
+				}
+				img.Status.UploadOperations = mergeUploadOperations(img.Status.UploadOperations, reported, nil, "Uploading", "Upload retry in progress")
+				setStep(img, "Upload", "Running", "UploadRetrying", fmt.Sprintf("Upload retry %d of 3", job.Status.Failed), "")
+				if err := r.Status().Update(ctx, img); err != nil {
+					return ctrl.Result{}, fmt.Errorf("update upload retry status: %w", err)
+				}
+			}
+		}
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
@@ -758,6 +852,7 @@ func artifactPVC(img *v1alpha1.VMImage) *corev1.PersistentVolumeClaim {
 			Labels: map[string]string{
 				"app.kubernetes.io/managed-by": "imagebuilder",
 				"imagebuilder.io/vmimage":      img.Name,
+				"imagebuilder.io/revision":     revision.Hash(img.Spec.Build.Revision),
 			},
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
@@ -1065,6 +1160,36 @@ func (r *VMImageReconciler) uploadFailureFromJob(ctx context.Context, namespace 
 	return message, nil
 }
 
+func (r *VMImageReconciler) uploadRetryOperationsFromJob(ctx context.Context, namespace string, job *batchv1.Job) ([]v1alpha1.UploadOperationStatus, error) {
+	message, err := r.terminatedContainerMessage(ctx, namespace, job, "upload")
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Error      string                           `json:"error"`
+		Operations []v1alpha1.UploadOperationStatus `json:"operations"`
+	}
+	if err := json.Unmarshal([]byte(message), &payload); err != nil {
+		return nil, err
+	}
+	for i := range payload.Operations {
+		if payload.Operations[i].LastRetryReason == "" {
+			payload.Operations[i].LastRetryReason = payload.Error
+		}
+	}
+	return payload.Operations, nil
+}
+
+func maxUploadRetryCount(operations []v1alpha1.UploadOperationStatus) int32 {
+	var maxCount int32
+	for _, operation := range operations {
+		if operation.RetryCount > maxCount {
+			maxCount = operation.RetryCount
+		}
+	}
+	return maxCount
+}
+
 func (r *VMImageReconciler) imageStatusesFromUploadJob(ctx context.Context, namespace string, job *batchv1.Job) ([]v1alpha1.ImageStatus, []v1alpha1.UploadOperationStatus, error) {
 	message, err := r.terminatedContainerMessage(ctx, namespace, job, "upload")
 	if err != nil {
@@ -1180,6 +1305,21 @@ func mergeUploadOperations(existing, reported []v1alpha1.UploadOperationStatus, 
 			if op.RegisterMilliseconds > 0 {
 				out[idx].RegisterMilliseconds = op.RegisterMilliseconds
 			}
+			if op.ResumeMode != "" {
+				out[idx].ResumeMode = op.ResumeMode
+			}
+			if op.CommittedBytes > 0 {
+				out[idx].CommittedBytes = op.CommittedBytes
+			}
+			if op.RetryCount > 0 {
+				out[idx].RetryCount = op.RetryCount
+			}
+			if op.LastRetryTime != nil {
+				out[idx].LastRetryTime = op.LastRetryTime
+			}
+			if op.LastRetryReason != "" {
+				out[idx].LastRetryReason = op.LastRetryReason
+			}
 			return
 		}
 		if op.LastTransitionTime.IsZero() {
@@ -1284,6 +1424,9 @@ func (r *VMImageReconciler) terminatedContainerMessage(ctx context.Context, name
 			return "", fmt.Errorf("list legacy build pods: %w", err)
 		}
 	}
+	sort.SliceStable(pods.Items, func(i, j int) bool {
+		return pods.Items[i].CreationTimestamp.After(pods.Items[j].CreationTimestamp.Time)
+	})
 
 	for _, pod := range pods.Items {
 		for _, status := range pod.Status.ContainerStatuses {

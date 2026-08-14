@@ -215,13 +215,17 @@ func (s *Server) UploadArtifact(stream providerv1.PlatformProvider_UploadArtifac
 	if result.ProviderRef == "" {
 		return fmt.Errorf("upload result provider ref is required")
 	}
+	finalSessionToken := session.ResumeToken
+	if result.Metadata["upload.sessionToken"] != "" {
+		finalSessionToken = result.Metadata["upload.sessionToken"]
+	}
 	return stream.Send(&providerv1.UploadProgress{
 		BytesWritten:    first.GetTotalSizeBytes(),
 		TotalBytes:      first.GetTotalSizeBytes(),
 		Phase:           "done",
 		Message:         "upload completed",
 		ProviderRef:     result.ProviderRef,
-		SessionToken:    session.ResumeToken,
+		SessionToken:    finalSessionToken,
 		CommittedOffset: first.GetTotalSizeBytes(),
 		ResumeMode:      session.ResumeMode,
 	})
@@ -234,6 +238,7 @@ func (s *Server) RegisterImage(ctx context.Context, req *providerv1.RegisterRequ
 		Tags:               cloneStringMap(req.GetTags()),
 		ProviderConfigName: req.GetProviderConfigName(),
 		Format:             req.GetFormat(),
+		IdempotencyKey:     req.GetIdempotencyKey(),
 	})
 	if err != nil {
 		return nil, err
@@ -421,16 +426,27 @@ type uploadProgressReporter struct {
 func (r uploadProgressReporter) Report(_ context.Context, progress Progress) error {
 	committedOffset := int64(0)
 	if r.session.ResumeMode == "offset" {
-		committedOffset = progress.BytesWritten
+		committedOffset = progress.CommittedOffset
+		if committedOffset == 0 {
+			committedOffset = progress.BytesWritten
+		}
+	}
+	sessionToken := r.session.ResumeToken
+	if progress.SessionToken != "" {
+		sessionToken = progress.SessionToken
+	}
+	resumeMode := r.session.ResumeMode
+	if progress.ResumeMode != "" {
+		resumeMode = progress.ResumeMode
 	}
 	return r.stream.Send(&providerv1.UploadProgress{
 		BytesWritten:    progress.BytesWritten,
 		TotalBytes:      progress.TotalBytes,
 		Phase:           progress.Phase,
 		Message:         progress.Message,
-		SessionToken:    r.session.ResumeToken,
+		SessionToken:    sessionToken,
 		CommittedOffset: committedOffset,
-		ResumeMode:      r.session.ResumeMode,
+		ResumeMode:      resumeMode,
 	})
 }
 

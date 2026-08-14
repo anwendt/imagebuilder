@@ -2,6 +2,16 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "type": "object",
   "properties": {
+    "imageDigestEnforcement": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Fails Helm rendering unless every operator, builder, uploader, and provisioner image has an immutable sha256 digest. Development profiles may disable it."
+        }
+      },
+      "required": ["enabled"]
+    },
     "webhook": {
       "type": "object",
       "properties": {

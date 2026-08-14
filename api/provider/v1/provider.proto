@@ -310,6 +310,11 @@ message RegisterRequest {
 
   // format of the artifact that was uploaded
   string format = 5;
+
+  // idempotency_key identifies the logical registration across retries. A
+  // provider must return the previously-created image for the same key rather
+  // than create a duplicate.
+  string idempotency_key = 6;
 }
 
 message ImageRef {

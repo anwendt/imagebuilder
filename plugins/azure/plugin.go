@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -55,6 +56,14 @@ type Plugin struct {
 	log    *slog.Logger
 	config config
 	client client
+}
+
+type azurePageBlobSession struct {
+	Container string `json:"container"`
+	BlobName  string `json:"blobName"`
+	BlobURL   string `json:"blobUrl"`
+	Size      int64  `json:"size"`
+	Offset    int64  `json:"offset"`
 }
 
 var (
@@ -136,23 +145,81 @@ func (p *Plugin) UploadStream(ctx context.Context, artifact *platform.StreamArti
 }
 
 func (p *Plugin) UploadResumable(ctx context.Context, artifact *platform.BuildArtifact, session platform.UploadSession, checkpoint platform.UploadCheckpoint) (*platform.UploadResult, error) {
-	if session.IdempotencyKey == "" {
-		return nil, fmt.Errorf("azure plugin: upload idempotency key is required")
+	if artifact == nil || artifact.Path == "" {
+		return nil, fmt.Errorf("azure plugin: artifact path is required")
 	}
-	if session.ResumeToken != "" && session.ResumeToken != session.IdempotencyKey {
-		return nil, fmt.Errorf("azure plugin: upload resume token does not match idempotency key")
+	if err := validateFixedVHD(artifact.Path); err != nil {
+		return nil, fmt.Errorf("azure plugin: artifact is not an Azure-compatible fixed VHD: %w", err)
 	}
-	session.ResumeToken, session.CommittedOffset, session.ResumeMode = session.IdempotencyKey, 0, "restart"
+	accepted, err := p.PrepareUpload(ctx, artifact, session)
+	if err != nil {
+		return nil, err
+	}
 	if checkpoint != nil {
-		if err := checkpoint(session); err != nil {
+		if err := checkpoint(accepted); err != nil {
 			return nil, err
 		}
 	}
-	if artifact.Metadata == nil {
-		artifact.Metadata = map[string]string{}
+	file, err := os.Open(artifact.Path) // #nosec G304 -- controller-owned workspace artifact.
+	if err != nil {
+		return nil, fmt.Errorf("azure plugin: open resumable artifact: %w", err)
 	}
-	artifact.Metadata["upload.sessionToken"] = session.ResumeToken
-	return p.Upload(ctx, artifact)
+	defer file.Close()
+	if _, err := file.Seek(accepted.CommittedOffset, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("azure plugin: seek resumable artifact: %w", err)
+	}
+	return p.UploadStreamResumable(ctx, &platform.StreamArtifact{Reader: file, Format: artifact.Format, Checksum: artifact.Checksum, SizeBytes: artifact.SizeBytes, OS: artifact.OS, Metadata: artifact.Metadata}, accepted, checkpoint)
+}
+
+func (p *Plugin) PrepareUpload(ctx context.Context, artifact *platform.BuildArtifact, requested platform.UploadSession) (platform.UploadSession, error) {
+	if requested.IdempotencyKey == "" || artifact == nil || artifact.SizeBytes <= 0 || artifact.SizeBytes%azurePageSize != 0 {
+		return platform.UploadSession{}, fmt.Errorf("azure plugin: valid artifact and idempotency key are required")
+	}
+	client, ok := p.client.(*sdkClient)
+	if !ok {
+		return restartUploadSession(requested)
+	}
+	buildID := artifact.Metadata["buildID"]
+	blobName := uploadBlobName(p.config.blobPrefix, buildID, artifact.Metadata["imageName"])
+	state, err := client.preparePageBlobSession(ctx, p.config.storageContainer, blobName, artifact.SizeBytes, requested.ResumeToken)
+	if err != nil {
+		return platform.UploadSession{}, fmt.Errorf("azure plugin: prepare Page Blob session: %w", err)
+	}
+	token, err := json.Marshal(state)
+	if err != nil {
+		return platform.UploadSession{}, err
+	}
+	return platform.UploadSession{IdempotencyKey: requested.IdempotencyKey, ResumeToken: string(token), CommittedOffset: state.Offset, ResumeMode: "offset"}, nil
+}
+
+func (p *Plugin) UploadStreamResumable(ctx context.Context, artifact *platform.StreamArtifact, session platform.UploadSession, checkpoint platform.UploadCheckpoint) (*platform.UploadResult, error) {
+	client, ok := p.client.(*sdkClient)
+	if !ok {
+		return nil, fmt.Errorf("azure plugin: configured client does not support Page Blob resume")
+	}
+	var state azurePageBlobSession
+	if err := json.Unmarshal([]byte(session.ResumeToken), &state); err != nil {
+		return nil, fmt.Errorf("azure plugin: decode Page Blob session: %w", err)
+	}
+	if err := client.uploadPageBlobResume(ctx, artifact.Reader, &state, func(updated azurePageBlobSession) error {
+		token, err := json.Marshal(updated)
+		if err != nil {
+			return err
+		}
+		if checkpoint != nil {
+			return checkpoint(platform.UploadSession{IdempotencyKey: session.IdempotencyKey, ResumeToken: string(token), CommittedOffset: updated.Offset, ResumeMode: "offset"})
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	buildID := artifact.Metadata["buildID"]
+	imageName := firstNonEmpty(artifact.Metadata["imageName"], artifact.Metadata["vmimage"], p.config.imageName, "imagebuilder-"+sanitizeName(buildID))
+	return &platform.UploadResult{ProviderRef: state.BlobURL, Metadata: map[string]string{
+		"buildID": buildID, "imageName": imageName, "format": string(artifact.Format), "checksum": artifact.Checksum,
+		"os": string(artifact.OS), "container": state.Container, "blobName": state.BlobName, "blobURL": state.BlobURL,
+		"resourceGroup": p.config.resourceGroup, "location": p.config.location,
+	}}, nil
 }
 
 type registerInput struct {
@@ -852,6 +919,77 @@ func (c *sdkClient) recreatePageBlob(ctx context.Context, container, blobName st
 	return client, nil
 }
 
+func (c *sdkClient) preparePageBlobSession(ctx context.Context, container, blobName string, size int64, token string) (azurePageBlobSession, error) {
+	if token != "" {
+		var state azurePageBlobSession
+		if err := json.Unmarshal([]byte(token), &state); err != nil {
+			return azurePageBlobSession{}, fmt.Errorf("decode existing session: %w", err)
+		}
+		if state.Container != container || state.BlobName != blobName || state.Size != size || state.Offset < 0 || state.Offset > size || state.Offset%azurePageSize != 0 {
+			return azurePageBlobSession{}, fmt.Errorf("existing Page Blob session does not match artifact")
+		}
+		client, err := c.pageBlobClient(container, blobName)
+		if err != nil {
+			return azurePageBlobSession{}, err
+		}
+		properties, err := client.GetProperties(ctx, nil)
+		if err != nil {
+			return azurePageBlobSession{}, fmt.Errorf("read existing Page Blob: %w", err)
+		}
+		if properties.ContentLength == nil || *properties.ContentLength != size {
+			return azurePageBlobSession{}, fmt.Errorf("existing Page Blob size does not match artifact")
+		}
+		return state, nil
+	}
+	if _, err := c.blobs.CreateContainer(ctx, container, nil); err != nil && !bloberror.HasCode(err, bloberror.ContainerAlreadyExists) {
+		return azurePageBlobSession{}, fmt.Errorf("ensure container exists: %w", err)
+	}
+	client, err := c.pageBlobClient(container, blobName)
+	if err != nil {
+		return azurePageBlobSession{}, err
+	}
+	if _, err := client.Create(ctx, size, nil); err != nil {
+		if !bloberror.HasCode(err, bloberror.BlobAlreadyExists) {
+			return azurePageBlobSession{}, fmt.Errorf("create Page Blob: %w", err)
+		}
+		return azurePageBlobSession{}, fmt.Errorf("Page Blob %q already exists without a matching resume token", blobName)
+	}
+	return azurePageBlobSession{Container: container, BlobName: blobName, BlobURL: c.blobURL(container, blobName), Size: size}, nil
+}
+
+func (c *sdkClient) uploadPageBlobResume(ctx context.Context, body io.Reader, state *azurePageBlobSession, checkpoint func(azurePageBlobSession) error) error {
+	client, err := c.pageBlobClient(state.Container, state.BlobName)
+	if err != nil {
+		return err
+	}
+	buffer := make([]byte, c.cfg.pageUploadChunk)
+	for state.Offset < state.Size {
+		count := minInt64(c.cfg.pageUploadChunk, state.Size-state.Offset)
+		if _, err := io.ReadFull(body, buffer[:count]); err != nil {
+			return fmt.Errorf("read page range offset=%d count=%d: %w", state.Offset, count, err)
+		}
+		reader := &sectionReadSeekCloser{SectionReader: io.NewSectionReader(bytes.NewReader(buffer[:count]), 0, count)}
+		if _, err := client.UploadPages(ctx, reader, blob.HTTPRange{Offset: state.Offset, Count: count}, nil); err != nil {
+			return fmt.Errorf("upload page range offset=%d count=%d: %w", state.Offset, count, err)
+		}
+		state.Offset += count
+		if err := checkpoint(*state); err != nil {
+			return fmt.Errorf("checkpoint page range: %w", err)
+		}
+	}
+	return nil
+}
+
+func restartUploadSession(requested platform.UploadSession) (platform.UploadSession, error) {
+	if requested.IdempotencyKey == "" {
+		return platform.UploadSession{}, fmt.Errorf("upload idempotency key is required")
+	}
+	requested.ResumeToken = requested.IdempotencyKey
+	requested.CommittedOffset = 0
+	requested.ResumeMode = "restart"
+	return requested, nil
+}
+
 func (c *sdkClient) uploadPageBlob(ctx context.Context, container, blobName string, file *os.File, size int64) error {
 	if size <= 0 || size%azurePageSize != 0 {
 		return fmt.Errorf("fixed VHD size must be a positive multiple of %d bytes, got %d", azurePageSize, size)
@@ -1106,7 +1244,12 @@ func tagsFromMetadata(metadata map[string]string) map[string]string {
 	for key, value := range metadata {
 		if strings.HasPrefix(key, "tag.") {
 			tags[strings.TrimPrefix(key, "tag.")] = value
+		} else if strings.HasPrefix(key, "target.tag.") {
+			tags[strings.TrimPrefix(key, "target.tag.")] = value
 		}
+	}
+	if key := metadata["register.idempotencyKey"]; key != "" {
+		tags["imagebuilder.io/idempotency-key"] = key
 	}
 	return tags
 }

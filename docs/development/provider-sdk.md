@@ -185,11 +185,10 @@ The additive v1 gRPC fields implement a session handshake:
 
 The SDK server provides `restart` compatibility for existing `sdk.Provider`
 implementations. Providers must implement `sdk.ResumableProvider` and return
-`UploadResumeMode: "offset"` only when `PrepareUpload` can reconstruct the
-committed offset from durable backend state. In-memory offsets or replica
-affinity are not sufficient. The AWS, Azure, GCP, OpenStack, and vSphere
-reference providers currently use honest idempotent restart sessions; none
-claims byte-offset resume.
+`UploadResumeMode: "offset"` only when `PrepareUpload` can reconstruct durable
+backend state. AWS persists S3 multipart upload IDs and ETags, Azure persists
+Page Blob offsets, and GCP persists the JSON API resumable session URI.
+OpenStack and vSphere retain honest safe-restart semantics.
 
 Upload Jobs use a bounded `backoffLimit` of three. The uploader exits with code
 75 only for errors classified as transient (transport failures, throttling,
@@ -207,6 +206,12 @@ Register the uploaded artifact as a platform-native image and return:
 - tags
 
 The ID must be non-empty.
+
+`RegisterRequest.idempotency_key` is stable across uploader Pod retries. A
+provider must return the previously-created image for the same key instead of
+creating a duplicate after a lost response. Reference providers persist or
+derive this identity through native tags, labels, deterministic resources,
+Glance image IDs, and vSphere annotations.
 
 ## DeleteArtifact
 

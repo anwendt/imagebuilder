@@ -36,43 +36,48 @@ namespaceResourceGuardrails:
       cpu: 50m
       memory: 64Mi
 
+# Production defaults are immutable v0.4.2 multi-architecture image indexes.
+# values-development.yaml clears these digests for locally loaded images.
+imageDigestEnforcement:
+  enabled: true
+
 image:
   repository: ghcr.io/anwendt/imagebuilder-operator
   tag: "v0.4.2"
-  digest: ""
+  digest: "sha256:2084d83aa7daa9e68d84f98931ed30e912db44e75b04df53ab89443903028aa0"
   pullPolicy: IfNotPresent
 
 builderImage:
   repository: ghcr.io/anwendt/imagebuilder-builder
   tag: "v0.4.2"
-  digest: ""
+  digest: "sha256:44770fa82f8cf824ad160e88b005f6ac42b0f27da560e6b8e57370e92ccf419a"
 
 uploaderImage:
   repository: ghcr.io/anwendt/imagebuilder-uploader
   tag: "v0.4.2"
-  digest: ""
+  digest: "sha256:0e8b3b42dc00723a3e8cfaf327866a4ce06a909ddf7fbf165d94f7b9d7d82dfc"
 
 provisionerImages:
   ansible:
     repository: ghcr.io/anwendt/imagebuilder-provisioner-ansible
     tag: "v0.4.2"
-    digest: ""
+    digest: "sha256:dcb4c6925cafecd3010c85de0d0518ed39676050a8ba50e9077ebad253872935"
   chef:
     repository: ghcr.io/anwendt/imagebuilder-provisioner-chef
     tag: "v0.4.2"
-    digest: ""
+    digest: "sha256:a09846ff2c0d2d6bb1b40231661ab6ada062b697d2d78b1e6b5a012db279bb45"
   custom:
     repository: ghcr.io/anwendt/imagebuilder-provisioner-custom
     tag: "v0.4.2"
-    digest: ""
+    digest: "sha256:0bd981535fbec5c0f998fa410380e7a507df3ef61624d11b9def239bce56fee9"
   puppet:
     repository: ghcr.io/anwendt/imagebuilder-provisioner-puppet
     tag: "v0.4.2"
-    digest: ""
+    digest: "sha256:211c180769ee132f99a4901e9c663ee7df9b1913ea320d02b955b5f7f4491fa4"
   saltstack:
     repository: ghcr.io/anwendt/imagebuilder-provisioner-saltstack
     tag: "v0.4.2"
-    digest: ""
+    digest: "sha256:2c67ca1574cc3cd08938740b9599db8c1bdcb8e7a49f35436b54b788b22d0959"
 
 replicaCount: 2
 

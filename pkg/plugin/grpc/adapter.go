@@ -369,9 +369,7 @@ func (a *Adapter) UploadResumable(ctx context.Context, artifact *platform.BuildA
 		lastCommitted = committed
 		accepted.CommittedOffset = committed
 		if progress.GetSessionToken() != "" {
-			if progress.GetSessionToken() != accepted.ResumeToken {
-				return nil, fmt.Errorf("gRPC provider changed upload session token")
-			}
+			accepted.ResumeToken = progress.GetSessionToken()
 		}
 		if checkpoint != nil {
 			if err := checkpoint(accepted); err != nil {
@@ -402,9 +400,10 @@ func (a *Adapter) Register(ctx context.Context, result *platform.UploadResult) (
 		ImageName:          imageName,
 		ProviderConfigName: result.Metadata["providerConfigName"],
 		Format:             result.Metadata["format"],
+		IdempotencyKey:     result.Metadata["register.idempotencyKey"],
 	}
 	for k, v := range result.Metadata {
-		if k != "imageName" && k != "providerConfigName" {
+		if k != "imageName" && k != "providerConfigName" && k != "register.idempotencyKey" {
 			if req.Tags == nil {
 				req.Tags = make(map[string]string)
 			}

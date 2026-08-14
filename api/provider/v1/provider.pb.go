@@ -1581,9 +1581,13 @@ type RegisterRequest struct {
 	// provider_config_name identifies which ProviderConfig to use
 	ProviderConfigName string `protobuf:"bytes,4,opt,name=provider_config_name,json=providerConfigName,proto3" json:"provider_config_name,omitempty"`
 	// format of the artifact that was uploaded
-	Format        string `protobuf:"bytes,5,opt,name=format,proto3" json:"format,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Format string `protobuf:"bytes,5,opt,name=format,proto3" json:"format,omitempty"`
+	// idempotency_key identifies the logical registration across retries. A
+	// provider must return the previously-created image for the same key rather
+	// than create a duplicate.
+	IdempotencyKey string `protobuf:"bytes,6,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *RegisterRequest) Reset() {
@@ -1647,6 +1651,13 @@ func (x *RegisterRequest) GetProviderConfigName() string {
 func (x *RegisterRequest) GetFormat() string {
 	if x != nil {
 		return x.Format
+	}
+	return ""
+}
+
+func (x *RegisterRequest) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
 	}
 	return ""
 }
@@ -2040,14 +2051,15 @@ const file_provider_proto_rawDesc = "" +
 	"\rsession_token\x18\x14 \x01(\tR\fsessionToken\x12)\n" +
 	"\x10committed_offset\x18\x15 \x01(\x03R\x0fcommittedOffset\x12\x1f\n" +
 	"\vresume_mode\x18\x16 \x01(\tR\n" +
-	"resumeMode\"\x9f\x02\n" +
+	"resumeMode\"\xc8\x02\n" +
 	"\x0fRegisterRequest\x12!\n" +
 	"\fprovider_ref\x18\x01 \x01(\tR\vproviderRef\x12\x1d\n" +
 	"\n" +
 	"image_name\x18\x02 \x01(\tR\timageName\x12G\n" +
 	"\x04tags\x18\x03 \x03(\v23.imagebuilder.provider.v1.RegisterRequest.TagsEntryR\x04tags\x120\n" +
 	"\x14provider_config_name\x18\x04 \x01(\tR\x12providerConfigName\x12\x16\n" +
-	"\x06format\x18\x05 \x01(\tR\x06format\x1a7\n" +
+	"\x06format\x18\x05 \x01(\tR\x06format\x12'\n" +
+	"\x0fidempotency_key\x18\x06 \x01(\tR\x0eidempotencyKey\x1a7\n" +
 	"\tTagsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc5\x01\n" +

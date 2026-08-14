@@ -28,6 +28,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -402,6 +403,30 @@ func TestReconcile_TerminalRevisionChangeResetsStatus(t *testing.T) {
 		t.Fatalf("previous revision status was not cleared: %#v", updated.Status)
 	}
 	requireEvent(t, recorder, "RebuildRequested")
+}
+
+func TestReconcile_RevisionRetentionDeletesOldestResources(t *testing.T) {
+	img := newImg("retained-revisions", "default", v1alpha1.PhaseReady)
+	img.Generation = 2
+	img.Finalizers = []string{"imagebuilder.io/cleanup"}
+	img.Spec.Build.Revision = "v3"
+	maxCount := int32(1)
+	img.Spec.Build.RevisionRetention = &v1alpha1.BuildRevisionRetentionSpec{MaxCount: &maxCount}
+	img.Status.ObservedGeneration = 1
+	img.Status.ObservedRevision = "v2"
+	oldest := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "oldest", Namespace: "default", CreationTimestamp: metav1.NewTime(time.Now().Add(-2 * time.Hour)), Labels: map[string]string{"app.kubernetes.io/managed-by": "imagebuilder", "imagebuilder.io/vmimage": img.Name, "imagebuilder.io/revision": "rev-v1"}}}
+	newest := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "newest", Namespace: "default", CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Hour)), Labels: map[string]string{"app.kubernetes.io/managed-by": "imagebuilder", "imagebuilder.io/vmimage": img.Name, "imagebuilder.io/revision": "rev-v2"}}}
+
+	s := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.VMImage{}).WithObjects(img, oldest, newest).Build()
+	r := &vmimage.VMImageReconciler{Client: c, Scheme: s, Registry: plugin.Default()}
+	reconcileOnce(t, r, img.Name, img.Namespace)
+	if err := c.Get(context.Background(), types.NamespacedName{Name: oldest.Name, Namespace: oldest.Namespace}, &batchv1.Job{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("oldest revision Job still exists: %v", err)
+	}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: newest.Name, Namespace: newest.Namespace}, &batchv1.Job{}); err != nil {
+		t.Fatalf("newest historical Job was deleted: %v", err)
+	}
 }
 
 func TestReconcile_TerminalGenerationWithoutRevisionRemainsStale(t *testing.T) {

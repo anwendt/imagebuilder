@@ -39,6 +39,7 @@ type streamingFakeServer struct {
 	acceptedOffset   int64
 	firstDataOffset  int64
 	uploaded         []byte
+	registerRequest  *providerv1.RegisterRequest
 }
 
 func (s *streamingFakeServer) GetCapabilities(_ context.Context, _ *providerv1.Empty) (*providerv1.CapabilitiesResponse, error) {
@@ -121,11 +122,29 @@ func (s *streamingFakeServer) UploadArtifact(stream providerv1.PlatformProvider_
 }
 
 func (s *streamingFakeServer) RegisterImage(_ context.Context, req *providerv1.RegisterRequest) (*providerv1.ImageRef, error) {
+	s.registerRequest = req
 	return &providerv1.ImageRef{
 		Id:       s.registerID,
 		Name:     req.ImageName,
 		Location: "eu-central-1",
 	}, nil
+}
+
+func TestAdapter_Register_PassesIdempotencyKey(t *testing.T) {
+	server := &streamingFakeServer{registerID: "image-1"}
+	adapter := startStreamingServer(t, server)
+	_, err := adapter.Register(context.Background(), &platform.UploadResult{ProviderRef: "artifact-1", Metadata: map[string]string{
+		"providerConfigName": "provider-config", "format": "vmdk", "imageName": "image", "register.idempotencyKey": "register-key-1",
+	}})
+	if err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	if server.registerRequest == nil || server.registerRequest.GetIdempotencyKey() != "register-key-1" {
+		t.Fatalf("register request = %#v", server.registerRequest)
+	}
+	if _, ok := server.registerRequest.GetTags()["register.idempotencyKey"]; ok {
+		t.Fatal("idempotency key leaked into user tags")
+	}
 }
 
 func (s *streamingFakeServer) DeleteArtifact(_ context.Context, _ *providerv1.DeleteRequest) (*providerv1.DeleteResponse, error) {

@@ -4,6 +4,28 @@
 
 replicaCount: 1
 
+# Local images may be loaded directly into a development cluster. Clear the
+# production release digests so tag overrides remain usable.
+image:
+  digest: ""
+imageDigestEnforcement:
+  enabled: false
+builderImage:
+  digest: ""
+uploaderImage:
+  digest: ""
+provisionerImages:
+  ansible:
+    digest: ""
+  chef:
+    digest: ""
+  custom:
+    digest: ""
+  puppet:
+    digest: ""
+  saltstack:
+    digest: ""
+
 leaderElection:
   enabled: false
 
