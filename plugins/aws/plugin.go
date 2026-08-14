@@ -30,6 +30,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/aws/smithy-go"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/plugin"
@@ -701,6 +702,7 @@ type s3LocalImageAPI interface {
 	UploadPart(ctx context.Context, params *s3.UploadPartInput, optFns ...func(*s3.Options)) (*s3.UploadPartOutput, error)
 	CompleteMultipartUpload(ctx context.Context, params *s3.CompleteMultipartUploadInput, optFns ...func(*s3.Options)) (*s3.CompleteMultipartUploadOutput, error)
 	AbortMultipartUpload(ctx context.Context, params *s3.AbortMultipartUploadInput, optFns ...func(*s3.Options)) (*s3.AbortMultipartUploadOutput, error)
+	ListParts(ctx context.Context, params *s3.ListPartsInput, optFns ...func(*s3.Options)) (*s3.ListPartsOutput, error)
 }
 
 type stsLocalImageAPI interface {
@@ -854,7 +856,16 @@ func (c *awsSDKLocalImageClient) prepareMultipartSession(ctx context.Context, bu
 		if state.UploadID == "" || state.Bucket != bucket || state.Key != key || state.Size != size || state.Offset < 0 || state.Offset > size || state.Offset%awsResumePartSize != 0 {
 			return awsMultipartSession{}, fmt.Errorf("existing multipart session does not match artifact")
 		}
-		return state, nil
+		reconstructed, err := c.reconstructMultipartSession(ctx, state)
+		if err == nil {
+			return reconstructed, nil
+		}
+		if !isMissingMultipartUpload(err) {
+			return awsMultipartSession{}, err
+		}
+		// Lifecycle rules and explicit aborts can invalidate an otherwise valid
+		// PVC checkpoint. Start a fresh multipart upload for the same object.
+		token = ""
 	}
 	input := &s3.CreateMultipartUploadInput{Bucket: awssdk.String(bucket), Key: awssdk.String(key), Metadata: map[string]string{"imagebuilder-size": strconv.FormatInt(size, 10)}}
 	applyMultipartS3Encryption(input, c.kmsKeyID)
@@ -866,6 +877,55 @@ func (c *awsSDKLocalImageClient) prepareMultipartSession(ctx context.Context, bu
 		return awsMultipartSession{}, fmt.Errorf("AWS returned no upload ID")
 	}
 	return awsMultipartSession{UploadID: *created.UploadId, Bucket: bucket, Key: key, Size: size}, nil
+}
+
+func (c *awsSDKLocalImageClient) reconstructMultipartSession(ctx context.Context, state awsMultipartSession) (awsMultipartSession, error) {
+	marker := ""
+	parts := make([]awsCompletedPart, 0, len(state.Parts))
+	var offset int64
+	expectedPart := int32(1)
+	for {
+		input := &s3.ListPartsInput{Bucket: awssdk.String(state.Bucket), Key: awssdk.String(state.Key), UploadId: awssdk.String(state.UploadID)}
+		if marker != "" {
+			input.PartNumberMarker = awssdk.String(marker)
+		}
+		out, err := c.s3.ListParts(ctx, input)
+		if err != nil {
+			return awsMultipartSession{}, fmt.Errorf("list multipart parts: %w", err)
+		}
+		for _, part := range out.Parts {
+			if part.PartNumber == nil || *part.PartNumber != expectedPart || part.Size == nil || *part.Size <= 0 || part.ETag == nil || *part.ETag == "" {
+				return awsMultipartSession{}, fmt.Errorf("S3 multipart upload has non-contiguous or incomplete part metadata")
+			}
+			if *part.Size != awsResumePartSize && offset+*part.Size != state.Size {
+				return awsMultipartSession{}, fmt.Errorf("S3 multipart part %d has unexpected size %d", expectedPart, *part.Size)
+			}
+			parts = append(parts, awsCompletedPart{Number: expectedPart, ETag: *part.ETag})
+			offset += *part.Size
+			expectedPart++
+		}
+		if out.IsTruncated == nil || !*out.IsTruncated {
+			break
+		}
+		if out.NextPartNumberMarker == nil || *out.NextPartNumberMarker == "" {
+			return awsMultipartSession{}, fmt.Errorf("S3 returned truncated parts without a continuation marker")
+		}
+		marker = *out.NextPartNumberMarker
+	}
+	if offset > state.Size {
+		return awsMultipartSession{}, fmt.Errorf("S3 multipart parts exceed artifact size")
+	}
+	state.Parts, state.Offset = parts, offset
+	return state, nil
+}
+
+func isMissingMultipartUpload(err error) bool {
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	code := strings.ToLower(strings.ReplaceAll(apiErr.ErrorCode(), "_", ""))
+	return code == "nosuchupload" || code == "invaliduploadid" || code == "notfound"
 }
 
 func (c *awsSDKLocalImageClient) uploadMultipartResume(ctx context.Context, body io.Reader, state *awsMultipartSession, checkpoint func(awsMultipartSession) error) error {

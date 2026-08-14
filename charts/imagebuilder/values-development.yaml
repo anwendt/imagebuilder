@@ -2,6 +2,8 @@
 # disposable test namespaces. It intentionally disables production guardrails
 # that require extra cluster components or signed/digest-pinned provider images.
 
+developmentProfileAcknowledged: false
+
 replicaCount: 1
 
 # Local images may be loaded directly into a development cluster. Clear the
@@ -46,6 +48,9 @@ providerSecurity:
   requireMTLS: false
   requireDigest: false
   requireSignature: false
+  restrictServiceAccounts: false
+  allowedServiceAccounts: []
+  forbidServiceAccountToken: false
   allowedRegistries: []
 
 imageSignaturePolicy:

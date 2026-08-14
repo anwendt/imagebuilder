@@ -256,6 +256,73 @@ func TestRun_RegisterRetryUsesStableIdempotencyKey(t *testing.T) {
 	}
 }
 
+func TestUploadSessions_RecoversPreviousCheckpointFromBackup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), sessionsName)
+	first := []uploadSessionRecord{{Provider: "aws", ProviderConfigName: "aws-a", Format: "vmdk", IdempotencyKey: "key-1", Phase: "uploading"}}
+	second := []uploadSessionRecord{{Provider: "aws", ProviderConfigName: "aws-a", Format: "vmdk", IdempotencyKey: "key-1", Phase: "uploaded", ProviderRef: "artifact-1"}}
+	if err := writeUploadSessions(path, first); err != nil {
+		t.Fatalf("write first checkpoint: %v", err)
+	}
+	if err := writeUploadSessions(path, second); err != nil {
+		t.Fatalf("write second checkpoint: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("{corrupt"), 0o600); err != nil {
+		t.Fatalf("corrupt primary checkpoint: %v", err)
+	}
+	recovered, err := readUploadSessions(path)
+	if err != nil {
+		t.Fatalf("readUploadSessions returned error: %v", err)
+	}
+	if len(recovered) != 1 || recovered[0].Phase != "uploading" {
+		t.Fatalf("recovered sessions = %#v, want prior valid checkpoint", recovered)
+	}
+}
+
+func TestRun_ContinuesIndependentTargetsAfterTransientFailure(t *testing.T) {
+	workspace := t.TempDir()
+	if err := writeJSON(filepath.Join(workspace, resultFileName), v1alpha1.ArtifactStatus{Path: "/workspace/artifact.vmdk", Format: "vmdk", Checksum: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", SizeBytes: 1234, OS: "linux", Metadata: map[string]string{"buildID": "multi-target"}}); err != nil {
+		t.Fatalf("write build result: %v", err)
+	}
+	for _, name := range []string{"multi-bad", "multi-good"} {
+		if err := os.Mkdir(filepath.Join(workspace, name), 0o700); err != nil {
+			t.Fatalf("mkdir credentials: %v", err)
+		}
+	}
+	targets := `[` +
+		`{"provider":"multi-target","providerConfigName":"multi-bad","format":"vmdk","credentialsPath":"` + filepath.Join(workspace, "multi-bad") + `"},` +
+		`{"provider":"multi-target","providerConfigName":"multi-good","format":"vmdk","credentialsPath":"` + filepath.Join(workspace, "multi-good") + `"}` +
+		`]`
+	provider := &multiTargetProvider{uploads: map[string]int{}, registers: map[string]int{}}
+	registry := plugin.Default()
+	if err := registry.Register(provider); err != nil {
+		t.Fatalf("register provider: %v", err)
+	}
+	t.Cleanup(func() { registry.Deregister("multi-target") })
+	getenv := func(key string) string {
+		if key == "WORKSPACE_DIR" {
+			return workspace
+		}
+		if key == "UPLOAD_TARGETS_JSON" {
+			return targets
+		}
+		return ""
+	}
+	first, err := run(context.Background(), getenv)
+	if err == nil || !providererrors.IsTransient(err) {
+		t.Fatalf("first run error = %v, want transient aggregate", err)
+	}
+	if len(first.Images) != 1 || first.Images[0].ProviderConfig != "multi-good" {
+		t.Fatalf("first result = %#v, independent target did not complete", first)
+	}
+	second, err := run(context.Background(), getenv)
+	if err != nil {
+		t.Fatalf("retry returned error: %v", err)
+	}
+	if len(second.Images) != 2 || provider.uploads["multi-good"] != 1 || provider.registers["multi-good"] != 1 || provider.uploads["multi-bad"] != 2 {
+		t.Fatalf("second=%#v uploads=%#v registers=%#v", second, provider.uploads, provider.registers)
+	}
+}
+
 func TestRun_UsesPlatformProviderGRPCService(t *testing.T) {
 	server := &uploaderGRPCServer{}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -451,6 +518,37 @@ type registerRetryProvider struct {
 	registers int
 	keys      []string
 }
+
+type multiTargetProvider struct {
+	uploads   map[string]int
+	registers map[string]int
+}
+
+func (p *multiTargetProvider) Name() string    { return "multi-target" }
+func (p *multiTargetProvider) Version() string { return "v0.0.0-test" }
+func (p *multiTargetProvider) SupportedFormats() []platform.ImageFormat {
+	return []platform.ImageFormat{platform.FormatVMDK}
+}
+func (p *multiTargetProvider) SupportedOS() []platform.OSFamily {
+	return []platform.OSFamily{platform.OSFamilyLinux}
+}
+func (p *multiTargetProvider) Init(context.Context, platform.PluginConfig) error   { return nil }
+func (p *multiTargetProvider) Validate(context.Context, v1alpha1.TargetSpec) error { return nil }
+func (p *multiTargetProvider) Upload(_ context.Context, artifact *platform.BuildArtifact) (*platform.UploadResult, error) {
+	config := artifact.Metadata["providerConfigName"]
+	p.uploads[config]++
+	if config == "multi-bad" && p.uploads[config] == 1 {
+		return nil, providererrors.Transient(errors.New("temporary target outage"), 0)
+	}
+	return &platform.UploadResult{ProviderRef: "artifact-" + config, Metadata: map[string]string{"providerConfigName": config}}, nil
+}
+func (p *multiTargetProvider) Register(_ context.Context, result *platform.UploadResult) (*platform.ImageRef, error) {
+	config := result.Metadata["providerConfigName"]
+	p.registers[config]++
+	return &platform.ImageRef{ID: "image-" + config}, nil
+}
+func (p *multiTargetProvider) Cleanup(context.Context, *platform.BuildArtifact) error { return nil }
+func (p *multiTargetProvider) HealthCheck(context.Context) error                      { return nil }
 
 func (p *registerRetryProvider) Name() string    { return "register-retry" }
 func (p *registerRetryProvider) Version() string { return "v0.0.0-test" }

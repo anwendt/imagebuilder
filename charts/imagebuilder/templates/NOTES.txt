@@ -1,5 +1,22 @@
 ImageBuilder has been installed into namespace {{ include "imagebuilder.namespace" . }}.
 
+{{- $development := or (not .Values.webhook.enabled) (not .Values.networkPolicy.enabled) (not .Values.providerSecurity.requireMTLS) (not .Values.providerSecurity.requireDigest) (not .Values.providerSecurity.requireSignature) (not .Values.imageDigestEnforcement.enabled) }}
+{{- if $development }}
+
+WARNING: DEVELOPMENT SECURITY PROFILE ACTIVE
+One or more production guardrails are disabled. Use this release only for a
+disposable local development cluster; never promote these rendered values to
+production.
+{{- if .Values.developmentProfileAcknowledged }}
+The development profile was explicitly acknowledged.
+{{- else }}
+Set developmentProfileAcknowledged=true to record explicit acknowledgement.
+{{- end }}
+{{- else }}
+
+Production security guardrails are enabled.
+{{- end }}
+
 Admission webhooks are {{ ternary "enabled" "disabled" .Values.webhook.enabled }}.
 {{- if .Values.webhook.enabled }}
 The chart default is fail-closed:

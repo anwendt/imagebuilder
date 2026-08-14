@@ -287,6 +287,12 @@ providers by name when processing targets.
     validated strictly. Upload and registration completion are separate
     checkpoints, so a replacement Pod does not repeat a completed phase.
 
+    AWS reconstructs committed parts with `ListParts`; Azure verifies the
+    persisted Page Blob; GCP queries the resumable endpoint and binds every
+    session URI and redirect to the configured upload origin. Missing or expired
+    backend sessions are rotated to fresh sessions. The previous valid PVC
+    checkpoint remains as `upload-sessions.json.bak` for corruption recovery.
+
     Upload Jobs have three bounded retries. Transient provider/transport errors
     exit with code 75 and consume that retry budget. Terminal errors exit with
     code 1 and a Pod failure policy fails the Job immediately. This prevents
@@ -295,6 +301,11 @@ providers by name when processing targets.
     Non-secret retry count, resume mode, committed bytes, retry time, and reason
     are exposed per target in `status.uploadOperations`.
 
+    Targets are independent within an upload Pod. A failed target is recorded
+    while remaining targets continue. The aggregate exit is transient only when
+    every outstanding failure is transient; completed targets are restored from
+    checkpoints on the replacement Pod.
+
     Registration carries the same durable idempotency key. Providers recover an
     already-created image after a lost response instead of creating a duplicate.
 
@@ -302,6 +313,11 @@ providers by name when processing targets.
     DNS names for on-premises endpoints. Loopback, link-local, metadata,
     carrier-grade NAT, unspecified, and multicast ranges remain permanently
     blocked at admission and runtime.
+
+    Production policy rejects unapproved provider ServiceAccounts and forbids
+    Kubernetes API token automounting. The same policy is enforced by admission
+    and reconciliation, so webhook unavailability cannot create a privileged
+    provider Pod.
 
 11. Controller updates VMImage.status:
     - status.phase = Ready

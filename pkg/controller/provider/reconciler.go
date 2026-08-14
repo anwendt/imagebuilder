@@ -63,16 +63,19 @@ const (
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get
 type PlatformProviderReconciler struct {
 	client.Client
-	Scheme            *runtime.Scheme
-	Registry          *plugin.Registry
-	ProviderNamespace string
-	RequireMTLS       bool
-	RequireDigest     bool
-	RequireSignature  bool
-	AllowedRegistries []string
-	SignatureVerifier *signaturepolicy.Verifier
-	ConnectProvider   func(ctx context.Context, address string) (platform.Plugin, error)
-	log               *slog.Logger
+	Scheme                    *runtime.Scheme
+	Registry                  *plugin.Registry
+	ProviderNamespace         string
+	RequireMTLS               bool
+	RequireDigest             bool
+	RequireSignature          bool
+	AllowedRegistries         []string
+	RestrictServiceAccounts   bool
+	AllowedServiceAccounts    []string
+	ForbidServiceAccountToken bool
+	SignatureVerifier         *signaturepolicy.Verifier
+	ConnectProvider           func(ctx context.Context, address string) (platform.Plugin, error)
+	log                       *slog.Logger
 }
 
 func (r *PlatformProviderReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -126,6 +129,9 @@ func (r *PlatformProviderReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 	if err := r.validateProviderTransportPolicy(pp); err != nil {
 		return r.setUnhealthy(ctx, pp, fmt.Sprintf("provider transport policy rejected: %v", err))
+	}
+	if err := r.validateProviderServiceAccountPolicy(pp); err != nil {
+		return r.setUnhealthy(ctx, pp, fmt.Sprintf("provider service account policy rejected: %v", err))
 	}
 	if err := r.reconcileDeployment(ctx, pp, log); err != nil {
 		return r.setUnhealthy(ctx, pp, fmt.Sprintf("deployment reconcile failed: %v", err))
@@ -710,6 +716,26 @@ func (r *PlatformProviderReconciler) validateProviderTransportPolicy(pp *v1alpha
 		if ref.Namespace != r.providerNamespace(pp) {
 			return fmt.Errorf("spec.transport.tls.%s.namespace must match provider namespace %q", field, r.providerNamespace(pp))
 		}
+	}
+	return nil
+}
+
+func (r *PlatformProviderReconciler) validateProviderServiceAccountPolicy(pp *v1alpha1.PlatformProvider) error {
+	serviceAccount := strings.TrimSpace(pp.Spec.ServiceAccountName)
+	if r.RestrictServiceAccounts && serviceAccount != "" {
+		allowed := false
+		for _, candidate := range r.AllowedServiceAccounts {
+			if strings.TrimSpace(candidate) == serviceAccount {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return fmt.Errorf("spec.serviceAccountName %q is not allowed", serviceAccount)
+		}
+	}
+	if r.ForbidServiceAccountToken && pp.Spec.AutomountServiceAccountToken != nil && *pp.Spec.AutomountServiceAccountToken {
+		return fmt.Errorf("spec.automountServiceAccountToken=true is forbidden")
 	}
 	return nil
 }

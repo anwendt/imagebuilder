@@ -37,12 +37,15 @@ const defaultGCSObjectPrefix = "imagebuilder"
 const gcsResumeChunkSize int64 = 16 * 1024 * 1024
 
 type gcsResumeSession struct {
-	SessionURI string `json:"sessionUri"`
-	Bucket     string `json:"bucket"`
-	Object     string `json:"object"`
-	Size       int64  `json:"size"`
-	Offset     int64  `json:"offset"`
+	SessionURI string    `json:"sessionUri"`
+	Bucket     string    `json:"bucket"`
+	Object     string    `json:"object"`
+	Size       int64     `json:"size"`
+	Offset     int64     `json:"offset"`
+	CreatedAt  time.Time `json:"createdAt"`
 }
+
+var errGCSResumeSessionExpired = errors.New("GCS resumable session expired or no longer exists")
 
 func init() {
 	if err := plugin.RegisterFactory(&Plugin{}, func() platform.Plugin { return &Plugin{} }); err != nil {
@@ -541,15 +544,27 @@ func (c *sdkClient) prepareGCSResumeSession(ctx context.Context, bucket, object 
 		if state.SessionURI == "" || state.Bucket != bucket || state.Object != object || state.Size != size {
 			return gcsResumeSession{}, fmt.Errorf("existing GCS session does not match artifact")
 		}
-		offset, complete, err := c.queryGCSResumeOffset(ctx, state.SessionURI, size)
-		if err != nil {
+		if err := validateGCSResumeOrigin(state.SessionURI, c.uploadEndpoint); err != nil {
 			return gcsResumeSession{}, err
 		}
-		if complete {
-			offset = size
+		// Google documents resumable sessions as expiring after one week of
+		// inactivity. Rotate proactively before that boundary.
+		if !state.CreatedAt.IsZero() && time.Since(state.CreatedAt) >= 6*24*time.Hour {
+			token = ""
+		} else {
+			offset, complete, err := c.queryGCSResumeOffset(ctx, state.SessionURI, size)
+			if err != nil && !errors.Is(err, errGCSResumeSessionExpired) {
+				return gcsResumeSession{}, err
+			}
+			if err == nil {
+				if complete {
+					offset = size
+				}
+				state.Offset = offset
+				return state, nil
+			}
+			token = ""
 		}
-		state.Offset = offset
-		return state, nil
 	}
 	endpoint := fmt.Sprintf("%s/b/%s/o?uploadType=resumable&name=%s", c.uploadEndpoint, url.PathEscape(bucket), url.QueryEscape(object))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(`{"contentType":"application/gzip"}`))
@@ -559,7 +574,7 @@ func (c *sdkClient) prepareGCSResumeSession(ctx context.Context, bucket, object 
 	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
 	req.Header.Set("X-Upload-Content-Type", "application/gzip")
 	req.Header.Set("X-Upload-Content-Length", strconv.FormatInt(size, 10))
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doGCSResumeRequest(req)
 	if err != nil {
 		return gcsResumeSession{}, err
 	}
@@ -572,7 +587,10 @@ func (c *sdkClient) prepareGCSResumeSession(ctx context.Context, bucket, object 
 	if sessionURI == "" {
 		return gcsResumeSession{}, fmt.Errorf("start resumable upload: response has no Location header")
 	}
-	return gcsResumeSession{SessionURI: sessionURI, Bucket: bucket, Object: object, Size: size}, nil
+	if err := validateGCSResumeOrigin(sessionURI, c.uploadEndpoint); err != nil {
+		return gcsResumeSession{}, err
+	}
+	return gcsResumeSession{SessionURI: sessionURI, Bucket: bucket, Object: object, Size: size, CreatedAt: time.Now().UTC()}, nil
 }
 
 func (c *sdkClient) queryGCSResumeOffset(ctx context.Context, sessionURI string, size int64) (int64, bool, error) {
@@ -582,13 +600,16 @@ func (c *sdkClient) queryGCSResumeOffset(ctx context.Context, sessionURI string,
 	}
 	req.Header.Set("Content-Length", "0")
 	req.Header.Set("Content-Range", fmt.Sprintf("bytes */%d", size))
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doGCSResumeRequest(req)
 	if err != nil {
 		return 0, false, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return size, true, nil
+	}
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+		return 0, false, errGCSResumeSessionExpired
 	}
 	if resp.StatusCode != http.StatusPermanentRedirect {
 		return 0, false, fmt.Errorf("query resumable upload: HTTP %d", resp.StatusCode)
@@ -612,7 +633,7 @@ func (c *sdkClient) uploadGCSResume(ctx context.Context, body io.Reader, state *
 		req.Header.Set("Content-Type", "application/gzip")
 		req.Header.Set("Content-Length", strconv.Itoa(n))
 		req.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, state.Size))
-		resp, err := c.httpClient.Do(req)
+		resp, err := c.doGCSResumeRequest(req)
 		if err != nil {
 			return err
 		}
@@ -634,6 +655,39 @@ func (c *sdkClient) uploadGCSResume(ctx context.Context, body io.Reader, state *
 		}
 	}
 	return nil
+}
+
+func validateGCSResumeOrigin(sessionURI, uploadEndpoint string) error {
+	session, err := url.Parse(sessionURI)
+	if err != nil || session.Scheme == "" || session.Host == "" {
+		return fmt.Errorf("GCS resumable session URI is invalid")
+	}
+	endpoint, err := url.Parse(uploadEndpoint)
+	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
+		return fmt.Errorf("GCS upload endpoint is invalid")
+	}
+	if !strings.EqualFold(session.Scheme, endpoint.Scheme) || !strings.EqualFold(session.Host, endpoint.Host) {
+		return fmt.Errorf("GCS resumable session origin %q does not match configured upload origin %q", session.Scheme+"://"+session.Host, endpoint.Scheme+"://"+endpoint.Host)
+	}
+	if session.Scheme != "https" && !isLoopbackHost(session.Hostname()) {
+		return fmt.Errorf("GCS resumable session must use https outside loopback development endpoints")
+	}
+	return nil
+}
+
+func (c *sdkClient) doGCSResumeRequest(req *http.Request) (*http.Response, error) {
+	if err := validateGCSResumeOrigin(req.URL.String(), c.uploadEndpoint); err != nil {
+		return nil, err
+	}
+	client := *c.httpClient
+	client.CheckRedirect = func(next *http.Request, _ []*http.Request) error {
+		return validateGCSResumeOrigin(next.URL.String(), c.uploadEndpoint)
+	}
+	return client.Do(req)
+}
+
+func isLoopbackHost(host string) bool {
+	return host == "localhost" || strings.HasPrefix(host, "127.") || host == "::1"
 }
 
 func gcsRangeOffset(header string) int64 {

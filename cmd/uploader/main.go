@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -146,162 +147,156 @@ func run(ctx context.Context, getenv func(string) string) (runResult, error) {
 	if err != nil {
 		return runResult{}, err
 	}
+	failures := &uploadTargetFailures{}
 	for _, target := range targets {
-		session, err := ensureUploadSession(sessionPath, &sessions, target, artifact)
+		image, operation, completed, err := processUploadTarget(ctx, workspace, sessionPath, &sessions, target, artifact)
 		if err != nil {
-			return runResult{}, err
-		}
-		if session.Phase == "registered" {
-			if session.Image == nil || session.Operation == nil || session.ProviderRef == "" {
-				return runResult{}, fmt.Errorf("registered upload session for %q is incomplete", target.ProviderConfigName)
-			}
-			if err := recordUploadOperation(workspace, uploadOperationRecord{
-				Provider: target.Provider, ProviderConfigName: target.ProviderConfigName,
-				Format: target.Format, ProviderRef: session.ProviderRef, Metadata: cloneStringMap(session.Metadata),
-			}); err != nil {
-				return runResult{}, fmt.Errorf("restore upload operation for provider %q: %w", target.Provider, err)
-			}
-			images = append(images, *session.Image)
-			operations = append(operations, *session.Operation)
+			failures.add(target, err)
 			continue
 		}
-		providerPlugin, closeProvider, err := providerPluginForTarget(ctx, target)
-		if err != nil {
-			return runResult{}, err
+		if completed {
+			images = append(images, image)
+			operations = append(operations, operation)
 		}
-		defer closeProvider()
-		secretData, err := readSecretData(target.CredentialsPath)
-		if err != nil {
-			return runResult{}, fmt.Errorf("read credentials for %q: %w", target.ProviderConfigName, err)
-		}
-		if err := validateProviderEndpoint(ctx, target); err != nil {
-			return runResult{}, err
-		}
-		if err := providerPlugin.Init(ctx, platform.PluginConfig{
-			ProviderConfigName: target.ProviderConfigName,
-			SecretData:         secretData,
-			Region:             target.Region,
-			Endpoint:           target.Endpoint,
-			Insecure:           target.Insecure,
-			Extra:              target.Extra,
-		}); err != nil {
-			return runResult{}, fmt.Errorf("init provider %q: %w", target.Provider, err)
-		}
-		targetSpec := v1alpha1.TargetSpec{
-			ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: target.ProviderConfigName},
-			Format:            target.Format,
-			Tags:              target.Tags,
-		}
-		if err := providerPlugin.Validate(ctx, targetSpec); err != nil {
-			return runResult{}, fmt.Errorf("validate provider %q: %w", target.Provider, err)
-		}
-		targetArtifact := *artifact
-		targetArtifact.Metadata = cloneStringMap(artifact.Metadata)
-		if targetArtifact.Metadata == nil {
-			targetArtifact.Metadata = map[string]string{}
-		}
-		targetArtifact.Metadata["providerConfigName"] = target.ProviderConfigName
-		targetArtifact.Metadata["format"] = target.Format
-		targetArtifact.Metadata["upload.idempotencyKey"] = session.IdempotencyKey
-		targetArtifact.Metadata["upload.sessionToken"] = session.ResumeToken
-		var uploadResult *platform.UploadResult
-		uploadMilliseconds := int64(0)
-		if session.Phase == "uploaded" {
-			uploadResult = &platform.UploadResult{ProviderRef: session.ProviderRef, Metadata: cloneStringMap(session.Metadata)}
-		} else {
-			uploadStarted := time.Now()
-			if resumable, ok := providerPlugin.(platform.ResumablePlugin); ok {
-				uploadResult, err = resumable.UploadResumable(ctx, &targetArtifact, platform.UploadSession{
-					IdempotencyKey: session.IdempotencyKey, ResumeToken: session.ResumeToken,
-					CommittedOffset: session.CommittedOffset, ResumeMode: session.ResumeMode,
-				}, func(checkpoint platform.UploadSession) error {
-					session.ResumeToken = checkpoint.ResumeToken
-					session.CommittedOffset = checkpoint.CommittedOffset
-					session.ResumeMode = checkpoint.ResumeMode
-					targetArtifact.Metadata["upload.sessionToken"] = checkpoint.ResumeToken
-					return writeUploadSessions(sessionPath, sessions)
-				})
-			} else {
-				uploadResult, err = providerPlugin.Upload(ctx, &targetArtifact)
-			}
-			uploadMilliseconds = time.Since(uploadStarted).Milliseconds()
-			if err != nil {
-				if session.ResumeMode != "offset" {
-					_ = providerPlugin.Cleanup(ctx, &targetArtifact)
-				}
-				return runResult{}, fmt.Errorf("upload provider %q session %q: %w", target.Provider, session.IdempotencyKey, err)
-			}
-			if uploadResult == nil || uploadResult.ProviderRef == "" {
-				return runResult{}, fmt.Errorf("provider %q returned empty upload result", target.Provider)
-			}
-			session.Phase = "uploaded"
-			session.ProviderRef = uploadResult.ProviderRef
-			session.CommittedOffset = artifact.SizeBytes
-			session.Metadata = cloneStringMap(uploadResult.Metadata)
-			if err := writeUploadSessions(sessionPath, sessions); err != nil {
-				return runResult{}, fmt.Errorf("checkpoint completed upload for provider %q: %w", target.Provider, err)
-			}
-		}
-		if uploadResult.Metadata == nil {
-			uploadResult.Metadata = map[string]string{}
-		}
-		uploadResult.Metadata["providerRef"] = uploadResult.ProviderRef
-		uploadResult.Metadata["providerConfigName"] = target.ProviderConfigName
-		uploadResult.Metadata["register.idempotencyKey"] = session.IdempotencyKey
-		for key, value := range target.Tags {
-			uploadResult.Metadata["target.tag."+key] = value
-		}
-		if err := recordUploadOperation(workspace, uploadOperationRecord{
-			Provider:           target.Provider,
-			ProviderConfigName: target.ProviderConfigName,
-			Format:             target.Format,
-			ProviderRef:        uploadResult.ProviderRef,
-			Metadata:           cloneStringMap(uploadResult.Metadata),
-		}); err != nil {
-			_ = providerPlugin.Cleanup(ctx, &targetArtifact)
-			return runResult{}, fmt.Errorf("record upload operation for provider %q: %w", target.Provider, err)
-		}
-		registerStarted := time.Now()
-		imageRef, err := providerPlugin.Register(ctx, uploadResult)
-		registerMilliseconds := time.Since(registerStarted).Milliseconds()
-		if err != nil {
-			return runResult{}, fmt.Errorf("register provider %q session %q: %w", target.Provider, session.IdempotencyKey, err)
-		}
-		if imageRef == nil || imageRef.ID == "" {
-			return runResult{}, fmt.Errorf("provider %q returned empty image reference", target.Provider)
-		}
-		uploadResult.Metadata["imageRef"] = imageRef.ID
-		operation := v1alpha1.UploadOperationStatus{
-			Provider: target.Provider, ProviderConfig: target.ProviderConfigName, Format: target.Format,
-			Phase: "Succeeded", OperationRef: uploadResult.ProviderRef, ImageRef: imageRef.ID,
-			LastTransitionTime: metav1.Now(), UploadMilliseconds: uploadMilliseconds,
-			UploadBytes: artifact.SizeBytes, RegisterMilliseconds: registerMilliseconds,
-			ResumeMode: session.ResumeMode, CommittedBytes: session.CommittedOffset,
-		}
-		image := v1alpha1.ImageStatus{
-			Provider: target.Provider, ProviderConfig: target.ProviderConfigName, ImageRef: imageRef.ID,
-			Location: imageRef.Location, Format: target.Format, Checksum: artifact.Checksum,
-		}
-		session.Phase = "registered"
-		session.Metadata = cloneStringMap(uploadResult.Metadata)
-		session.Image = &image
-		session.Operation = &operation
-		if err := writeUploadSessions(sessionPath, sessions); err != nil {
-			return runResult{}, fmt.Errorf("checkpoint registered image for provider %q: %w", target.Provider, err)
-		}
-		if err := recordUploadOperation(workspace, uploadOperationRecord{
-			Provider:           target.Provider,
-			ProviderConfigName: target.ProviderConfigName,
-			Format:             target.Format,
-			ProviderRef:        uploadResult.ProviderRef,
-			Metadata:           cloneStringMap(uploadResult.Metadata),
-		}); err != nil {
-			return runResult{}, fmt.Errorf("record registered operation for provider %q: %w", target.Provider, err)
-		}
-		operations = append(operations, operation)
-		images = append(images, image)
 	}
-	return runResult{Images: images, Operations: operations}, nil
+	result := runResult{Images: images, Operations: operations}
+	if len(failures.items) > 0 {
+		return result, failures
+	}
+	return result, nil
+}
+
+type uploadTargetFailure struct {
+	target uploadpod.TargetConfig
+	err    error
+}
+
+type uploadTargetFailures struct{ items []uploadTargetFailure }
+
+func (e *uploadTargetFailures) add(target uploadpod.TargetConfig, err error) {
+	e.items = append(e.items, uploadTargetFailure{target: target, err: err})
+}
+
+func (e *uploadTargetFailures) Error() string {
+	messages := make([]string, 0, len(e.items))
+	for _, item := range e.items {
+		messages = append(messages, fmt.Sprintf("%s/%s: %v", item.target.Provider, item.target.ProviderConfigName, item.err))
+	}
+	return "upload targets failed: " + strings.Join(messages, "; ")
+}
+
+func (e *uploadTargetFailures) Transient() bool {
+	if len(e.items) == 0 {
+		return false
+	}
+	for _, item := range e.items {
+		if !providererrors.IsTransient(item.err) {
+			return false
+		}
+	}
+	return true
+}
+
+func processUploadTarget(ctx context.Context, workspace, sessionPath string, sessions *[]uploadSessionRecord, target uploadpod.TargetConfig, artifact *platform.BuildArtifact) (v1alpha1.ImageStatus, v1alpha1.UploadOperationStatus, bool, error) {
+	session, err := ensureUploadSession(sessionPath, sessions, target, artifact)
+	if err != nil {
+		return v1alpha1.ImageStatus{}, v1alpha1.UploadOperationStatus{}, false, err
+	}
+	if session.Phase == "registered" {
+		if session.Image == nil || session.Operation == nil || session.ProviderRef == "" {
+			return v1alpha1.ImageStatus{}, v1alpha1.UploadOperationStatus{}, false, fmt.Errorf("registered upload session for %q is incomplete", target.ProviderConfigName)
+		}
+		if err := recordUploadOperation(workspace, uploadOperationRecord{Provider: target.Provider, ProviderConfigName: target.ProviderConfigName, Format: target.Format, ProviderRef: session.ProviderRef, Metadata: cloneStringMap(session.Metadata)}); err != nil {
+			return v1alpha1.ImageStatus{}, v1alpha1.UploadOperationStatus{}, false, fmt.Errorf("restore upload operation for provider %q: %w", target.Provider, err)
+		}
+		return *session.Image, *session.Operation, true, nil
+	}
+	providerPlugin, closeProvider, err := providerPluginForTarget(ctx, target)
+	if err != nil {
+		return v1alpha1.ImageStatus{}, v1alpha1.UploadOperationStatus{}, false, err
+	}
+	defer closeProvider()
+	secretData, err := readSecretData(target.CredentialsPath)
+	if err != nil {
+		return v1alpha1.ImageStatus{}, v1alpha1.UploadOperationStatus{}, false, fmt.Errorf("read credentials for %q: %w", target.ProviderConfigName, err)
+	}
+	if err := validateProviderEndpoint(ctx, target); err != nil {
+		return v1alpha1.ImageStatus{}, v1alpha1.UploadOperationStatus{}, false, err
+	}
+	if err := providerPlugin.Init(ctx, platform.PluginConfig{ProviderConfigName: target.ProviderConfigName, SecretData: secretData, Region: target.Region, Endpoint: target.Endpoint, Insecure: target.Insecure, Extra: target.Extra}); err != nil {
+		return v1alpha1.ImageStatus{}, v1alpha1.UploadOperationStatus{}, false, fmt.Errorf("init provider %q: %w", target.Provider, err)
+	}
+	if err := providerPlugin.Validate(ctx, v1alpha1.TargetSpec{ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: target.ProviderConfigName}, Format: target.Format, Tags: target.Tags}); err != nil {
+		return v1alpha1.ImageStatus{}, v1alpha1.UploadOperationStatus{}, false, fmt.Errorf("validate provider %q: %w", target.Provider, err)
+	}
+	targetArtifact := *artifact
+	targetArtifact.Metadata = cloneStringMap(artifact.Metadata)
+	if targetArtifact.Metadata == nil {
+		targetArtifact.Metadata = map[string]string{}
+	}
+	targetArtifact.Metadata["providerConfigName"], targetArtifact.Metadata["format"] = target.ProviderConfigName, target.Format
+	targetArtifact.Metadata["upload.idempotencyKey"], targetArtifact.Metadata["upload.sessionToken"] = session.IdempotencyKey, session.ResumeToken
+	var uploadResult *platform.UploadResult
+	uploadMilliseconds := int64(0)
+	if session.Phase == "uploaded" {
+		uploadResult = &platform.UploadResult{ProviderRef: session.ProviderRef, Metadata: cloneStringMap(session.Metadata)}
+	} else {
+		uploadStarted := time.Now()
+		if resumable, ok := providerPlugin.(platform.ResumablePlugin); ok {
+			uploadResult, err = resumable.UploadResumable(ctx, &targetArtifact, platform.UploadSession{IdempotencyKey: session.IdempotencyKey, ResumeToken: session.ResumeToken, CommittedOffset: session.CommittedOffset, ResumeMode: session.ResumeMode}, func(checkpoint platform.UploadSession) error {
+				session.ResumeToken, session.CommittedOffset, session.ResumeMode = checkpoint.ResumeToken, checkpoint.CommittedOffset, checkpoint.ResumeMode
+				targetArtifact.Metadata["upload.sessionToken"] = checkpoint.ResumeToken
+				return writeUploadSessions(sessionPath, *sessions)
+			})
+		} else {
+			uploadResult, err = providerPlugin.Upload(ctx, &targetArtifact)
+		}
+		uploadMilliseconds = time.Since(uploadStarted).Milliseconds()
+		if err != nil {
+			if session.ResumeMode != "offset" {
+				_ = providerPlugin.Cleanup(ctx, &targetArtifact)
+			}
+			return v1alpha1.ImageStatus{}, v1alpha1.UploadOperationStatus{}, false, fmt.Errorf("upload provider %q session %q: %w", target.Provider, session.IdempotencyKey, err)
+		}
+		if uploadResult == nil || uploadResult.ProviderRef == "" {
+			return v1alpha1.ImageStatus{}, v1alpha1.UploadOperationStatus{}, false, fmt.Errorf("provider %q returned empty upload result", target.Provider)
+		}
+		session.Phase, session.ProviderRef, session.CommittedOffset, session.Metadata = "uploaded", uploadResult.ProviderRef, artifact.SizeBytes, cloneStringMap(uploadResult.Metadata)
+		if err := writeUploadSessions(sessionPath, *sessions); err != nil {
+			return v1alpha1.ImageStatus{}, v1alpha1.UploadOperationStatus{}, false, fmt.Errorf("checkpoint completed upload for provider %q: %w", target.Provider, err)
+		}
+	}
+	if uploadResult.Metadata == nil {
+		uploadResult.Metadata = map[string]string{}
+	}
+	uploadResult.Metadata["providerRef"], uploadResult.Metadata["providerConfigName"], uploadResult.Metadata["register.idempotencyKey"] = uploadResult.ProviderRef, target.ProviderConfigName, session.IdempotencyKey
+	for key, value := range target.Tags {
+		uploadResult.Metadata["target.tag."+key] = value
+	}
+	if err := recordUploadOperation(workspace, uploadOperationRecord{Provider: target.Provider, ProviderConfigName: target.ProviderConfigName, Format: target.Format, ProviderRef: uploadResult.ProviderRef, Metadata: cloneStringMap(uploadResult.Metadata)}); err != nil {
+		_ = providerPlugin.Cleanup(ctx, &targetArtifact)
+		return v1alpha1.ImageStatus{}, v1alpha1.UploadOperationStatus{}, false, fmt.Errorf("record upload operation for provider %q: %w", target.Provider, err)
+	}
+	registerStarted := time.Now()
+	imageRef, err := providerPlugin.Register(ctx, uploadResult)
+	registerMilliseconds := time.Since(registerStarted).Milliseconds()
+	if err != nil {
+		return v1alpha1.ImageStatus{}, v1alpha1.UploadOperationStatus{}, false, fmt.Errorf("register provider %q session %q: %w", target.Provider, session.IdempotencyKey, err)
+	}
+	if imageRef == nil || imageRef.ID == "" {
+		return v1alpha1.ImageStatus{}, v1alpha1.UploadOperationStatus{}, false, fmt.Errorf("provider %q returned empty image reference", target.Provider)
+	}
+	uploadResult.Metadata["imageRef"] = imageRef.ID
+	operation := v1alpha1.UploadOperationStatus{Provider: target.Provider, ProviderConfig: target.ProviderConfigName, Format: target.Format, Phase: "Succeeded", OperationRef: uploadResult.ProviderRef, ImageRef: imageRef.ID, LastTransitionTime: metav1.Now(), UploadMilliseconds: uploadMilliseconds, UploadBytes: artifact.SizeBytes, RegisterMilliseconds: registerMilliseconds, ResumeMode: session.ResumeMode, CommittedBytes: session.CommittedOffset}
+	image := v1alpha1.ImageStatus{Provider: target.Provider, ProviderConfig: target.ProviderConfigName, ImageRef: imageRef.ID, Location: imageRef.Location, Format: target.Format, Checksum: artifact.Checksum}
+	session.Phase, session.Metadata, session.Image, session.Operation = "registered", cloneStringMap(uploadResult.Metadata), &image, &operation
+	if err := writeUploadSessions(sessionPath, *sessions); err != nil {
+		return v1alpha1.ImageStatus{}, v1alpha1.UploadOperationStatus{}, false, fmt.Errorf("checkpoint registered image for provider %q: %w", target.Provider, err)
+	}
+	if err := recordUploadOperation(workspace, uploadOperationRecord{Provider: target.Provider, ProviderConfigName: target.ProviderConfigName, Format: target.Format, ProviderRef: uploadResult.ProviderRef, Metadata: cloneStringMap(uploadResult.Metadata)}); err != nil {
+		return v1alpha1.ImageStatus{}, v1alpha1.UploadOperationStatus{}, false, fmt.Errorf("record registered operation for provider %q: %w", target.Provider, err)
+	}
+	return image, operation, true, nil
 }
 
 func cleanupUploadedArtifacts(ctx context.Context, workspace string, getenv func(string) string) (runResult, error) {
@@ -579,19 +574,33 @@ func writeJSON(path string, value any) error {
 }
 
 func readUploadSessions(path string) ([]uploadSessionRecord, error) {
-	data, err := os.ReadFile(path) // #nosec G304 -- Path is inside the controller-owned workspace PVC.
-	if os.IsNotExist(err) {
+	sessions, primaryErr := readUploadSessionFile(path)
+	if primaryErr == nil {
+		return sessions, nil
+	}
+	backupPath := path + ".bak"
+	sessions, backupErr := readUploadSessionFile(backupPath)
+	if backupErr == nil {
+		slog.Warn("recovered upload sessions from backup checkpoint", slog.String("path", backupPath), slog.Any("primaryError", primaryErr))
+		return sessions, nil
+	}
+	if os.IsNotExist(primaryErr) && os.IsNotExist(backupErr) {
 		return nil, nil
 	}
+	return nil, fmt.Errorf("read upload sessions: primary: %v; backup: %v", primaryErr, backupErr)
+}
+
+func readUploadSessionFile(path string) ([]uploadSessionRecord, error) {
+	data, err := os.ReadFile(path) // #nosec G304 -- Path is inside the controller-owned workspace PVC.
 	if err != nil {
-		return nil, fmt.Errorf("read upload sessions: %w", err)
+		return nil, err
 	}
 	var state uploadSessionFile
 	if err := json.Unmarshal(data, &state); err != nil {
-		return nil, fmt.Errorf("parse upload sessions: %w", err)
+		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	if state.Version != 1 {
-		return nil, fmt.Errorf("unsupported upload session file version %d", state.Version)
+		return nil, fmt.Errorf("unsupported upload session file version %d in %s", state.Version, path)
 	}
 	return state.Sessions, nil
 }
@@ -668,8 +677,23 @@ func writeUploadSessions(path string, sessions []uploadSessionRecord) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close upload session checkpoint: %w", err)
 	}
+	backupPath := path + ".bak"
+	if err := os.Remove(backupPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove previous upload session backup: %w", err)
+	}
+	if err := os.Rename(path, backupPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("backup previous upload session checkpoint: %w", err)
+	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("commit upload session checkpoint: %w", err)
+	}
+	directory, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("open upload checkpoint directory: %w", err)
+	}
+	defer directory.Close()
+	if err := directory.Sync(); err != nil {
+		return fmt.Errorf("sync upload checkpoint directory: %w", err)
 	}
 	return nil
 }

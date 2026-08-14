@@ -60,19 +60,22 @@ func init() {
 
 func main() {
 	var (
-		metricsAddr               string
-		probeAddr                 string
-		leaderElect               bool
-		maxConcurrentBuilds       int
-		deprecatedMaxPerNode      int
-		schedulerNamespace        string
-		providerNamespace         string
-		requireProviderMTLS       bool
-		requireProviderDigest     bool
-		requireProviderSignature  bool
-		providerSignaturePolicy   string
-		allowedProviderRegistries string
-		logLevel                  string
+		metricsAddr                       string
+		probeAddr                         string
+		leaderElect                       bool
+		maxConcurrentBuilds               int
+		deprecatedMaxPerNode              int
+		schedulerNamespace                string
+		providerNamespace                 string
+		requireProviderMTLS               bool
+		requireProviderDigest             bool
+		requireProviderSignature          bool
+		providerSignaturePolicy           string
+		allowedProviderRegistries         string
+		restrictProviderServiceAccounts   bool
+		allowedProviderServiceAccounts    string
+		forbidProviderServiceAccountToken bool
+		logLevel                          string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "Metrics endpoint address")
@@ -87,17 +90,24 @@ func main() {
 	flag.BoolVar(&requireProviderSignature, "require-provider-signature", false, "Require all PlatformProvider resources to enable and pass cryptographic image signature verification")
 	flag.StringVar(&providerSignaturePolicy, "provider-signature-policy", "", "Name of the enforcing Kyverno ClusterPolicy used for provider signature verification")
 	flag.StringVar(&allowedProviderRegistries, "allowed-provider-registries", "", "Comma-separated registry prefixes allowed for PlatformProvider packages")
+	flag.BoolVar(&restrictProviderServiceAccounts, "restrict-provider-serviceaccounts", false, "Reject custom PlatformProvider ServiceAccounts unless explicitly allowlisted")
+	flag.StringVar(&allowedProviderServiceAccounts, "allowed-provider-serviceaccounts", "", "Comma-separated ServiceAccount names permitted for PlatformProvider pods")
+	flag.BoolVar(&forbidProviderServiceAccountToken, "forbid-provider-serviceaccount-token", false, "Forbid PlatformProvider pods from automounting Kubernetes API tokens")
 	// OR-012: log level must be configurable at runtime without redeployment.
 	flag.StringVar(&logLevel, "log-level", "info", "Log level: debug, info, warn, error")
 	flag.Parse()
 	_ = deprecatedMaxPerNode
 	allowedProviderRegistryList := splitCSV(allowedProviderRegistries)
+	allowedProviderServiceAccountList := splitCSV(allowedProviderServiceAccounts)
 	imagebuilderv1alpha1.SetPlatformProviderAdmissionPolicy(imagebuilderv1alpha1.PlatformProviderAdmissionPolicy{
-		RequireMTLS:       requireProviderMTLS,
-		RequireDigest:     requireProviderDigest,
-		RequireSignature:  requireProviderSignature,
-		AllowedRegistries: allowedProviderRegistryList,
-		ProviderNamespace: providerNamespace,
+		RequireMTLS:               requireProviderMTLS,
+		RequireDigest:             requireProviderDigest,
+		RequireSignature:          requireProviderSignature,
+		AllowedRegistries:         allowedProviderRegistryList,
+		ProviderNamespace:         providerNamespace,
+		RestrictServiceAccounts:   restrictProviderServiceAccounts,
+		AllowedServiceAccounts:    allowedProviderServiceAccountList,
+		ForbidServiceAccountToken: forbidProviderServiceAccountToken,
 	})
 
 	var slogLevel slog.Level
@@ -152,14 +162,17 @@ func main() {
 	}
 
 	if err = (&providercontroller.PlatformProviderReconciler{
-		Client:            mgr.GetClient(),
-		Scheme:            mgr.GetScheme(),
-		Registry:          registry,
-		ProviderNamespace: providerNamespace,
-		RequireMTLS:       requireProviderMTLS,
-		RequireDigest:     requireProviderDigest,
-		RequireSignature:  requireProviderSignature,
-		AllowedRegistries: allowedProviderRegistryList,
+		Client:                    mgr.GetClient(),
+		Scheme:                    mgr.GetScheme(),
+		Registry:                  registry,
+		ProviderNamespace:         providerNamespace,
+		RequireMTLS:               requireProviderMTLS,
+		RequireDigest:             requireProviderDigest,
+		RequireSignature:          requireProviderSignature,
+		AllowedRegistries:         allowedProviderRegistryList,
+		RestrictServiceAccounts:   restrictProviderServiceAccounts,
+		AllowedServiceAccounts:    allowedProviderServiceAccountList,
+		ForbidServiceAccountToken: forbidProviderServiceAccountToken,
 		SignatureVerifier: &signaturepolicy.Verifier{
 			Client: mgr.GetClient(),
 			Config: signaturepolicy.Config{

@@ -267,6 +267,26 @@ func TestHelmChartImagesAreDigestConfigurable(t *testing.T) {
 	}
 }
 
+func TestHelmDevelopmentProfileEmitsSecurityWarning(t *testing.T) {
+	notesPath := filepath.Join(repoRoot, "charts", "imagebuilder", "templates", "NOTES.txt")
+	notes, err := os.ReadFile(notesPath)
+	if err != nil {
+		t.Fatalf("read Helm notes: %v", err)
+	}
+	for _, want := range []string{"DEVELOPMENT SECURITY PROFILE ACTIVE", "developmentProfileAcknowledged", "never promote"} {
+		if !strings.Contains(string(notes), want) {
+			t.Fatalf("NOTES.txt missing %q", want)
+		}
+	}
+	values, err := os.ReadFile(filepath.Join(repoRoot, "charts", "imagebuilder", "values-development.yaml"))
+	if err != nil {
+		t.Fatalf("read development values: %v", err)
+	}
+	if !strings.Contains(string(values), "developmentProfileAcknowledged: false") {
+		t.Fatal("development values must require explicit acknowledgement")
+	}
+}
+
 func parseNetworkPolicies(t *testing.T, raw string) map[string]*networkingv1.NetworkPolicy {
 	t.Helper()
 	out := map[string]*networkingv1.NetworkPolicy{}

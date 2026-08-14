@@ -3,11 +3,13 @@ package gcp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestGCSResumeSessionUploadsAndCheckpointsRanges(t *testing.T) {
@@ -54,6 +56,44 @@ func TestGCSResumeSessionUploadsAndCheckpointsRanges(t *testing.T) {
 	}
 	if !reflect.DeepEqual(checkpoints, []int64{gcsResumeChunkSize, size}) {
 		t.Fatalf("checkpoints = %#v", checkpoints)
+	}
+}
+
+func TestValidateGCSResumeOriginRejectsForeignHost(t *testing.T) {
+	err := validateGCSResumeOrigin("https://attacker.example/upload/1", "https://storage.googleapis.com/upload/storage/v1")
+	if err == nil {
+		t.Fatal("foreign resumable session origin was accepted")
+	}
+}
+
+func TestPrepareGCSResumeSessionRotatesExpiredBackendSession(t *testing.T) {
+	var server *httptest.Server
+	postCalls := 0
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && r.URL.Path == "/expired" {
+			w.WriteHeader(http.StatusGone)
+			return
+		}
+		if r.Method == http.MethodPost {
+			postCalls++
+			w.Header().Set("Location", server.URL+"/session/new")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.Error(w, "unexpected request", http.StatusBadRequest)
+	}))
+	defer server.Close()
+	existing, err := json.Marshal(gcsResumeSession{SessionURI: server.URL + "/expired", Bucket: "bucket", Object: "object", Size: 1024, CreatedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("marshal session: %v", err)
+	}
+	client := &sdkClient{httpClient: server.Client(), uploadEndpoint: server.URL}
+	state, err := client.prepareGCSResumeSession(context.Background(), "bucket", "object", 1024, string(existing))
+	if err != nil {
+		t.Fatalf("prepareGCSResumeSession returned error: %v", err)
+	}
+	if state.SessionURI != server.URL+"/session/new" || postCalls != 1 || !state.CreatedAt.After(time.Time{}) {
+		t.Fatalf("rotated state = %#v, postCalls=%d", state, postCalls)
 	}
 }
 

@@ -1,5 +1,6 @@
 nameOverride: ""
 fullnameOverride: ""
+developmentProfileAcknowledged: false
 
 namespace:
   create: true
@@ -95,6 +96,9 @@ providerSecurity:
   requireMTLS: true
   requireDigest: true
   requireSignature: true
+  restrictServiceAccounts: true
+  allowedServiceAccounts: []
+  forbidServiceAccountToken: true
   allowedRegistries:
     - ghcr.io/anwendt
 

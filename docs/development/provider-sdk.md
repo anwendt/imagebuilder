@@ -190,6 +190,11 @@ backend state. AWS persists S3 multipart upload IDs and ETags, Azure persists
 Page Blob offsets, and GCP persists the JSON API resumable session URI.
 OpenStack and vSphere retain honest safe-restart semantics.
 
+Resume preparation must treat the backend as authoritative. The reference AWS
+provider rebuilds part state with `ListParts`; Azure and GCP rotate checkpoints
+whose backend session no longer exists. GCP also requires resumable session URIs
+and redirects to match the configured upload origin.
+
 Upload Jobs use a bounded `backoffLimit` of three. The uploader exits with code
 75 only for errors classified as transient (transport failures, throttling,
 deadlines, or temporary service failures). A Pod failure policy fails the Job

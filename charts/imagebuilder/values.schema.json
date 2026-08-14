@@ -2,6 +2,10 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "type": "object",
   "properties": {
+    "developmentProfileAcknowledged": {
+      "type": "boolean",
+      "description": "Records explicit acknowledgement when development values disable production security guardrails."
+    },
     "imageDigestEnforcement": {
       "type": "object",
       "properties": {
@@ -135,6 +139,19 @@
           "type": "boolean",
           "description": "Requires every PlatformProvider to opt into signature verification policy. Production installs should keep this true."
         },
+        "restrictServiceAccounts": {
+          "type": "boolean",
+          "description": "Rejects custom PlatformProvider ServiceAccounts unless explicitly allowlisted."
+        },
+        "allowedServiceAccounts": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "forbidServiceAccountToken": {
+          "type": "boolean",
+          "description": "Forbids PlatformProvider pods from automounting Kubernetes API tokens."
+        },
         "allowedRegistries": {
           "type": "array",
           "items": {
@@ -144,7 +161,7 @@
           "uniqueItems": true
         }
       },
-      "required": ["requireMTLS", "requireDigest", "requireSignature"]
+      "required": ["requireMTLS", "requireDigest", "requireSignature", "restrictServiceAccounts", "allowedServiceAccounts", "forbidServiceAccountToken"]
     },
     "imageSignaturePolicy": {
       "type": "object",

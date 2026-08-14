@@ -38,6 +38,11 @@ spec:
             - --require-provider-mtls={{ .Values.providerSecurity.requireMTLS }}
             - --require-provider-digest={{ .Values.providerSecurity.requireDigest }}
             - --require-provider-signature={{ .Values.providerSecurity.requireSignature }}
+            - --restrict-provider-serviceaccounts={{ .Values.providerSecurity.restrictServiceAccounts }}
+            - --forbid-provider-serviceaccount-token={{ .Values.providerSecurity.forbidServiceAccountToken }}
+            {{- if .Values.providerSecurity.allowedServiceAccounts }}
+            - --allowed-provider-serviceaccounts={{ join "," .Values.providerSecurity.allowedServiceAccounts }}
+            {{- end }}
             {{- if and .Values.providerSecurity.requireSignature .Values.imageSignaturePolicy.enabled }}
             - --provider-signature-policy={{ include "imagebuilder.fullname" . }}-require-signed-digests
             {{- end }}

@@ -20,11 +20,14 @@ import (
 // PlatformProviderAdmissionPolicy is configured by the operator process and
 // lets production installs fail closed at admission time.
 type PlatformProviderAdmissionPolicy struct {
-	RequireMTLS       bool
-	RequireDigest     bool
-	RequireSignature  bool
-	AllowedRegistries []string
-	ProviderNamespace string
+	RequireMTLS               bool
+	RequireDigest             bool
+	RequireSignature          bool
+	AllowedRegistries         []string
+	ProviderNamespace         string
+	RestrictServiceAccounts   bool
+	AllowedServiceAccounts    []string
+	ForbidServiceAccountToken bool
 }
 
 var platformProviderAdmissionPolicy = struct {
@@ -44,6 +47,7 @@ func currentPlatformProviderAdmissionPolicy() PlatformProviderAdmissionPolicy {
 	defer platformProviderAdmissionPolicy.RUnlock()
 	policy := platformProviderAdmissionPolicy.value
 	policy.AllowedRegistries = append([]string(nil), policy.AllowedRegistries...)
+	policy.AllowedServiceAccounts = append([]string(nil), policy.AllowedServiceAccounts...)
 	return policy
 }
 
@@ -93,11 +97,34 @@ func (r *PlatformProvider) validatePlatformProvider() (admission.Warnings, error
 	if err := validatePlatformProviderTransportPolicy(r, policy); err != nil {
 		errs = append(errs, err)
 	}
+	if err := validatePlatformProviderServiceAccountPolicy(r, policy); err != nil {
+		errs = append(errs, err)
+	}
 
 	if len(errs) > 0 {
 		return nil, joinErrors(errs)
 	}
 	return nil, nil
+}
+
+func validatePlatformProviderServiceAccountPolicy(pp *PlatformProvider, policy PlatformProviderAdmissionPolicy) error {
+	serviceAccount := strings.TrimSpace(pp.Spec.ServiceAccountName)
+	if policy.RestrictServiceAccounts && serviceAccount != "" && !stringAllowed(serviceAccount, policy.AllowedServiceAccounts) {
+		return fmt.Errorf("spec.serviceAccountName %q is not allowed by operator policy", serviceAccount)
+	}
+	if policy.ForbidServiceAccountToken && pp.Spec.AutomountServiceAccountToken != nil && *pp.Spec.AutomountServiceAccountToken {
+		return fmt.Errorf("spec.automountServiceAccountToken=true is forbidden by operator policy")
+	}
+	return nil
+}
+
+func stringAllowed(value string, allowed []string) bool {
+	for _, candidate := range allowed {
+		if strings.TrimSpace(candidate) == value {
+			return true
+		}
+	}
+	return false
 }
 
 func validatePlatformProviderPackagePolicy(pp *PlatformProvider, policy PlatformProviderAdmissionPolicy) error {

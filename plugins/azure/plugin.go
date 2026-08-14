@@ -934,12 +934,18 @@ func (c *sdkClient) preparePageBlobSession(ctx context.Context, container, blobN
 		}
 		properties, err := client.GetProperties(ctx, nil)
 		if err != nil {
-			return azurePageBlobSession{}, fmt.Errorf("read existing Page Blob: %w", err)
+			if !bloberror.HasCode(err, bloberror.BlobNotFound) {
+				return azurePageBlobSession{}, fmt.Errorf("read existing Page Blob: %w", err)
+			}
+			// The durable checkpoint outlived the staging blob. Fall through and
+			// create a fresh blob for the same deterministic target.
+			token = ""
+		} else {
+			if properties.ContentLength == nil || *properties.ContentLength != size {
+				return azurePageBlobSession{}, fmt.Errorf("existing Page Blob size does not match artifact")
+			}
+			return state, nil
 		}
-		if properties.ContentLength == nil || *properties.ContentLength != size {
-			return azurePageBlobSession{}, fmt.Errorf("existing Page Blob size does not match artifact")
-		}
-		return state, nil
 	}
 	if _, err := c.blobs.CreateContainer(ctx, container, nil); err != nil && !bloberror.HasCode(err, bloberror.ContainerAlreadyExists) {
 		return azurePageBlobSession{}, fmt.Errorf("ensure container exists: %w", err)

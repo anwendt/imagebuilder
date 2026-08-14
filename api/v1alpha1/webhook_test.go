@@ -917,6 +917,46 @@ func TestPlatformProviderWebhook_RejectsForbiddenRegistry(t *testing.T) {
 	}
 }
 
+func TestPlatformProviderWebhook_RejectsUnapprovedServiceAccountAndToken(t *testing.T) {
+	SetPlatformProviderAdmissionPolicy(PlatformProviderAdmissionPolicy{
+		RestrictServiceAccounts: true, AllowedServiceAccounts: []string{"provider-approved"}, ForbidServiceAccountToken: true,
+	})
+	t.Cleanup(func() { SetPlatformProviderAdmissionPolicy(PlatformProviderAdmissionPolicy{}) })
+	automount := true
+	pp := &PlatformProvider{Spec: PlatformProviderSpec{
+		Package: "ghcr.io/example/provider:v1", ServiceAccountName: "cluster-admin", AutomountServiceAccountToken: &automount,
+	}}
+	_, err := pp.ValidateCreate()
+	if err == nil || !strings.Contains(err.Error(), "serviceAccountName") {
+		t.Fatalf("error = %v, want ServiceAccount policy rejection", err)
+	}
+}
+
+func TestPlatformProviderWebhook_RejectsServiceAccountToken(t *testing.T) {
+	SetPlatformProviderAdmissionPolicy(PlatformProviderAdmissionPolicy{ForbidServiceAccountToken: true})
+	t.Cleanup(func() { SetPlatformProviderAdmissionPolicy(PlatformProviderAdmissionPolicy{}) })
+	automount := true
+	pp := &PlatformProvider{Spec: PlatformProviderSpec{Package: "ghcr.io/example/provider:v1", AutomountServiceAccountToken: &automount}}
+	_, err := pp.ValidateCreate()
+	if err == nil || !strings.Contains(err.Error(), "automountServiceAccountToken") {
+		t.Fatalf("error = %v, want token policy rejection", err)
+	}
+}
+
+func TestPlatformProviderWebhook_AllowsApprovedServiceAccountWithoutToken(t *testing.T) {
+	SetPlatformProviderAdmissionPolicy(PlatformProviderAdmissionPolicy{
+		RestrictServiceAccounts: true, AllowedServiceAccounts: []string{"provider-approved"}, ForbidServiceAccountToken: true,
+	})
+	t.Cleanup(func() { SetPlatformProviderAdmissionPolicy(PlatformProviderAdmissionPolicy{}) })
+	automount := false
+	pp := &PlatformProvider{Spec: PlatformProviderSpec{
+		Package: "ghcr.io/example/provider:v1", ServiceAccountName: "provider-approved", AutomountServiceAccountToken: &automount,
+	}}
+	if _, err := pp.ValidateCreate(); err != nil {
+		t.Fatalf("approved ServiceAccount rejected: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ProviderConfig webhook tests
 // ---------------------------------------------------------------------------
