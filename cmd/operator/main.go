@@ -22,10 +22,13 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -160,6 +163,12 @@ func main() {
 	}
 	if namespaceScopedMode {
 		managerOptions.Cache = cache.Options{DefaultNamespaces: map[string]cache.Config{watchNamespace: {}}}
+		managerOptions.NewClient = func(config *rest.Config, options crclient.Options) (crclient.Client, error) {
+			options.Cache = &crclient.CacheOptions{Reader: options.Cache.Reader, DisableFor: []crclient.Object{
+				&imagebuilderv1alpha1.PlatformProvider{}, &corev1.Namespace{}, &admissionregistrationv1.ValidatingWebhookConfiguration{}, &unstructured.Unstructured{},
+			}}
+			return crclient.New(config, options)
+		}
 	}
 	mgr, err := ctrl.NewManager(restConfig, managerOptions)
 	if err != nil {
