@@ -178,6 +178,7 @@ func main() {
 
 	if err = (&vmimagecontroller.VMImageReconciler{
 		Client:              mgr.GetClient(),
+		APIReader:           mgr.GetAPIReader(),
 		Scheme:              mgr.GetScheme(),
 		Registry:            registry,
 		MaxConcurrentBuilds: maxConcurrentBuilds,

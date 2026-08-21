@@ -71,6 +71,7 @@ const (
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;create;update
 type VMImageReconciler struct {
 	client.Client
+	APIReader           client.Reader
 	Scheme              *runtime.Scheme
 	Registry            *plugin.Registry
 	Recorder            record.EventRecorder
@@ -78,6 +79,13 @@ type VMImageReconciler struct {
 	SchedulerNamespace  string
 	ProviderNamespace   string
 	log                 *slog.Logger
+}
+
+func (r *VMImageReconciler) directReader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
 }
 
 func (r *VMImageReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -1064,7 +1072,7 @@ func (r *VMImageReconciler) ensureUploadClientTLSSecret(ctx context.Context, img
 
 func (r *VMImageReconciler) providerTLSSecretValue(ctx context.Context, ref *v1alpha1.ProviderTLSSecretRef, key string) ([]byte, error) {
 	secret := &corev1.Secret{}
-	if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ref.Namespace}, secret); err != nil {
+	if err := r.directReader().Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ref.Namespace}, secret); err != nil {
 		return nil, err
 	}
 	value := secret.Data[key]
@@ -1159,7 +1167,7 @@ func (r *VMImageReconciler) providerSecretData(ctx context.Context, cfg *v1alpha
 		return nil, nil
 	}
 	secret := &corev1.Secret{}
-	if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: cfg.Namespace}, secret); err != nil {
+	if err := r.directReader().Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: cfg.Namespace}, secret); err != nil {
 		return nil, fmt.Errorf("get credentials Secret %q for ProviderConfig %q: %w", ref.Name, cfg.Name, err)
 	}
 	if ref.Key == "" {
@@ -1794,7 +1802,7 @@ func (r *VMImageReconciler) withRemoteGitAuth(ctx context.Context, namespace str
 		secret, ok := cache[ref.Name]
 		if !ok {
 			secret = &corev1.Secret{}
-			if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: ref.Name}, secret); err != nil {
+			if err := r.directReader().Get(ctx, types.NamespacedName{Namespace: namespace, Name: ref.Name}, secret); err != nil {
 				return nil, fmt.Errorf("read git provisioner auth secret %q: %w", ref.Name, err)
 			}
 			cache[ref.Name] = secret

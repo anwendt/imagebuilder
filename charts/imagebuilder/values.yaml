@@ -113,6 +113,7 @@ imageSignaturePolicy:
   keyless:
     issuer: https://token.actions.githubusercontent.com
     subject: https://github.com/*
+    rekorUrl: https://rekor.sigstore.dev
 
 maxConcurrentBuilds: 3
 logLevel: info
@@ -172,6 +173,10 @@ affinity: {}
 
 networkPolicy:
   enabled: true
+  proxy:
+    enabled: false
+    cidr: 0.0.0.0/32
+    port: 8080
   # Additional namespaces where VMImage build/upload jobs run. The chart renders
   # a scoped egress policy for imagebuilder-managed build/upload pods in each
   # namespace without applying namespace-wide default deny to tenant workloads.

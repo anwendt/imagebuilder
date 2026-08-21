@@ -54,4 +54,6 @@ spec:
                 - keyless:
                     issuer: {{ .Values.imageSignaturePolicy.keyless.issuer | quote }}
                     subject: {{ .Values.imageSignaturePolicy.keyless.subject | quote }}
+                    rekor:
+                      url: {{ .Values.imageSignaturePolicy.keyless.rekorUrl | quote }}
 {{- end }}

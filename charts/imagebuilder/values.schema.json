@@ -50,6 +50,26 @@
           "type": "boolean",
           "description": "Renders NetworkPolicies. Production installs should keep this true; local development profiles may disable it."
         },
+        "proxy": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Allows proxy egress from operator, provider, build, and upload pods."
+            },
+            "cidr": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Exact proxy CIDR allowed by the NetworkPolicies, preferably a single-host /32."
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            }
+          },
+          "required": ["enabled", "cidr", "port"]
+        },
         "workloadNamespaces": {
           "type": "array",
           "description": "Additional namespaces where VMImage build/upload Jobs run and should receive scoped egress NetworkPolicies.",
@@ -197,9 +217,14 @@
             "subject": {
               "type": "string",
               "minLength": 1
+            },
+            "rekorUrl": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Rekor transparency log URL required by current Kyverno keyless verification."
             }
           },
-          "required": ["issuer", "subject"]
+          "required": ["issuer", "subject", "rekorUrl"]
         }
       },
       "required": ["enabled", "imageReferences", "keyless"]
