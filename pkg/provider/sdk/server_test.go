@@ -332,6 +332,9 @@ func startServer(t *testing.T, provider sdk.Provider) (providerv1.PlatformProvid
 }
 
 func TestServerOptionsFromEnv_DisabledByDefault(t *testing.T) {
+	if sdk.DefaultListenAddress != ":50051" {
+		t.Fatalf("DefaultListenAddress = %q, want :50051", sdk.DefaultListenAddress)
+	}
 	t.Setenv("PROVIDER_GRPC_TLS_MODE", "")
 
 	opts, err := sdk.ServerOptionsFromEnv()

@@ -47,7 +47,7 @@ go mod tidy
 Run locally:
 
 ```bash
-go run ./cmd/provider --listen :9443
+go run ./cmd/provider --listen :50051
 ```
 
 Build a container:
@@ -245,7 +245,7 @@ mount paths while still supporting production mTLS.
 For plaintext local development, leave TLS variables unset:
 
 ```bash
-go run ./cmd/provider --listen :9443
+go run ./cmd/provider --listen :50051
 ```
 
 For mTLS, the core operator injects these variables when

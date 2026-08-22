@@ -17,7 +17,7 @@ import (
 func main() {
 	var listen string
 	var metricsListen string
-	flag.StringVar(&listen, "listen", ":9443", "gRPC listen address")
+	flag.StringVar(&listen, "listen", sdk.DefaultListenAddress, "gRPC listen address")
 	flag.StringVar(&metricsListen, "metrics-listen", ":8080", "Prometheus metrics listen address; empty disables metrics")
 	flag.Parse()
 

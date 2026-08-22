@@ -19,6 +19,11 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
+// DefaultListenAddress is the in-cluster gRPC endpoint defined by the
+// PlatformProvider transport contract. Provider entrypoints and the
+// controller-managed Service must use the same port.
+const DefaultListenAddress = ":50051"
+
 type Server struct {
 	providerv1.UnimplementedPlatformProviderServer
 	provider Provider

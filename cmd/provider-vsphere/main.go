@@ -13,7 +13,7 @@ import (
 
 func main() {
 	var listen string
-	flag.StringVar(&listen, "listen", ":9443", "gRPC listen address")
+	flag.StringVar(&listen, "listen", sdk.DefaultListenAddress, "gRPC listen address")
 	flag.Parse()
 
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
