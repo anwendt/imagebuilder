@@ -74,6 +74,11 @@ jobs:
 
       - name: Install cosign
         uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003
+        with:
+          # Kyverno 1.16 still discovers signatures through the classic
+          # sha256-<digest>.sig tag. Cosign 3 defaults to OCI referrers, which
+          # makes a valid signature invisible to that admission controller.
+          cosign-release: v2.4.3
 
       - name: Sign Azure provider image
         env:
