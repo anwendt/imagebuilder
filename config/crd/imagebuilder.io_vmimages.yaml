@@ -409,7 +409,7 @@ spec:
                       RegistryRepository is the OCI repository prefix used by the evidence
                       provisioner, for example oci://registry.example.com/platform/evidence.
                       Published status references must additionally be pinned by sha256 digest.
-                    pattern: ^oci://[^\\s]+$
+                    pattern: ^oci://[^[:space:]]+$
                     type: string
                   required:
                     default: true

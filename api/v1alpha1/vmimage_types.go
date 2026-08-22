@@ -84,7 +84,7 @@ type EvidenceSpec struct {
 	// RegistryRepository is the OCI repository prefix used by the evidence
 	// provisioner, for example oci://registry.example.com/platform/evidence.
 	// Published status references must additionally be pinned by sha256 digest.
-	// +kubebuilder:validation:Pattern=`^oci://[^\\s]+$`
+	// +kubebuilder:validation:Pattern=`^oci://[^[:space:]]+$`
 	RegistryRepository string `json:"registryRepository"`
 }
 
