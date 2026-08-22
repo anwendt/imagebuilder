@@ -1,6 +1,6 @@
 module github.com/yourorg/imagebuilder-provider-example
 
-go 1.26.5
+go 1.26.6
 
 require github.com/anwendt/imagebuilder v0.0.0
 

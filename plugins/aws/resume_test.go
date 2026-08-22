@@ -3,6 +3,7 @@ package aws
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
@@ -72,5 +73,22 @@ func TestPrepareMultipartSessionRestartsMissingUpload(t *testing.T) {
 	}
 	if state.UploadID != "new-upload" || state.Offset != 0 || fake.createCalls != 1 {
 		t.Fatalf("new state = %#v, createCalls=%d", state, fake.createCalls)
+	}
+}
+
+func TestUploadMultipartResumeRejectsOutOfRangePartIndex(t *testing.T) {
+	client := &awsSDKLocalImageClient{}
+	offset := awsMaxUploadParts * awsResumePartSize
+	state := &awsMultipartSession{
+		UploadID: "upload-1",
+		Bucket:   "bucket",
+		Key:      "image.raw",
+		Offset:   offset,
+		Size:     offset + 1,
+	}
+
+	err := client.uploadMultipartResume(context.Background(), strings.NewReader("x"), state, func(awsMultipartSession) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "invalid S3 part index") {
+		t.Fatalf("uploadMultipartResume error = %v, want bounded part-index rejection", err)
 	}
 }

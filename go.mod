@@ -1,8 +1,9 @@
 module github.com/anwendt/imagebuilder
 
-go 1.26.5
+go 1.26.6
 
 require (
+	cloud.google.com/go/auth v0.23.0
 	cloud.google.com/go/storage v1.64.0
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.21.1
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1
@@ -16,12 +17,11 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.68.6
 	github.com/aws/aws-sdk-go-v2/service/sts v1.42.1
 	github.com/aws/smithy-go v1.25.1
-	github.com/go-git/go-git/v5 v5.19.1
+	github.com/go-git/go-git/v5 v5.19.2
 	github.com/gophercloud/gophercloud/v2 v2.12.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/vmware/govmomi v0.54.0
 	golang.org/x/net v0.57.0
-	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.22.0
 	google.golang.org/api v0.293.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260807164820-c8921c73eeea
@@ -37,7 +37,6 @@ require (
 require (
 	cel.dev/expr v0.25.2 // indirect
 	cloud.google.com/go v0.123.0 // indirect
-	cloud.google.com/go/auth v0.23.0 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	cloud.google.com/go/iam v1.11.0 // indirect
@@ -139,6 +138,7 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/crypto v0.54.0 // indirect
+	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.40.0 // indirect

@@ -94,7 +94,7 @@ func genericTransient(err error) bool {
 		return false
 	}
 	var networkError net.Error
-	if stderrors.As(err, &networkError) && (networkError.Timeout() || networkError.Temporary()) {
+	if stderrors.As(err, &networkError) && networkError.Timeout() {
 		return true
 	}
 

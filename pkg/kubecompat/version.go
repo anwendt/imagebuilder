@@ -26,7 +26,7 @@ type ServerVersionGetter interface {
 // controller creates build Jobs with restartable init containers.
 func CheckServer(discovery ServerVersionGetter) error {
 	if discovery == nil {
-		return fmt.Errorf("Kubernetes discovery client is required")
+		return fmt.Errorf("kubernetes discovery client is required")
 	}
 	info, err := discovery.ServerVersion()
 	if err != nil {
@@ -39,7 +39,7 @@ func CheckServer(discovery ServerVersionGetter) error {
 // numeric major/minor boundary. Patch and vendor suffixes do not affect support.
 func CheckVersion(info *versioninfo.Info) error {
 	if info == nil {
-		return fmt.Errorf("Kubernetes server returned no version information")
+		return fmt.Errorf("kubernetes server returned no version information")
 	}
 	major, err := numericPrefix(info.Major)
 	if err != nil {
@@ -50,7 +50,7 @@ func CheckVersion(info *versioninfo.Info) error {
 		return fmt.Errorf("parse Kubernetes minor version %q: %w", info.Minor, err)
 	}
 	if major < minimumMajor || (major == minimumMajor && minor < minimumMinor) {
-		return fmt.Errorf("Kubernetes %s is unsupported: Image Builder requires Kubernetes %s or newer for restartable init containers (SidecarContainers)", displayVersion(info), MinimumKubernetesVersion)
+		return fmt.Errorf("kubernetes %s is unsupported: Image Builder requires Kubernetes %s or newer for restartable init containers (SidecarContainers)", displayVersion(info), MinimumKubernetesVersion)
 	}
 	return nil
 }

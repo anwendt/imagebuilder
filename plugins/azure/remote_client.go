@@ -299,7 +299,7 @@ func (c *sdkClient) runAzureProvisioner(ctx context.Context, input azureRemoteBu
 	}
 	evidence, err := azureEvidenceFromRunCommand(result.Value)
 	if err != nil {
-		return nil, fmt.Errorf("Azure evidence provisioner %d: %w", ref.ProvisionerIndex, err)
+		return nil, fmt.Errorf("azure evidence provisioner %d: %w", ref.ProvisionerIndex, err)
 	}
 	return evidence, nil
 }
@@ -418,10 +418,10 @@ func (s azureRemoteSettings) validate(input azureRemoteBuildInput) error {
 	}
 	if input.Evidence != nil && input.Evidence.Required {
 		if s.ManagedIdentityID == "" {
-			return fmt.Errorf("Azure evidence requires ProviderConfig extra remote.managedIdentityId")
+			return fmt.Errorf("azure evidence requires ProviderConfig extra remote.managedIdentityId")
 		}
 		if s.EvidenceCosignKey == "" {
-			return fmt.Errorf("Azure evidence requires ProviderConfig extra remote.evidence.cosignKeyRef")
+			return fmt.Errorf("azure evidence requires ProviderConfig extra remote.evidence.cosignKeyRef")
 		}
 	}
 	return nil

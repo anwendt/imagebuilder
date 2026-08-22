@@ -93,6 +93,17 @@ func TestInitRejectsUnsafeEndpointOverride(t *testing.T) {
 	}
 }
 
+func TestNewSDKClientRejectsUnexpectedCredentialType(t *testing.T) {
+	_, err := newSDKClient(context.Background(), platform.PluginConfig{
+		SecretData: map[string][]byte{
+			"serviceAccountJSON": []byte(`{"type":"authorized_user"}`),
+		},
+	}, config{})
+	if err == nil || !strings.Contains(err.Error(), "expected type") {
+		t.Fatalf("newSDKClient error = %v, want unexpected credential type rejection", err)
+	}
+}
+
 func TestValidateRequiresGCEArchive(t *testing.T) {
 	p := initializedPlugin(&fakeImageClient{})
 	if err := p.Validate(context.Background(), v1alpha1.TargetSpec{Format: "raw"}); err == nil {

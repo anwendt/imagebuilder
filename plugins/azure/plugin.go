@@ -960,7 +960,7 @@ func (c *sdkClient) preparePageBlobSession(ctx context.Context, container, blobN
 		if !bloberror.HasCode(err, bloberror.BlobAlreadyExists) {
 			return azurePageBlobSession{}, fmt.Errorf("create Page Blob: %w", err)
 		}
-		return azurePageBlobSession{}, fmt.Errorf("Page Blob %q already exists without a matching resume token", blobName)
+		return azurePageBlobSession{}, fmt.Errorf("page Blob %q already exists without a matching resume token", blobName)
 	}
 	return azurePageBlobSession{Container: container, BlobName: blobName, BlobURL: c.blobURL(container, blobName), Size: size}, nil
 }

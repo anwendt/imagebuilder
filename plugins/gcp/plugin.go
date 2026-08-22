@@ -19,9 +19,10 @@ import (
 	"strings"
 	"time"
 
+	cloudauth "cloud.google.com/go/auth"
+	gcpcredentials "cloud.google.com/go/auth/credentials"
+	"cloud.google.com/go/auth/httptransport"
 	"cloud.google.com/go/storage"
-	"golang.org/x/oauth2"
-	oauthgoogle "golang.org/x/oauth2/google"
 	"google.golang.org/api/compute/v1"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
@@ -468,23 +469,22 @@ func (c *sdkClient) Close() error {
 
 func newSDKClient(ctx context.Context, cfg platform.PluginConfig, parsed config) (*sdkClient, error) {
 	var commonOpts []option.ClientOption
-	credentials := credentialsJSON(cfg.SecretData)
-	var authenticatedHTTP *http.Client
-	var err error
-	if len(credentials) > 0 {
-		creds, credentialErr := oauthgoogle.CredentialsFromJSON(ctx, credentials, storage.ScopeReadWrite)
-		if credentialErr != nil {
-			return nil, credentialErr
-		}
-		authenticatedHTTP = oauth2.NewClient(ctx, creds.TokenSource)
+	credentialJSON := credentialsJSON(cfg.SecretData)
+	authOptions := &gcpcredentials.DetectOptions{Scopes: []string{compute.CloudPlatformScope}}
+	var authCredentialsErr error
+	var authCredentials *cloudauth.Credentials
+	if len(credentialJSON) > 0 {
+		authCredentials, authCredentialsErr = gcpcredentials.NewCredentialsFromJSON(gcpcredentials.ServiceAccount, credentialJSON, authOptions)
 	} else {
-		authenticatedHTTP, err = oauthgoogle.DefaultClient(ctx, storage.ScopeReadWrite)
-		if err != nil {
-			return nil, err
-		}
+		authCredentials, authCredentialsErr = gcpcredentials.DetectDefault(authOptions)
 	}
-	if len(credentials) > 0 {
-		commonOpts = append(commonOpts, option.WithCredentialsJSON(credentials))
+	if authCredentialsErr != nil {
+		return nil, fmt.Errorf("load GCP credentials: %w", authCredentialsErr)
+	}
+	commonOpts = append(commonOpts, option.WithAuthCredentials(authCredentials))
+	authenticatedHTTP, err := httptransport.NewClient(&httptransport.Options{Credentials: authCredentials})
+	if err != nil {
+		return nil, fmt.Errorf("create authenticated GCP HTTP client: %w", err)
 	}
 	storageOpts := append([]option.ClientOption(nil), commonOpts...)
 	if endpoint := strings.TrimSpace(cfg.Extra["storageEndpoint"]); endpoint != "" {
@@ -522,11 +522,14 @@ func (c *sdkClient) UploadObject(ctx context.Context, bucket, object, filePath s
 		return "", err
 	}
 	objectHandle := c.storage.Bucket(bucket).Object(object)
-	writer := objectHandle.If(storage.Conditions{DoesNotExist: true}).NewWriter(ctx)
+	uploadCtx, cancelUpload := context.WithCancel(ctx)
+	defer cancelUpload()
+	writer := objectHandle.If(storage.Conditions{DoesNotExist: true}).NewWriter(uploadCtx)
 	writer.ContentType, writer.ChunkSize = "application/gzip", 16*1024*1024
 	writer.CRC32C, writer.SendCRC32C = crc, true
 	if _, err := io.Copy(writer, file); err != nil {
-		_ = writer.CloseWithError(err)
+		cancelUpload()
+		_ = writer.Close()
 		if isPreconditionFailed(err) {
 			if matchErr := existingObjectMatches(ctx, objectHandle, info.Size(), crc); matchErr != nil {
 				return "", matchErr

@@ -53,7 +53,10 @@ type AWSPlugin struct {
 	remoteClient awsRemoteBuildClient
 }
 
-const awsResumePartSize int64 = 64 * 1024 * 1024
+const (
+	awsResumePartSize int64 = 64 * 1024 * 1024
+	awsMaxUploadParts int64 = 10_000
+)
 
 type awsMultipartSession struct {
 	UploadID string             `json:"uploadId"`
@@ -933,7 +936,11 @@ func (c *awsSDKLocalImageClient) uploadMultipartResume(ctx context.Context, body
 		return fmt.Errorf("invalid multipart session")
 	}
 	buffer := make([]byte, awsResumePartSize)
-	partNumber := int32(state.Offset/awsResumePartSize) + 1
+	partIndex := state.Offset / awsResumePartSize
+	if partIndex < 0 || partIndex >= awsMaxUploadParts {
+		return fmt.Errorf("multipart session offset resolves to invalid S3 part index %d", partIndex)
+	}
+	partNumber := int32(partIndex + 1) // #nosec G115 -- S3 part index is bounded to 10,000 above.
 	for state.Offset < state.Size {
 		partBytes := min(awsResumePartSize, state.Size-state.Offset)
 		n, err := io.ReadFull(body, buffer[:partBytes])

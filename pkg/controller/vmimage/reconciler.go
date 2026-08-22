@@ -1157,7 +1157,7 @@ func (r *VMImageReconciler) providerTLSSecretValue(ctx context.Context, ref *v1a
 	}
 	value := secret.Data[key]
 	if len(value) == 0 {
-		return nil, fmt.Errorf("Secret %s/%s key %q is empty or missing", ref.Namespace, ref.Name, key)
+		return nil, fmt.Errorf("secret %s/%s key %q is empty or missing", ref.Namespace, ref.Name, key)
 	}
 	return append([]byte(nil), value...), nil
 }
