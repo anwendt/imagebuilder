@@ -43,7 +43,7 @@ Helm deployment from the published OCI chart:
 
 ```bash
 helm install imagebuilder oci://ghcr.io/anwendt/charts/imagebuilder \
-  --version 0.4.2 \
+  --version 0.5.0 \
   --namespace imagebuilder-system \
   --create-namespace
 ```
@@ -52,7 +52,7 @@ Development install for local clusters from a checkout:
 
 ```bash
 helm install imagebuilder oci://ghcr.io/anwendt/charts/imagebuilder \
-  --version 0.4.2 \
+  --version 0.5.0 \
   --namespace imagebuilder-system \
   --create-namespace \
   -f charts/imagebuilder/values-development.yaml

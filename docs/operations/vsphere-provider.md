@@ -10,8 +10,8 @@ The standalone vSphere PlatformProvider image is built from
 
 ```bash
 make build-provider-vsphere
-make docker-build-provider-vsphere REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.4.2
-make docker-push-provider-vsphere REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.4.2
+make docker-build-provider-vsphere REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.5.0
+make docker-push-provider-vsphere REGISTRY=ghcr.io/anwendt IMAGE_TAG=v0.5.0
 VSPHERE_PROVIDER_DIGEST=sha256:<digest> make sign-provider-vsphere REGISTRY=ghcr.io/anwendt
 VSPHERE_PROVIDER_DIGEST=sha256:<digest> make update-vsphere-provider-samples REGISTRY=ghcr.io/anwendt
 ```

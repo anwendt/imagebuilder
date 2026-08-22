@@ -2,6 +2,7 @@ package manifests_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -182,6 +183,68 @@ func TestHelmChartRendersNamespaceResourceGuardrails(t *testing.T) {
 	if !strings.Contains(string(devValues), "namespaceResourceGuardrails:") ||
 		!strings.Contains(string(devValues), "enabled: false") {
 		t.Fatalf("development values must disable namespace resource guardrails")
+	}
+}
+
+func TestCoreReleaseChartUsesFreshImageDigests(t *testing.T) {
+	path := filepath.Join(repoRoot, ".github", "workflows", "core-images-release.yml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read core release workflow: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"OPERATOR_DIGEST: ${{ steps.operator.outputs.digest }}",
+		"BUILDER_DIGEST: ${{ steps.builder.outputs.digest }}",
+		"UPLOADER_DIGEST: ${{ steps.uploader.outputs.digest }}",
+		"PROVISIONER_ANSIBLE_DIGEST: ${{ steps.provisioner_ansible.outputs.digest }}",
+		"PROVISIONER_CHEF_DIGEST: ${{ steps.provisioner_chef.outputs.digest }}",
+		"PROVISIONER_CUSTOM_DIGEST: ${{ steps.provisioner_custom.outputs.digest }}",
+		"PROVISIONER_PUPPET_DIGEST: ${{ steps.provisioner_puppet.outputs.digest }}",
+		"PROVISIONER_SALTSTACK_DIGEST: ${{ steps.provisioner_saltstack.outputs.digest }}",
+		"python3 hack/update-release-chart-digests.py",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("core release workflow does not pin packaged chart digest %q", want)
+		}
+	}
+
+	sourceValues := filepath.Join(repoRoot, "charts", "imagebuilder", "values.yaml")
+	targetValues := filepath.Join(t.TempDir(), "values.yaml")
+	values, err := os.ReadFile(sourceValues)
+	if err != nil {
+		t.Fatalf("read Helm values: %v", err)
+	}
+	if err := os.WriteFile(targetValues, values, 0o600); err != nil {
+		t.Fatalf("write temporary Helm values: %v", err)
+	}
+
+	digest := "sha256:" + strings.Repeat("a", 64)
+	command := exec.Command(
+		"python3",
+		filepath.Join(repoRoot, "hack", "update-release-chart-digests.py"),
+		"--values",
+		targetValues,
+	)
+	command.Env = append(os.Environ(),
+		"OPERATOR_DIGEST="+digest,
+		"BUILDER_DIGEST="+digest,
+		"UPLOADER_DIGEST="+digest,
+		"PROVISIONER_ANSIBLE_DIGEST="+digest,
+		"PROVISIONER_CHEF_DIGEST="+digest,
+		"PROVISIONER_CUSTOM_DIGEST="+digest,
+		"PROVISIONER_PUPPET_DIGEST="+digest,
+		"PROVISIONER_SALTSTACK_DIGEST="+digest,
+	)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("update release chart digests: %v\n%s", err, output)
+	}
+	updatedValues, err := os.ReadFile(targetValues)
+	if err != nil {
+		t.Fatalf("read updated Helm values: %v", err)
+	}
+	if count := strings.Count(string(updatedValues), `digest: "`+digest+`"`); count != 8 {
+		t.Fatalf("updated Helm values contain %d release digests, want 8", count)
 	}
 }
 

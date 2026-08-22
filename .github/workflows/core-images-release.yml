@@ -214,6 +214,14 @@ jobs:
           RELEASE_TAG: ${{ steps.meta.outputs.tag }}
           CHART_VERSION: ${{ steps.meta.outputs.chart_version }}
           HELM_CHART_REGISTRY: ${{ env.HELM_CHART_REGISTRY }}
+          OPERATOR_DIGEST: ${{ steps.operator.outputs.digest }}
+          BUILDER_DIGEST: ${{ steps.builder.outputs.digest }}
+          UPLOADER_DIGEST: ${{ steps.uploader.outputs.digest }}
+          PROVISIONER_ANSIBLE_DIGEST: ${{ steps.provisioner_ansible.outputs.digest }}
+          PROVISIONER_CHEF_DIGEST: ${{ steps.provisioner_chef.outputs.digest }}
+          PROVISIONER_CUSTOM_DIGEST: ${{ steps.provisioner_custom.outputs.digest }}
+          PROVISIONER_PUPPET_DIGEST: ${{ steps.provisioner_puppet.outputs.digest }}
+          PROVISIONER_SALTSTACK_DIGEST: ${{ steps.provisioner_saltstack.outputs.digest }}
         run: |
           rm -rf dist .chart-release
           mkdir -p dist .chart-release
@@ -221,6 +229,8 @@ jobs:
           sed -i.bak -E "s/^version: .*/version: ${CHART_VERSION}/" .chart-release/imagebuilder/Chart.yaml
           sed -i.bak -E "s/^appVersion: .*/appVersion: \"${RELEASE_TAG}\"/" .chart-release/imagebuilder/Chart.yaml
           sed -i.bak -E "s/tag: \"[^\"]*\"/tag: \"${RELEASE_TAG}\"/g" .chart-release/imagebuilder/values.yaml
+          python3 hack/update-release-chart-digests.py \
+            --values .chart-release/imagebuilder/values.yaml
           find .chart-release/imagebuilder -name "*.bak" -delete
           helm lint .chart-release/imagebuilder
           helm package .chart-release/imagebuilder --destination dist
