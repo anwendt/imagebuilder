@@ -100,6 +100,97 @@ func TestVMImageWebhook_RemoteBuild_AllowsEmptyDirArtifactStorage(t *testing.T) 
 	}
 }
 
+func validRemoteImageWithEvidence() *VMImage {
+	source := validMarketplaceSource()
+	source.MarketplaceRef.Version = "24.04.202608010"
+	return &VMImage{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+		Spec: VMImageSpec{
+			OS:     OSSpec{Family: "linux", Distribution: "ubuntu", Version: "24.04"},
+			Source: source,
+			Build:  BuildSpec{Mode: BuildModeRemote},
+			Evidence: &EvidenceSpec{
+				Required:             true,
+				SBOMFormat:           "spdx-json",
+				VulnerabilityScanner: "trivy",
+				FailOnSeverity:       []string{"HIGH", "CRITICAL"},
+				RegistryRepository:   "oci://registry.example.com/platform/evidence",
+			},
+			Provisioners: []ProvisionerSpec{
+				{Type: "shell", Inline: "echo prepare"},
+				{Type: "evidence", Inline: "echo collect"},
+			},
+			Targets: []TargetSpec{
+				{ProviderConfigRef: ProviderConfigRef{Name: "azure-cfg"}, Format: "vhd"},
+			},
+		},
+	}
+}
+
+func TestVMImageWebhook_RemoteEvidenceContract(t *testing.T) {
+	tests := []struct {
+		name      string
+		mutate    func(*VMImage)
+		wantError string
+	}{
+		{name: "valid required evidence"},
+		{
+			name: "mutable marketplace source",
+			mutate: func(img *VMImage) {
+				img.Spec.Source.MarketplaceRef.Version = "latest"
+			},
+			wantError: "marketplaceRef.version must be immutable",
+		},
+		{
+			name: "required evidence provisioner missing",
+			mutate: func(img *VMImage) {
+				img.Spec.Provisioners = img.Spec.Provisioners[:1]
+			},
+			wantError: "requires exactly one evidence provisioner",
+		},
+		{
+			name: "evidence provisioner is not final",
+			mutate: func(img *VMImage) {
+				img.Spec.Provisioners[0], img.Spec.Provisioners[1] = img.Spec.Provisioners[1], img.Spec.Provisioners[0]
+			},
+			wantError: "must be the final spec.provisioners entry",
+		},
+		{
+			name: "evidence provisioner without policy",
+			mutate: func(img *VMImage) {
+				img.Spec.Evidence = nil
+			},
+			wantError: "spec.evidence is required",
+		},
+		{
+			name: "mutable registry repository",
+			mutate: func(img *VMImage) {
+				img.Spec.Evidence.RegistryRepository = "oci://registry.example.com/platform/evidence@sha256:abc"
+			},
+			wantError: "without a digest",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			img := validRemoteImageWithEvidence()
+			if tt.mutate != nil {
+				tt.mutate(img)
+			}
+			_, err := img.ValidateCreate()
+			if tt.wantError == "" {
+				if err != nil {
+					t.Fatalf("ValidateCreate returned error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("ValidateCreate error = %v, want %q", err, tt.wantError)
+			}
+		})
+	}
+}
+
 func TestVMImageWebhook_MarketplaceSource_RequiresReference(t *testing.T) {
 	img := &VMImage{
 		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},

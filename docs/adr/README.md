@@ -24,6 +24,7 @@ references the old one.
 | [ADR-005](ADR-005-protobuf-versioned-contract.md) | Protobuf Schema as Versioned and Immutable Provider Contract | Accepted |
 | [ADR-006](ADR-006-no-go-plugin-mechanism.md) | No Go Plugin Mechanism (.so Files) | Accepted |
 | [ADR-007](ADR-007-remote-build-provider-contract.md) | Remote Build as Provider-Owned Execution Mode | Accepted |
+| [ADR-008](ADR-008-vm-image-evidence-contract.md) | Provider-Neutral VM Image Evidence Contract | Accepted |
 
 ## ADR Status Values
 

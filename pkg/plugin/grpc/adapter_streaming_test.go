@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"google.golang.org/grpc"
@@ -168,6 +169,13 @@ func (s *streamingFakeServer) ReconcileRemoteBuild(_ context.Context, req *provi
 			Message:   "bootstrap residue absent",
 			Checks:    []string{"temporary-user-removed", "bootstrap-files-removed"},
 			ResultRef: "provider://hygiene/report-1",
+		},
+		Evidence: &providerv1.RemoteEvidenceResult{
+			Status:                 "passed",
+			SbomRef:                "oci://registry.example.com/evidence/sbom@sha256:" + strings.Repeat("a", 64),
+			VulnerabilityReportRef: "oci://registry.example.com/evidence/vulnerability@sha256:" + strings.Repeat("a", 64),
+			ProvenanceRef:          "oci://registry.example.com/evidence/provenance@sha256:" + strings.Repeat("a", 64),
+			SignatureRef:           "oci://registry.example.com/evidence/signature@sha256:" + strings.Repeat("a", 64),
 		},
 		Images: []*providerv1.RemoteImageRef{
 			{
@@ -462,5 +470,34 @@ func TestAdapter_ReconcileRemoteBuild_MapsHygieneAttestation(t *testing.T) {
 	}
 	if len(result.Images) != 1 || result.Images[0].ImageRef.ID != "ami-123" {
 		t.Fatalf("Images = %#v, want ami-123", result.Images)
+	}
+}
+
+func TestAdapter_ReconcileRemoteBuild_MapsEvidencePolicyAndResult(t *testing.T) {
+	server := &streamingFakeServer{}
+	adapter := startStreamingServer(t, server)
+
+	result, err := adapter.ReconcileRemoteBuild(context.Background(), &platform.RemoteBuildRequest{
+		BuildID: "build-123",
+		Target: v1alpha1.TargetSpec{
+			ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "azure-prod"},
+			Format:            "vhd",
+		},
+		Evidence: &v1alpha1.EvidenceSpec{
+			Required:             true,
+			SBOMFormat:           "spdx-json",
+			VulnerabilityScanner: "trivy",
+			FailOnSeverity:       []string{"HIGH", "CRITICAL"},
+			RegistryRepository:   "oci://registry.example.com/evidence",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ReconcileRemoteBuild returned error: %v", err)
+	}
+	if server.remoteReq == nil || server.remoteReq.GetEvidence() == nil || !server.remoteReq.GetEvidence().GetRequired() {
+		t.Fatalf("remote evidence request = %#v, want required policy", server.remoteReq)
+	}
+	if result.Evidence == nil || result.Evidence.Status != "passed" || result.Evidence.SignatureRef == "" {
+		t.Fatalf("remote evidence result = %#v, want passed immutable references", result.Evidence)
 	}
 }

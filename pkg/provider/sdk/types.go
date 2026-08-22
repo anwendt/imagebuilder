@@ -134,7 +134,16 @@ type RemoteBuildInput struct {
 	Tags               map[string]string
 	Provisioners       []RemoteProvisioner
 	GuestAccess        *RemoteGuestAccess
+	Evidence           *RemoteEvidencePolicy
 	TimeoutSeconds     int64
+}
+
+type RemoteEvidencePolicy struct {
+	Required             bool
+	SBOMFormat           string
+	VulnerabilityScanner string
+	FailOnSeverity       []string
+	RegistryRepository   string
 }
 
 type MarketplaceRef struct {
@@ -197,7 +206,8 @@ type RemoteBuildResult struct {
 	// Hygiene attests provider-side final image hygiene/sanitization checks.
 	// Status should be "passed", "failed", or "unknown". Messages and refs
 	// must be non-secret and safe to copy into Kubernetes status/events.
-	Hygiene *RemoteHygieneResult
+	Hygiene  *RemoteHygieneResult
+	Evidence *RemoteEvidenceResult
 }
 
 type RemoteHygieneResult struct {
@@ -205,6 +215,15 @@ type RemoteHygieneResult struct {
 	Message   string
 	Checks    []string
 	ResultRef string
+}
+
+type RemoteEvidenceResult struct {
+	Status                 string
+	Message                string
+	SBOMRef                string
+	VulnerabilityReportRef string
+	ProvenanceRef          string
+	SignatureRef           string
 }
 
 type RemoteImageRef struct {

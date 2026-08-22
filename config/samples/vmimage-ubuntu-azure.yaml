@@ -61,6 +61,9 @@ spec:
     # Required only for remote builds with provisioners.
     # remote.vmSize: Standard_B2s
     # remote.networkInterfaceId: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-imagebuilder-prod/providers/Microsoft.Network/networkInterfaces/imagebuilder-build-nic
+    # Required for fail-closed evidence collection on remote builds.
+    # remote.managedIdentityId: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-imagebuilder-prod/providers/Microsoft.ManagedIdentity/userAssignedIdentities/imagebuilder-evidence
+    # remote.evidence.cosignKeyRef: azurekms://golden-image-vault/golden-image-signing
     # Optional Compute Gallery publishing. The gallery image definition must exist.
     # galleryName: imagebuilder
     # galleryImageName: ubuntu-24-04

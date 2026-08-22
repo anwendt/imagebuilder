@@ -250,6 +250,7 @@ type RemoteBuildRequest struct {
 	Target            v1alpha1.TargetSpec
 	Provisioners      []v1alpha1.ProvisionerSpec
 	GuestAccess       *v1alpha1.GuestAccessSpec
+	Evidence          *v1alpha1.EvidenceSpec
 	Timeout           time.Duration
 }
 
@@ -272,6 +273,7 @@ type RemoteBuildResult struct {
 	Images       []RemoteImageRef
 	Artifact     *BuildArtifact
 	Hygiene      *RemoteHygieneResult
+	Evidence     *RemoteEvidenceResult
 	Done         bool
 }
 
@@ -280,6 +282,15 @@ type RemoteHygieneResult struct {
 	Message   string
 	Checks    []string
 	ResultRef string
+}
+
+type RemoteEvidenceResult struct {
+	Status                 string `json:"status"`
+	Message                string `json:"message,omitempty"`
+	SBOMRef                string `json:"sbomRef"`
+	VulnerabilityReportRef string `json:"vulnerabilityReportRef"`
+	ProvenanceRef          string `json:"provenanceRef"`
+	SignatureRef           string `json:"signatureRef"`
 }
 
 type RemoteImageRef struct {

@@ -144,6 +144,13 @@ func TestServer_ImplementsProviderContract(t *testing.T) {
 			Sku:       "server",
 			Version:   "latest",
 		},
+		Evidence: &providerv1.RemoteEvidencePolicy{
+			Required:             true,
+			SbomFormat:           "spdx-json",
+			VulnerabilityScanner: "trivy",
+			FailOnSeverity:       []string{"HIGH", "CRITICAL"},
+			RegistryRepository:   "oci://registry.example.com/evidence",
+		},
 	})
 	if err != nil {
 		t.Fatalf("ReconcileRemoteBuild returned error: %v", err)
@@ -153,6 +160,12 @@ func TestServer_ImplementsProviderContract(t *testing.T) {
 	}
 	if remote.Hygiene.ResultRef != "provider://hygiene/report-1" {
 		t.Fatalf("remote hygiene resultRef = %q", remote.Hygiene.ResultRef)
+	}
+	if remote.Evidence == nil || remote.Evidence.Status != "passed" || remote.Evidence.ProvenanceRef != "oci://registry.example.com/evidence/provenance@sha256:"+strings.Repeat("a", 64) {
+		t.Fatalf("remote evidence = %#v, want passed provenance", remote.Evidence)
+	}
+	if provider.remoteInput.Evidence == nil || !provider.remoteInput.Evidence.Required || provider.remoteInput.Evidence.RegistryRepository != "oci://registry.example.com/evidence" {
+		t.Fatalf("remote evidence policy = %#v, want required registry policy", provider.remoteInput.Evidence)
 	}
 	if provider.remoteInput.SourceMarketplace == nil ||
 		provider.remoteInput.SourceMarketplace.Publisher != "Canonical" ||
@@ -454,6 +467,13 @@ func (p *fakeProvider) ReconcileRemoteBuild(_ context.Context, input sdk.RemoteB
 			Message:   "bootstrap residue absent",
 			Checks:    []string{"temporary-user-removed", "bootstrap-files-removed"},
 			ResultRef: "provider://hygiene/report-1",
+		},
+		Evidence: &sdk.RemoteEvidenceResult{
+			Status:                 "passed",
+			SBOMRef:                "oci://registry.example.com/evidence/sbom@sha256:" + strings.Repeat("a", 64),
+			VulnerabilityReportRef: "oci://registry.example.com/evidence/vulnerability@sha256:" + strings.Repeat("a", 64),
+			ProvenanceRef:          "oci://registry.example.com/evidence/provenance@sha256:" + strings.Repeat("a", 64),
+			SignatureRef:           "oci://registry.example.com/evidence/signature@sha256:" + strings.Repeat("a", 64),
 		},
 	}, nil
 }

@@ -315,6 +315,16 @@ func (s *Server) ReconcileRemoteBuild(ctx context.Context, req *providerv1.Remot
 			ResultRef: result.Hygiene.ResultRef,
 		}
 	}
+	if result.Evidence != nil {
+		resp.Evidence = &providerv1.RemoteEvidenceResult{
+			Status:                 result.Evidence.Status,
+			Message:                result.Evidence.Message,
+			SbomRef:                result.Evidence.SBOMRef,
+			VulnerabilityReportRef: result.Evidence.VulnerabilityReportRef,
+			ProvenanceRef:          result.Evidence.ProvenanceRef,
+			SignatureRef:           result.Evidence.SignatureRef,
+		}
+	}
 	for _, image := range result.Images {
 		resp.Images = append(resp.Images, &providerv1.RemoteImageRef{
 			Provider:           image.Provider,
@@ -361,6 +371,15 @@ func remoteBuildInputFromProto(req *providerv1.RemoteBuildRequest) RemoteBuildIn
 		Format:             req.GetFormat(),
 		Tags:               cloneStringMap(req.GetTags()),
 		TimeoutSeconds:     req.GetTimeoutSeconds(),
+	}
+	if evidence := req.GetEvidence(); evidence != nil {
+		out.Evidence = &RemoteEvidencePolicy{
+			Required:             evidence.GetRequired(),
+			SBOMFormat:           evidence.GetSbomFormat(),
+			VulnerabilityScanner: evidence.GetVulnerabilityScanner(),
+			FailOnSeverity:       append([]string(nil), evidence.GetFailOnSeverity()...),
+			RegistryRepository:   evidence.GetRegistryRepository(),
+		}
 	}
 	for _, provisioner := range req.GetProvisioners() {
 		out.Provisioners = append(out.Provisioners, RemoteProvisioner{

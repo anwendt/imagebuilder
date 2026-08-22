@@ -125,6 +125,15 @@ message RemoteBuildRequest {
   // Prefer this over overloading source_url for remote builds.
   string source_provider_ref = 18;
   MarketplaceRef source_marketplace = 19;
+  RemoteEvidencePolicy evidence = 20;
+}
+
+message RemoteEvidencePolicy {
+  bool required = 1;
+  string sbom_format = 2;
+  string vulnerability_scanner = 3;
+  repeated string fail_on_severity = 4;
+  string registry_repository = 5;
 }
 
 message MarketplaceRef {
@@ -178,6 +187,17 @@ message RemoteBuildResponse {
   repeated RemoteImageRef images = 5;
   RemoteArtifact artifact = 6;
   RemoteHygieneResult hygiene = 7;
+  RemoteEvidenceResult evidence = 8;
+}
+
+message RemoteEvidenceResult {
+  // status is provider-neutral and should be "passed", "failed", or "unknown".
+  string status = 1;
+  string message = 2;
+  string sbom_ref = 3;
+  string vulnerability_report_ref = 4;
+  string provenance_ref = 5;
+  string signature_ref = 6;
 }
 
 message RemoteHygieneResult {

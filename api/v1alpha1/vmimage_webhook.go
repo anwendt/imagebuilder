@@ -167,6 +167,9 @@ func (r *VMImage) validate() (admission.Warnings, error) {
 	if err := validateProvisionerImagePolicy(r.Spec.Provisioners, r.Spec.Build.Security); err != nil {
 		errs = append(errs, err)
 	}
+	if err := validateEvidence(r.Spec.Evidence, r.Spec.Provisioners, buildMode, r.Spec.Source); err != nil {
+		errs = append(errs, err)
+	}
 
 	// Structural: at least one upload target must be specified.
 	if len(r.Spec.Targets) == 0 {
@@ -274,11 +277,53 @@ func validateProvisionerTypes(provisioners []ProvisionerSpec) error {
 func isKnownProvisionerType(typeName string) bool {
 	switch typeName {
 	case "cloud-init", "shell", "file", "powershell", "sysprep",
-		"ansible", "chef", "puppet", "saltstack", "custom":
+		"ansible", "chef", "puppet", "saltstack", "custom", "evidence":
 		return true
 	default:
 		return false
 	}
+}
+
+func validateEvidence(evidence *EvidenceSpec, provisioners []ProvisionerSpec, buildMode string, source SourceSpec) error {
+	evidenceIndexes := make([]int, 0, 1)
+	for i, provisioner := range provisioners {
+		if provisioner.Type == "evidence" {
+			evidenceIndexes = append(evidenceIndexes, i)
+		}
+	}
+	if evidence == nil {
+		if len(evidenceIndexes) > 0 {
+			return fmt.Errorf("spec.evidence is required when an evidence provisioner is configured")
+		}
+		return nil
+	}
+	if buildMode != BuildModeRemote {
+		return fmt.Errorf("spec.evidence is currently supported only for spec.build.mode remote")
+	}
+	if strings.TrimSpace(evidence.RegistryRepository) == "" {
+		return fmt.Errorf("spec.evidence.registryRepository is required")
+	}
+	if strings.Contains(evidence.RegistryRepository, "@sha256:") || strings.Contains(evidence.RegistryRepository, "://") && !strings.HasPrefix(evidence.RegistryRepository, "oci://") {
+		return fmt.Errorf("spec.evidence.registryRepository must be an oci:// repository prefix without a digest")
+	}
+	if evidence.Required {
+		if source.MarketplaceRef != nil && strings.EqualFold(strings.TrimSpace(source.MarketplaceRef.Version), "latest") {
+			return fmt.Errorf("spec.source.marketplaceRef.version must be immutable when spec.evidence.required is true")
+		}
+		if len(evidenceIndexes) != 1 {
+			return fmt.Errorf("spec.evidence.required requires exactly one evidence provisioner")
+		}
+		if evidenceIndexes[0] != len(provisioners)-1 {
+			return fmt.Errorf("the evidence provisioner must be the final spec.provisioners entry")
+		}
+	}
+	for _, index := range evidenceIndexes {
+		provisioner := provisioners[index]
+		if strings.TrimSpace(provisioner.Inline) == "" && provisioner.Source == nil {
+			return fmt.Errorf("spec.provisioners[%d] evidence provisioner requires inline or source content", index)
+		}
+	}
+	return nil
 }
 
 func validateProvisionerImagePolicy(provisioners []ProvisionerSpec, security *BuildSecuritySpec) error {

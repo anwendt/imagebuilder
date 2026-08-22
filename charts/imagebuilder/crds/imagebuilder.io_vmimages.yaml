@@ -385,6 +385,54 @@ spec:
                         type: string
                     type: object
                 type: object
+              evidence:
+                description: |-
+                  Evidence configures software-supply-chain evidence for the produced VM
+                  image. When required, a remote provider must return immutable OCI
+                  references for the SBOM, vulnerability report, provenance, and signature
+                  before the VMImage can become Ready.
+                properties:
+                  failOnSeverity:
+                    description: |-
+                      FailOnSeverity lists severities that must fail evidence collection and
+                      prevent publication of a releasable image.
+                    items:
+                      enum:
+                      - HIGH
+                      - CRITICAL
+                      type: string
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-type: set
+                  registryRepository:
+                    description: |-
+                      RegistryRepository is the OCI repository prefix used by the evidence
+                      provisioner, for example oci://registry.example.com/platform/evidence.
+                      Published status references must additionally be pinned by sha256 digest.
+                    pattern: ^oci://[^\\s]+$
+                    type: string
+                  required:
+                    default: true
+                    description: |-
+                      Required fails the build closed when complete, immutable evidence is not
+                      returned by the builder/provider.
+                    type: boolean
+                  sbomFormat:
+                    default: spdx-json
+                    description: SBOMFormat selects the required SBOM document format.
+                    enum:
+                    - spdx-json
+                    type: string
+                  vulnerabilityScanner:
+                    default: trivy
+                    description: VulnerabilityScanner identifies the report schema
+                      consumed by promotion.
+                    enum:
+                    - trivy
+                    type: string
+                required:
+                - registryRepository
+                type: object
               os:
                 description: OS describes the operating system to build
                 properties:
@@ -906,6 +954,47 @@ spec:
                   - type
                   type: object
                 type: array
+              evidence:
+                description: |-
+                  Evidence contains only non-secret immutable OCI references. Evidence
+                  document contents and signing material are never stored in Kubernetes
+                  status.
+                properties:
+                  generatedAt:
+                    description: GeneratedAt records when the provider completed evidence
+                      publication.
+                    format: date-time
+                    type: string
+                  message:
+                    description: Message is a non-sensitive summary.
+                    type: string
+                  provenanceRef:
+                    description: ProvenanceRef is an immutable OCI reference to SLSA
+                      provenance.
+                    type: string
+                  sbomRef:
+                    description: SBOMRef is an immutable OCI reference to an SPDX
+                      JSON document.
+                    type: string
+                  signatureRef:
+                    description: SignatureRef is an immutable OCI reference to the
+                      Cosign verification bundle.
+                    type: string
+                  status:
+                    description: Status is provider-neutral and fail-closed when evidence
+                      is required.
+                    enum:
+                    - passed
+                    - failed
+                    - unknown
+                    type: string
+                  vulnerabilityReportRef:
+                    description: VulnerabilityReportRef is an immutable OCI reference
+                      to a Trivy JSON report.
+                    type: string
+                required:
+                - status
+                type: object
               hygieneResult:
                 description: |-
                   HygieneResult describes provider-neutral final image hygiene checks.
@@ -1043,6 +1132,7 @@ spec:
                       - Readiness
                       - Provisioning
                       - Sanitization
+                      - Evidence
                       - Upload
                       - Cleanup
                       type: string

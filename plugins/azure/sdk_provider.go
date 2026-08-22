@@ -328,6 +328,15 @@ func platformRemoteBuildRequest(input sdk.RemoteBuildInput) *platform.RemoteBuil
 		},
 		Timeout: time.Duration(input.TimeoutSeconds) * time.Second,
 	}
+	if input.Evidence != nil {
+		req.Evidence = &v1alpha1.EvidenceSpec{
+			Required:             input.Evidence.Required,
+			SBOMFormat:           input.Evidence.SBOMFormat,
+			VulnerabilityScanner: input.Evidence.VulnerabilityScanner,
+			FailOnSeverity:       append([]string(nil), input.Evidence.FailOnSeverity...),
+			RegistryRepository:   input.Evidence.RegistryRepository,
+		}
+	}
 	for _, provisioner := range input.Provisioners {
 		req.Provisioners = append(req.Provisioners, v1alpha1.ProvisionerSpec{
 			Type:      provisioner.Type,
@@ -399,6 +408,16 @@ func sdkRemoteBuildResult(result *platform.RemoteBuildResult) sdk.RemoteBuildRes
 			Message:   result.Hygiene.Message,
 			Checks:    append([]string(nil), result.Hygiene.Checks...),
 			ResultRef: result.Hygiene.ResultRef,
+		}
+	}
+	if result.Evidence != nil {
+		out.Evidence = &sdk.RemoteEvidenceResult{
+			Status:                 result.Evidence.Status,
+			Message:                result.Evidence.Message,
+			SBOMRef:                result.Evidence.SBOMRef,
+			VulnerabilityReportRef: result.Evidence.VulnerabilityReportRef,
+			ProvenanceRef:          result.Evidence.ProvenanceRef,
+			SignatureRef:           result.Evidence.SignatureRef,
 		}
 	}
 	for _, image := range result.Images {

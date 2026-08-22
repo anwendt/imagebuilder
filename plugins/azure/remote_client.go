@@ -3,6 +3,8 @@ package azure
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -33,6 +35,8 @@ type azureRemoteBuildInput struct {
 	ProviderConfigName string
 	Provisioners       []v1alpha1.ProvisionerSpec
 	GuestAccess        *v1alpha1.GuestAccessSpec
+	Evidence           *v1alpha1.EvidenceSpec
+	EvidenceCosignKey  string
 }
 
 type azureRemoteBuildState struct {
@@ -42,6 +46,7 @@ type azureRemoteBuildState struct {
 	Done         bool
 	Image        *platform.ImageRef
 	Hygiene      *platform.RemoteHygieneResult
+	Evidence     *platform.RemoteEvidenceResult
 }
 
 const azureRemoteBuildPublicKey = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDDzch/BPwsvvCVPklQJaRRO7gsqw4mLjnJiLHTQ5o0mBi7BLInDe12I5C9Qw2QU+mh46eaDzqa9vggfoZxWCENfhJ7zsdYReh27XzmpFD36THxci5awdPVmiF+kQ0LlxGZgtkf11lLt9hpSSqeXcIsnQRO9LAEXqBtMAR50zSBgeHcyXRNxeiR4D1c/FtsGcm+6GJu4eL+T1GPvNTr77dhVaOAYfba0QUTfnDOW3j0A8YqtH+0Aagzh6w2yAxP//NV1TtL0g1l0PTa8jTqjvBi13PI6RgpHP5HDsxyQPj7UoNiHLP2no/X3MguOYoqPZWDRdOzsAbL4+ufCOJu41bN imagebuilder-azure-remote-build"
@@ -75,6 +80,7 @@ func (c *sdkClient) ReconcileRemoteBuild(ctx context.Context, input azureRemoteB
 	if err := settings.validate(input); err != nil {
 		return nil, err
 	}
+	input.EvidenceCosignKey = settings.EvidenceCosignKey
 	ref, err := parseAzureRemoteOperationRef(input.OperationRef)
 	if err != nil {
 		return nil, err
@@ -91,22 +97,28 @@ func (c *sdkClient) ReconcileRemoteBuild(ctx context.Context, input azureRemoteB
 				Location: c.cfg.location,
 				Tags:     input.Tags,
 			},
-			Hygiene: azureRemoteHygiene(input, ref.ImageID),
+			Hygiene:  azureRemoteHygiene(input, ref.ImageID),
+			Evidence: ref.evidence(),
 		}, nil
 	}
 	if ref.VMName == "" {
 		return c.startRemoteBuildVM(ctx, input, settings)
 	}
 	if ref.ProvisionerIndex < len(input.Provisioners) {
-		if err := c.runAzureProvisioner(ctx, input, ref, input.Provisioners[ref.ProvisionerIndex]); err != nil {
+		evidence, err := c.runAzureProvisioner(ctx, input, ref, input.Provisioners[ref.ProvisionerIndex])
+		if err != nil {
 			_ = c.cleanupAzureRemoteResources(ctx, ref)
 			return nil, err
+		}
+		if evidence != nil {
+			ref.setEvidence(evidence)
 		}
 		ref.ProvisionerIndex++
 		return &azureRemoteBuildState{
 			OperationRef: ref.String(),
 			Phase:        platform.RemoteBuildPhaseProvisioning,
 			Message:      fmt.Sprintf("Azure Run Command provisioner %d completed", ref.ProvisionerIndex-1),
+			Evidence:     ref.evidence(),
 		}, nil
 	}
 	return c.finishRemoteBuildVM(ctx, input, ref)
@@ -207,6 +219,14 @@ func (c *sdkClient) startRemoteBuildVM(ctx context.Context, input azureRemoteBui
 			StorageProfile: storageProfile,
 		},
 	}
+	if settings.ManagedIdentityID != "" {
+		vm.Identity = &armcompute.VirtualMachineIdentity{
+			Type: to.Ptr(armcompute.ResourceIdentityTypeUserAssigned),
+			UserAssignedIdentities: map[string]*armcompute.UserAssignedIdentitiesValue{
+				settings.ManagedIdentityID: {},
+			},
+		}
+	}
 	if sourceType == "marketplace" {
 		vm.Properties.OSProfile = azureRemoteOSProfile(input)
 	}
@@ -255,29 +275,42 @@ func (c *sdkClient) createRemoteOSDisk(ctx context.Context, input azureRemoteBui
 	return created.Disk, nil
 }
 
-func (c *sdkClient) runAzureProvisioner(ctx context.Context, input azureRemoteBuildInput, ref azureRemoteOperationRef, spec v1alpha1.ProvisionerSpec) error {
+func (c *sdkClient) runAzureProvisioner(ctx context.Context, input azureRemoteBuildInput, ref azureRemoteOperationRef, spec v1alpha1.ProvisionerSpec) (*platform.RemoteEvidenceResult, error) {
 	commandID, script, err := azureRunCommand(input, spec)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	poller, err := c.vms.BeginRunCommand(ctx, c.cfg.resourceGroup, ref.VMName, armcompute.RunCommandInput{
 		CommandID: to.Ptr(commandID),
 		Script:    stringPtrs(script),
 	}, nil)
 	if err != nil {
-		return fmt.Errorf("start Azure Run Command provisioner %d: %w", ref.ProvisionerIndex, err)
+		return nil, fmt.Errorf("start Azure Run Command provisioner %d: %w", ref.ProvisionerIndex, err)
 	}
 	result, err := poller.PollUntilDone(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("wait for Azure Run Command provisioner %d: %w", ref.ProvisionerIndex, err)
+		return nil, fmt.Errorf("wait for Azure Run Command provisioner %d: %w", ref.ProvisionerIndex, err)
 	}
 	if err := azureRunCommandError(result.Value); err != nil {
-		return fmt.Errorf("azure Run Command provisioner %d failed: %w", ref.ProvisionerIndex, err)
+		return nil, fmt.Errorf("azure Run Command provisioner %d failed: %w", ref.ProvisionerIndex, err)
 	}
-	return nil
+	if spec.Type != "evidence" {
+		return nil, nil
+	}
+	evidence, err := azureEvidenceFromRunCommand(result.Value)
+	if err != nil {
+		return nil, fmt.Errorf("Azure evidence provisioner %d: %w", ref.ProvisionerIndex, err)
+	}
+	return evidence, nil
 }
 
 func (c *sdkClient) finishRemoteBuildVM(ctx context.Context, input azureRemoteBuildInput, ref azureRemoteOperationRef) (*azureRemoteBuildState, error) {
+	if input.Evidence != nil && input.Evidence.Required {
+		if err := validateAzureEvidence(input.Evidence, ref.evidence()); err != nil {
+			_ = c.cleanupAzureRemoteResources(ctx, ref)
+			return nil, err
+		}
+	}
 	poller, err := c.vms.BeginDeallocate(ctx, c.cfg.resourceGroup, ref.VMName, nil)
 	if err != nil {
 		_ = c.cleanupAzureRemoteResources(ctx, ref)
@@ -328,6 +361,7 @@ func (c *sdkClient) finishRemoteBuildVM(ctx context.Context, input azureRemoteBu
 		Done:         true,
 		Image:        image,
 		Hygiene:      azureRemoteHygiene(input, image.ID),
+		Evidence:     ref.evidence(),
 	}, nil
 }
 
@@ -359,12 +393,16 @@ func (c *sdkClient) cleanupAzureRemoteResources(ctx context.Context, ref azureRe
 type azureRemoteSettings struct {
 	VMSize             string
 	NetworkInterfaceID string
+	ManagedIdentityID  string
+	EvidenceCosignKey  string
 }
 
 func azureRemoteSettingsFromExtra(extra map[string]string) azureRemoteSettings {
 	return azureRemoteSettings{
 		VMSize:             firstNonEmpty(extra["remote.vmSize"], extra["vmSize"], "Standard_B2s"),
 		NetworkInterfaceID: firstNonEmpty(extra["remote.networkInterfaceId"], extra["networkInterfaceId"]),
+		ManagedIdentityID:  strings.TrimSpace(extra["remote.managedIdentityId"]),
+		EvidenceCosignKey:  strings.TrimSpace(extra["remote.evidence.cosignKeyRef"]),
 	}
 }
 
@@ -377,6 +415,14 @@ func (s azureRemoteSettings) validate(input azureRemoteBuildInput) error {
 	}
 	if input.BuildID == "" {
 		return fmt.Errorf("azure remote build requires build ID")
+	}
+	if input.Evidence != nil && input.Evidence.Required {
+		if s.ManagedIdentityID == "" {
+			return fmt.Errorf("Azure evidence requires ProviderConfig extra remote.managedIdentityId")
+		}
+		if s.EvidenceCosignKey == "" {
+			return fmt.Errorf("Azure evidence requires ProviderConfig extra remote.evidence.cosignKeyRef")
+		}
 	}
 	return nil
 }
@@ -435,7 +481,7 @@ func azureRemoteOSProfile(input azureRemoteBuildInput) *armcompute.OSProfile {
 }
 
 func validateAzureRemoteProvisioners(input azureRemoteBuildInput) error {
-	for _, provisioner := range input.Provisioners {
+	for index, provisioner := range input.Provisioners {
 		switch provisioner.Type {
 		case "shell":
 			if input.OSFamily == platform.OSFamilyWindows {
@@ -446,6 +492,13 @@ func validateAzureRemoteProvisioners(input azureRemoteBuildInput) error {
 				return fmt.Errorf("powershell provisioner is not supported for Azure Linux remote builds; use shell or file")
 			}
 		case "file":
+		case "evidence":
+			if index != len(input.Provisioners)-1 {
+				return fmt.Errorf("evidence provisioner must be the final Azure remote provisioner")
+			}
+			if input.Evidence == nil {
+				return fmt.Errorf("evidence provisioner requires spec.evidence")
+			}
 		default:
 			return fmt.Errorf("provisioner type %q is not supported by Azure Run Command remote build", provisioner.Type)
 		}
@@ -479,9 +532,97 @@ func azureRunCommand(input azureRemoteBuildInput, spec v1alpha1.ProvisionerSpec)
 			return "", nil, fmt.Errorf("file provisioner requires destination path in args[0] for Azure remote build")
 		}
 		return azureFileProvisionerCommand(input, spec.Inline, spec.Args[0])
+	case "evidence":
+		if strings.TrimSpace(spec.Inline) == "" {
+			return "", nil, fmt.Errorf("evidence provisioner requires inline content after source expansion")
+		}
+		if input.Evidence == nil {
+			return "", nil, fmt.Errorf("evidence provisioner requires evidence policy")
+		}
+		if input.OSFamily == platform.OSFamilyLinux {
+			return "RunShellScript", []string{azureLinuxEvidenceCommand(input, spec.Inline)}, nil
+		}
+		if input.OSFamily == platform.OSFamilyWindows {
+			return "RunPowerShellScript", []string{azureWindowsEvidenceCommand(input, spec.Inline)}, nil
+		}
+		return "", nil, fmt.Errorf("evidence provisioner requires linux or windows OS family")
 	default:
 		return "", nil, fmt.Errorf("provisioner type %q is not supported by Azure remote build", spec.Type)
 	}
+}
+
+func azureLinuxEvidenceCommand(input azureRemoteBuildInput, script string) string {
+	values := map[string]string{
+		"IMAGEBUILDER_BUILD_ID":                       input.BuildID,
+		"IMAGEBUILDER_IMAGE_NAME":                     input.ImageName,
+		"IMAGEBUILDER_SOURCE_REF":                     azureEvidenceSourceRef(input),
+		"IMAGEBUILDER_EVIDENCE_REGISTRY_REPOSITORY":   input.Evidence.RegistryRepository,
+		"IMAGEBUILDER_EVIDENCE_SBOM_FORMAT":           input.Evidence.SBOMFormat,
+		"IMAGEBUILDER_EVIDENCE_VULNERABILITY_SCANNER": input.Evidence.VulnerabilityScanner,
+		"IMAGEBUILDER_EVIDENCE_FAIL_ON_SEVERITY":      strings.Join(input.Evidence.FailOnSeverity, ","),
+		"IMAGEBUILDER_EVIDENCE_COSIGN_KEY_REF":        input.EvidenceCosignKey,
+	}
+	keys := []string{
+		"IMAGEBUILDER_BUILD_ID",
+		"IMAGEBUILDER_IMAGE_NAME",
+		"IMAGEBUILDER_SOURCE_REF",
+		"IMAGEBUILDER_EVIDENCE_REGISTRY_REPOSITORY",
+		"IMAGEBUILDER_EVIDENCE_SBOM_FORMAT",
+		"IMAGEBUILDER_EVIDENCE_VULNERABILITY_SCANNER",
+		"IMAGEBUILDER_EVIDENCE_FAIL_ON_SEVERITY",
+		"IMAGEBUILDER_EVIDENCE_COSIGN_KEY_REF",
+	}
+	lines := make([]string, 0, len(keys)+1)
+	for _, key := range keys {
+		lines = append(lines, "export "+key+"="+shellQuoteAzure(values[key]))
+	}
+	lines = append(lines, script)
+	return strings.Join(lines, "\n")
+}
+
+func azureWindowsEvidenceCommand(input azureRemoteBuildInput, script string) string {
+	values := map[string]string{
+		"IMAGEBUILDER_BUILD_ID":                       input.BuildID,
+		"IMAGEBUILDER_IMAGE_NAME":                     input.ImageName,
+		"IMAGEBUILDER_SOURCE_REF":                     azureEvidenceSourceRef(input),
+		"IMAGEBUILDER_EVIDENCE_REGISTRY_REPOSITORY":   input.Evidence.RegistryRepository,
+		"IMAGEBUILDER_EVIDENCE_SBOM_FORMAT":           input.Evidence.SBOMFormat,
+		"IMAGEBUILDER_EVIDENCE_VULNERABILITY_SCANNER": input.Evidence.VulnerabilityScanner,
+		"IMAGEBUILDER_EVIDENCE_FAIL_ON_SEVERITY":      strings.Join(input.Evidence.FailOnSeverity, ","),
+		"IMAGEBUILDER_EVIDENCE_COSIGN_KEY_REF":        input.EvidenceCosignKey,
+	}
+	keys := []string{
+		"IMAGEBUILDER_BUILD_ID",
+		"IMAGEBUILDER_IMAGE_NAME",
+		"IMAGEBUILDER_SOURCE_REF",
+		"IMAGEBUILDER_EVIDENCE_REGISTRY_REPOSITORY",
+		"IMAGEBUILDER_EVIDENCE_SBOM_FORMAT",
+		"IMAGEBUILDER_EVIDENCE_VULNERABILITY_SCANNER",
+		"IMAGEBUILDER_EVIDENCE_FAIL_ON_SEVERITY",
+		"IMAGEBUILDER_EVIDENCE_COSIGN_KEY_REF",
+	}
+	lines := make([]string, 0, len(keys)+1)
+	for _, key := range keys {
+		lines = append(lines, "$env:"+key+" = "+powershellQuoteAzure(values[key]))
+	}
+	lines = append(lines, script)
+	return strings.Join(lines, "\n")
+}
+
+func azureEvidenceSourceRef(input azureRemoteBuildInput) string {
+	if strings.TrimSpace(input.SourceRef) != "" {
+		return strings.TrimSpace(input.SourceRef)
+	}
+	if input.SourceMarketplace != nil {
+		return fmt.Sprintf(
+			"azure-marketplace://%s/%s/%s/%s",
+			input.SourceMarketplace.Publisher,
+			input.SourceMarketplace.Offer,
+			input.SourceMarketplace.SKU,
+			input.SourceMarketplace.Version,
+		)
+	}
+	return "unknown"
 }
 
 func azureFileProvisionerCommand(input azureRemoteBuildInput, content, destination string) (string, []string, error) {
@@ -526,6 +667,76 @@ func azureRunCommandError(statuses []*armcompute.InstanceViewStatus) error {
 	return nil
 }
 
+const azureEvidenceMarker = "IMAGEBUILDER_EVIDENCE_V1="
+
+func azureEvidenceFromRunCommand(statuses []*armcompute.InstanceViewStatus) (*platform.RemoteEvidenceResult, error) {
+	for _, status := range statuses {
+		message := value(status.Message)
+		markerIndex := strings.LastIndex(message, azureEvidenceMarker)
+		if markerIndex < 0 {
+			continue
+		}
+		encoded := strings.TrimSpace(message[markerIndex+len(azureEvidenceMarker):])
+		if end := strings.IndexAny(encoded, "\r\n \t"); end >= 0 {
+			encoded = encoded[:end]
+		}
+		payload, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return nil, fmt.Errorf("decode evidence result marker: %w", err)
+		}
+		result := &platform.RemoteEvidenceResult{}
+		if err := json.Unmarshal(payload, result); err != nil {
+			return nil, fmt.Errorf("decode evidence result JSON: %w", err)
+		}
+		if len(result.Message) > 256 {
+			result.Message = result.Message[:256]
+		}
+		return result, nil
+	}
+	return nil, fmt.Errorf("evidence result marker %q was not returned by Azure Run Command", azureEvidenceMarker)
+}
+
+func validateAzureEvidence(policy *v1alpha1.EvidenceSpec, evidence *platform.RemoteEvidenceResult) error {
+	if policy == nil || !policy.Required {
+		return nil
+	}
+	if evidence == nil {
+		return fmt.Errorf("required evidence was not returned before Azure image registration")
+	}
+	if !strings.EqualFold(strings.TrimSpace(evidence.Status), "passed") {
+		return fmt.Errorf("required evidence status is %q, want passed", evidence.Status)
+	}
+	refs := map[string]string{
+		"sbomRef":                evidence.SBOMRef,
+		"vulnerabilityReportRef": evidence.VulnerabilityReportRef,
+		"provenanceRef":          evidence.ProvenanceRef,
+		"signatureRef":           evidence.SignatureRef,
+	}
+	prefix := strings.TrimSuffix(policy.RegistryRepository, "/")
+	for field, ref := range refs {
+		if !immutableAzureEvidenceRef(ref) {
+			return fmt.Errorf("required evidence %s must be an immutable oci:// reference pinned by sha256 digest", field)
+		}
+		refRepository := strings.SplitN(ref, "@sha256:", 2)[0]
+		if refRepository != prefix && !strings.HasPrefix(refRepository, prefix+"/") {
+			return fmt.Errorf("required evidence %s is outside registry repository %q", field, policy.RegistryRepository)
+		}
+	}
+	return nil
+}
+
+func immutableAzureEvidenceRef(ref string) bool {
+	if !strings.HasPrefix(ref, "oci://") {
+		return false
+	}
+	parts := strings.Split(ref, "@sha256:")
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "oci://" || len(parts[1]) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(parts[1])
+	return err == nil
+}
+
 type azureRemoteOperationRef struct {
 	BuildID          string
 	VMName           string
@@ -533,6 +744,12 @@ type azureRemoteOperationRef struct {
 	DiskName         string
 	ImageID          string
 	ProvisionerIndex int
+	EvidenceStatus   string
+	EvidenceMessage  string
+	SBOMRef          string
+	VulnerabilityRef string
+	ProvenanceRef    string
+	SignatureRef     string
 }
 
 func (r azureRemoteOperationRef) String() string {
@@ -551,6 +768,14 @@ func (r azureRemoteOperationRef) String() string {
 	}
 	if r.ProvisionerIndex > 0 {
 		values.Set("provisionerIndex", strconv.Itoa(r.ProvisionerIndex))
+	}
+	if r.EvidenceStatus != "" {
+		values.Set("evidenceStatus", r.EvidenceStatus)
+		values.Set("evidenceMessage", r.EvidenceMessage)
+		values.Set("sbomRef", r.SBOMRef)
+		values.Set("vulnerabilityRef", r.VulnerabilityRef)
+		values.Set("provenanceRef", r.ProvenanceRef)
+		values.Set("signatureRef", r.SignatureRef)
 	}
 	u := url.URL{Scheme: "azure", Host: "remote-build", Path: "/" + r.BuildID, RawQuery: values.Encode()}
 	return u.String()
@@ -582,7 +807,39 @@ func parseAzureRemoteOperationRef(value string) (azureRemoteOperationRef, error)
 		DiskName:         u.Query().Get("diskName"),
 		ImageID:          u.Query().Get("imageId"),
 		ProvisionerIndex: index,
+		EvidenceStatus:   u.Query().Get("evidenceStatus"),
+		EvidenceMessage:  u.Query().Get("evidenceMessage"),
+		SBOMRef:          u.Query().Get("sbomRef"),
+		VulnerabilityRef: u.Query().Get("vulnerabilityRef"),
+		ProvenanceRef:    u.Query().Get("provenanceRef"),
+		SignatureRef:     u.Query().Get("signatureRef"),
 	}, nil
+}
+
+func (r *azureRemoteOperationRef) setEvidence(evidence *platform.RemoteEvidenceResult) {
+	if r == nil || evidence == nil {
+		return
+	}
+	r.EvidenceStatus = evidence.Status
+	r.EvidenceMessage = evidence.Message
+	r.SBOMRef = evidence.SBOMRef
+	r.VulnerabilityRef = evidence.VulnerabilityReportRef
+	r.ProvenanceRef = evidence.ProvenanceRef
+	r.SignatureRef = evidence.SignatureRef
+}
+
+func (r azureRemoteOperationRef) evidence() *platform.RemoteEvidenceResult {
+	if r.EvidenceStatus == "" {
+		return nil
+	}
+	return &platform.RemoteEvidenceResult{
+		Status:                 r.EvidenceStatus,
+		Message:                r.EvidenceMessage,
+		SBOMRef:                r.SBOMRef,
+		VulnerabilityReportRef: r.VulnerabilityRef,
+		ProvenanceRef:          r.ProvenanceRef,
+		SignatureRef:           r.SignatureRef,
+	}
 }
 
 func azureRemoteVMName(buildID string) string {

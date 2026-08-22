@@ -16,6 +16,7 @@ package vmimage
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -530,6 +531,11 @@ func (r *VMImageReconciler) reconcileRemoteBuild(ctx context.Context, img *v1alp
 		setStep(img, "Readiness", "Pending", "WaitingForRemoteBuild", "Guest readiness is provider-managed", "")
 		setStep(img, "Provisioning", "Pending", "WaitingForRemoteBuild", "Provisioning is provider-managed", "")
 		setStep(img, "Sanitization", "Pending", "WaitingForRemoteBuild", "Sanitization is provider-managed", "")
+		if img.Spec.Evidence != nil && img.Spec.Evidence.Required {
+			setStep(img, "Evidence", "Pending", "WaitingForRemoteEvidence", "Supply-chain evidence is provider-managed", "")
+		} else {
+			setStep(img, "Evidence", "Skipped", "EvidenceNotRequired", "Supply-chain evidence was not required", "")
+		}
 		setStep(img, "Upload", "Pending", "WaitingForRemoteBuild", "Registration is provider-managed", "")
 		setCondition(img, "BuildStarted", metav1.ConditionTrue, "RemoteBuildStarted", "Remote build requested from provider")
 		if err := r.Status().Update(ctx, img); err != nil {
@@ -618,11 +624,24 @@ func (r *VMImageReconciler) reconcileRemoteBuild(ctx context.Context, img *v1alp
 		}
 		return r.setFailedWithReason(ctx, img, "RemoteHygieneFailed", hygiene.Message)
 	}
+	evidence := remoteEvidenceStatus(result.Evidence)
+	if err := validateRemoteEvidence(img.Spec.Evidence, evidence); err != nil {
+		img.Status.Evidence = &evidence
+		setStep(img, "Evidence", "Failed", "RemoteEvidenceRejected", err.Error(), "")
+		observability.FailuresTotal.WithLabelValues("RemoteBuild", "RemoteEvidenceRejected", providerName).Inc()
+		if cleanupErr := r.cleanupRemoteBuild(ctx, img); cleanupErr != nil {
+			return ctrl.Result{}, fmt.Errorf("cleanup remote build after evidence failure: %w", cleanupErr)
+		}
+		return r.setFailedWithReason(ctx, img, "RemoteEvidenceRejected", err.Error())
+	}
 	now := metav1.Now()
 	img.Status.Phase = v1alpha1.PhaseReady
 	img.Status.CompletionTime = &now
 	img.Status.Images = images
 	img.Status.HygieneResult = &hygiene
+	if img.Spec.Evidence != nil || result.Evidence != nil {
+		img.Status.Evidence = &evidence
+	}
 	if result.Artifact != nil {
 		img.Status.BuildArtifact = &v1alpha1.ArtifactStatus{
 			Path:      result.Artifact.Path,
@@ -646,6 +665,13 @@ func (r *VMImageReconciler) reconcileRemoteBuild(ctx context.Context, img *v1alp
 	} else {
 		setStep(img, "Sanitization", "Succeeded", "RemoteHygieneUnknown", hygiene.Message, hygiene.ResultRef)
 	}
+	if result.Evidence != nil && evidence.Status == "passed" {
+		setStep(img, "Evidence", "Succeeded", "RemoteEvidencePassed", evidence.Message, evidence.ProvenanceRef)
+	} else if img.Spec.Evidence != nil && img.Spec.Evidence.Required {
+		setStep(img, "Evidence", "Failed", "RemoteEvidenceMissing", "Required remote evidence was not returned", "")
+	} else {
+		setStep(img, "Evidence", "Skipped", "EvidenceNotRequired", "Supply-chain evidence was not required", "")
+	}
 	setStep(img, "Upload", "Succeeded", "RemoteImageRegistered", "Remote image registered by provider", "")
 	setCondition(img, "Ready", metav1.ConditionTrue, "RemoteBuildSucceeded", "Remote build completed successfully")
 	if err := r.Status().Update(ctx, img); err != nil {
@@ -654,6 +680,60 @@ func (r *VMImageReconciler) reconcileRemoteBuild(ctx context.Context, img *v1alp
 	r.recordEvent(img, corev1.EventTypeNormal, "Ready", "Remote image registered on provider %q", providerName)
 	log.Info("remote vmimage is ready", slog.String("provider", providerName))
 	return ctrl.Result{}, nil
+}
+
+func remoteEvidenceStatus(result *platform.RemoteEvidenceResult) v1alpha1.EvidenceStatus {
+	if result == nil {
+		return v1alpha1.EvidenceStatus{Status: "unknown", Message: "Provider did not return supply-chain evidence"}
+	}
+	now := metav1.Now()
+	return v1alpha1.EvidenceStatus{
+		Status:                 strings.ToLower(strings.TrimSpace(result.Status)),
+		Message:                strings.TrimSpace(result.Message),
+		SBOMRef:                strings.TrimSpace(result.SBOMRef),
+		VulnerabilityReportRef: strings.TrimSpace(result.VulnerabilityReportRef),
+		ProvenanceRef:          strings.TrimSpace(result.ProvenanceRef),
+		SignatureRef:           strings.TrimSpace(result.SignatureRef),
+		GeneratedAt:            &now,
+	}
+}
+
+func validateRemoteEvidence(policy *v1alpha1.EvidenceSpec, evidence v1alpha1.EvidenceStatus) error {
+	if policy == nil || !policy.Required {
+		return nil
+	}
+	if evidence.Status != "passed" {
+		return fmt.Errorf("required provider evidence status is %q, want passed", evidence.Status)
+	}
+	refs := map[string]string{
+		"sbomRef":                evidence.SBOMRef,
+		"vulnerabilityReportRef": evidence.VulnerabilityReportRef,
+		"provenanceRef":          evidence.ProvenanceRef,
+		"signatureRef":           evidence.SignatureRef,
+	}
+	for field, ref := range refs {
+		if !immutableOCIReference(ref) {
+			return fmt.Errorf("required evidence %s must be an immutable oci:// reference pinned by sha256 digest", field)
+		}
+		refRepository := strings.SplitN(ref, "@sha256:", 2)[0]
+		policyRepository := strings.TrimSuffix(policy.RegistryRepository, "/")
+		if refRepository != policyRepository && !strings.HasPrefix(refRepository, policyRepository+"/") {
+			return fmt.Errorf("required evidence %s is outside registry repository %q", field, policy.RegistryRepository)
+		}
+	}
+	return nil
+}
+
+func immutableOCIReference(ref string) bool {
+	if !strings.HasPrefix(ref, "oci://") {
+		return false
+	}
+	parts := strings.Split(ref, "@sha256:")
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "oci://" || len(parts[1]) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(parts[1])
+	return err == nil
 }
 
 func (r *VMImageReconciler) retryRemoteBuild(ctx context.Context, img *v1alpha1.VMImage, providerName string, providerErr error, timeout time.Duration, log *slog.Logger) (ctrl.Result, error) {
@@ -1774,6 +1854,7 @@ func remoteBuildRequest(img *v1alpha1.VMImage, target v1alpha1.TargetSpec) *plat
 		Target:            target,
 		Provisioners:      img.Spec.Provisioners,
 		GuestAccess:       img.Spec.Build.GuestAccess,
+		Evidence:          img.Spec.Evidence,
 		Timeout:           timeout,
 	}
 }
@@ -1860,6 +1941,18 @@ func updateRemoteSteps(img *v1alpha1.VMImage, result *platform.RemoteBuildResult
 		setStep(img, "Upload", "Succeeded", "RemoteImageRegistered", message, "")
 	default:
 		setStep(img, "Build", "Running", reason, message, "")
+	}
+	if result.Evidence != nil {
+		status := remoteEvidenceStatus(result.Evidence)
+		img.Status.Evidence = &status
+		switch status.Status {
+		case "passed":
+			setStep(img, "Evidence", "Succeeded", "RemoteEvidencePublished", status.Message, status.ProvenanceRef)
+		case "failed":
+			setStep(img, "Evidence", "Failed", "RemoteEvidenceFailed", status.Message, "")
+		default:
+			setStep(img, "Evidence", "Running", "RemoteEvidencePending", status.Message, "")
+		}
 	}
 }
 

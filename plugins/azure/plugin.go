@@ -535,6 +535,7 @@ func (p *Plugin) ReconcileRemoteBuild(ctx context.Context, req *platform.RemoteB
 			ProviderConfigName: req.Target.ProviderConfigRef.Name,
 			Provisioners:       req.Provisioners,
 			GuestAccess:        req.GuestAccess,
+			Evidence:           req.Evidence,
 		})
 		if err != nil {
 			return nil, classifyAzureRemoteError(err)
@@ -545,6 +546,7 @@ func (p *Plugin) ReconcileRemoteBuild(ctx context.Context, req *platform.RemoteB
 			Message:      state.Message,
 			Done:         state.Done,
 			Hygiene:      state.Hygiene,
+			Evidence:     state.Evidence,
 		}
 		if state.Done {
 			if state.Image == nil || state.Image.ID == "" {

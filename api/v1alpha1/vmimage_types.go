@@ -45,6 +45,47 @@ type VMImageSpec struct {
 	// Build controls build-job behaviour
 	// +optional
 	Build BuildSpec `json:"build,omitempty"`
+
+	// Evidence configures software-supply-chain evidence for the produced VM
+	// image. When required, a remote provider must return immutable OCI
+	// references for the SBOM, vulnerability report, provenance, and signature
+	// before the VMImage can become Ready.
+	// +optional
+	Evidence *EvidenceSpec `json:"evidence,omitempty"`
+}
+
+type EvidenceSpec struct {
+	// Required fails the build closed when complete, immutable evidence is not
+	// returned by the builder/provider.
+	// +kubebuilder:default=true
+	// +optional
+	Required bool `json:"required,omitempty"`
+
+	// SBOMFormat selects the required SBOM document format.
+	// +kubebuilder:validation:Enum=spdx-json
+	// +kubebuilder:default=spdx-json
+	// +optional
+	SBOMFormat string `json:"sbomFormat,omitempty"`
+
+	// VulnerabilityScanner identifies the report schema consumed by promotion.
+	// +kubebuilder:validation:Enum=trivy
+	// +kubebuilder:default=trivy
+	// +optional
+	VulnerabilityScanner string `json:"vulnerabilityScanner,omitempty"`
+
+	// FailOnSeverity lists severities that must fail evidence collection and
+	// prevent publication of a releasable image.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:items:Enum=HIGH;CRITICAL
+	// +listType=set
+	// +optional
+	FailOnSeverity []string `json:"failOnSeverity,omitempty"`
+
+	// RegistryRepository is the OCI repository prefix used by the evidence
+	// provisioner, for example oci://registry.example.com/platform/evidence.
+	// Published status references must additionally be pinned by sha256 digest.
+	// +kubebuilder:validation:Pattern=`^oci://[^\\s]+$`
+	RegistryRepository string `json:"registryRepository"`
 }
 
 type OSSpec struct {
@@ -757,6 +798,12 @@ type VMImageStatus struct {
 	// +optional
 	HygieneResult *HygieneResultStatus `json:"hygieneResult,omitempty"`
 
+	// Evidence contains only non-secret immutable OCI references. Evidence
+	// document contents and signing material are never stored in Kubernetes
+	// status.
+	// +optional
+	Evidence *EvidenceStatus `json:"evidence,omitempty"`
+
 	// Conditions follow the standard Kubernetes condition pattern
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
@@ -817,7 +864,7 @@ type VMImageStatus struct {
 
 type PipelineStepStatus struct {
 	// Name is a stable pipeline step name.
-	// +kubebuilder:validation:Enum=Build;Boot;Readiness;Provisioning;Sanitization;Upload;Cleanup
+	// +kubebuilder:validation:Enum=Build;Boot;Readiness;Provisioning;Sanitization;Evidence;Upload;Cleanup
 	Name string `json:"name"`
 
 	// Status is the current step status.
@@ -838,6 +885,36 @@ type PipelineStepStatus struct {
 	// ResultRef references a non-secret file produced by this step.
 	// +optional
 	ResultRef string `json:"resultRef,omitempty"`
+}
+
+type EvidenceStatus struct {
+	// Status is provider-neutral and fail-closed when evidence is required.
+	// +kubebuilder:validation:Enum=passed;failed;unknown
+	Status string `json:"status"`
+
+	// Message is a non-sensitive summary.
+	// +optional
+	Message string `json:"message,omitempty"`
+
+	// SBOMRef is an immutable OCI reference to an SPDX JSON document.
+	// +optional
+	SBOMRef string `json:"sbomRef,omitempty"`
+
+	// VulnerabilityReportRef is an immutable OCI reference to a Trivy JSON report.
+	// +optional
+	VulnerabilityReportRef string `json:"vulnerabilityReportRef,omitempty"`
+
+	// ProvenanceRef is an immutable OCI reference to SLSA provenance.
+	// +optional
+	ProvenanceRef string `json:"provenanceRef,omitempty"`
+
+	// SignatureRef is an immutable OCI reference to the Cosign verification bundle.
+	// +optional
+	SignatureRef string `json:"signatureRef,omitempty"`
+
+	// GeneratedAt records when the provider completed evidence publication.
+	// +optional
+	GeneratedAt *metav1.Time `json:"generatedAt,omitempty"`
 }
 
 type ArtifactStatus struct {

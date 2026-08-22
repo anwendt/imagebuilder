@@ -67,6 +67,8 @@ The `ProviderConfig` uses `region` as the Azure image location and the following
 | `diskSizeGiB` | no | Optional OS disk size override. |
 | `remote.vmSize` | no | Temporary VM size for remote builds with provisioners; defaults to `Standard_B2s`. |
 | `remote.networkInterfaceId` | only for remote provisioners or SSH guest access | Existing NIC resource ID attached to the temporary build VM. |
+| `remote.managedIdentityId` | for required evidence | User-assigned managed identity attached to the temporary build VM for registry and KMS access. |
+| `remote.evidence.cosignKeyRef` | for required evidence | Non-secret Cosign KMS URI used to sign VM-image provenance, for example `azurekms://vault/key`. |
 | `galleryName` | no | Compute Gallery name. |
 | `galleryImageName` | no | Gallery image definition name. |
 | `galleryVersion` | no | Gallery version; defaults to a timestamp version if omitted. |
@@ -148,8 +150,8 @@ Supported remote provisioners:
 
 | OS family | Provisioners |
 | --- | --- |
-| Linux | `shell`, `file` |
-| Windows | `powershell`, `file` |
+| Linux | `shell`, `file`, final `evidence` |
+| Windows | `powershell`, `file`, final `evidence` |
 
 Remote provisioner mode and explicit `spec.build.guestAccess.protocol: ssh`
 require `extra.remote.networkInterfaceId`. The NIC must already exist, be
@@ -158,6 +160,18 @@ control-plane endpoints needed by Run Command. Use
 `extra.osState: specialized` when the source should not be generalized; the
 default `generalized` mode expects the image content/provisioners to run the
 appropriate Linux deprovision or Windows sysprep step before image capture.
+
+Required evidence additionally needs:
+
+- `extra.remote.managedIdentityId`, whose identity has registry push and KMS
+  signing permissions;
+- `extra.remote.evidence.cosignKeyRef`, containing a non-secret Cosign KMS URI;
+- Syft, Trivy, ORAS, Cosign, and registry authentication available to the final
+  evidence script.
+
+The provider principal needs permission to assign the configured user-assigned
+identity to the temporary VM. The build identity itself receives only the data
+plane permissions needed for the evidence repository and signing key.
 
 ## Live E2E
 

@@ -312,6 +312,86 @@ The core enforces digest pinning and registry allow-listing. Signature
 verification is enforced by cluster admission policy such as Kyverno or
 Sigstore Policy Controller.
 
+## Golden-image evidence
+
+Remote builds can require promotion evidence before the provider registers the
+image. The final `evidence` provisioner must publish an SPDX JSON SBOM, a Trivy
+JSON vulnerability report, SLSA provenance, and its Cosign verification bundle
+below the configured OCI repository:
+
+```yaml
+spec:
+  build:
+    mode: remote
+  evidence:
+    required: true
+    sbomFormat: spdx-json
+    vulnerabilityScanner: trivy
+    failOnSeverity:
+      - HIGH
+      - CRITICAL
+    registryRepository: oci://myregistry.azurecr.io/golden-images/evidence
+  provisioners:
+    - type: shell
+      source:
+        git:
+          url: https://git.example.com/platform/image-provisioners.git
+          ref: 7f6e5d4c3b2a190817263544536271809abcdef0
+          path: scripts/ubuntu/20-hardening.sh
+    - type: evidence
+      source:
+        git:
+          url: https://git.example.com/platform/image-provisioners.git
+          ref: 7f6e5d4c3b2a190817263544536271809abcdef0
+          path: scripts/ubuntu/90-evidence.sh
+```
+
+For Azure, the provider injects these non-secret variables into the evidence
+script:
+
+- `IMAGEBUILDER_BUILD_ID`
+- `IMAGEBUILDER_IMAGE_NAME`
+- `IMAGEBUILDER_SOURCE_REF`
+- `IMAGEBUILDER_EVIDENCE_REGISTRY_REPOSITORY`
+- `IMAGEBUILDER_EVIDENCE_SBOM_FORMAT`
+- `IMAGEBUILDER_EVIDENCE_VULNERABILITY_SCANNER`
+- `IMAGEBUILDER_EVIDENCE_FAIL_ON_SEVERITY`
+- `IMAGEBUILDER_EVIDENCE_COSIGN_KEY_REF`
+
+The build environment must provide `syft`, `trivy`, `oras`, `cosign`, and `jq`.
+Configure an approved KMS URI and the user-assigned identity on the Azure
+`ProviderConfig`; the provider attaches that identity to the temporary build VM
+and injects the KMS URI into the script:
+
+```yaml
+spec:
+  extra:
+    remote.managedIdentityId: /subscriptions/.../resourceGroups/.../providers/Microsoft.ManagedIdentity/userAssignedIdentities/imagebuilder-evidence
+    remote.evidence.cosignKeyRef: azurekms://golden-image-vault/golden-image-signing
+```
+
+Grant the identity pull access to the source, push access to the evidence
+repository, and signing permission on the KMS key. Authenticate ORAS to the
+registry with that identity in a preceding centrally managed provisioner. Do
+not place registry passwords, tokens, or a private signing key in the VMImage
+manifest or Git repository.
+
+The script must finish by printing exactly one result marker in this form:
+
+```text
+IMAGEBUILDER_EVIDENCE_V1=<base64-encoded-json>
+```
+
+Both the Azure provider and the core controller validate the marker. Required
+evidence fails the build before image registration unless the result is
+`passed` and all four references use
+`oci://...@sha256:<64-hex-digits>`. The compact result is available at
+`status.evidence`; reports themselves remain in the OCI registry.
+
+For reproducibility, required evidence also rejects a marketplace source whose
+version is `latest`. Select an immutable marketplace version before requesting
+the build.
+
 ## Artifact Storage
 
 Local builds default to PVC-backed artifact storage. Admission rejects
