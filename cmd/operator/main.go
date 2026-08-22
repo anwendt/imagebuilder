@@ -161,14 +161,18 @@ func main() {
 		LeaderElection:         leaderElect,
 		LeaderElectionID:       "imagebuilder.io",
 	}
+	// Secrets and admission-policy inputs are queried by exact name or through
+	// explicit, bounded reads. Keeping them out of the shared informer cache
+	// avoids both cluster-wide Secret replication in operator memory and the
+	// otherwise unnecessary list/watch RBAC that controller-runtime requires
+	// to initialize an informer for these security-sensitive resources.
+	uncachedObjects := uncachedClientObjects(namespaceScopedMode)
+	managerOptions.NewClient = func(config *rest.Config, options crclient.Options) (crclient.Client, error) {
+		options.Cache = &crclient.CacheOptions{Reader: options.Cache.Reader, DisableFor: uncachedObjects}
+		return crclient.New(config, options)
+	}
 	if namespaceScopedMode {
 		managerOptions.Cache = cache.Options{DefaultNamespaces: map[string]cache.Config{watchNamespace: {}}}
-		managerOptions.NewClient = func(config *rest.Config, options crclient.Options) (crclient.Client, error) {
-			options.Cache = &crclient.CacheOptions{Reader: options.Cache.Reader, DisableFor: []crclient.Object{
-				&imagebuilderv1alpha1.PlatformProvider{}, &corev1.Namespace{}, &admissionregistrationv1.ValidatingWebhookConfiguration{}, &unstructured.Unstructured{},
-			}}
-			return crclient.New(config, options)
-		}
 	}
 	mgr, err := ctrl.NewManager(restConfig, managerOptions)
 	if err != nil {
@@ -240,6 +244,21 @@ func main() {
 		slog.Error("problem running manager", slog.Any("error", err))
 		os.Exit(1)
 	}
+}
+
+func uncachedClientObjects(namespaceScopedMode bool) []crclient.Object {
+	objects := []crclient.Object{
+		&corev1.Secret{},
+		&corev1.Namespace{},
+		&admissionregistrationv1.ValidatingWebhookConfiguration{},
+	}
+	if namespaceScopedMode {
+		objects = append(objects,
+			&imagebuilderv1alpha1.PlatformProvider{},
+			&unstructured.Unstructured{},
+		)
+	}
+	return objects
 }
 
 func splitCSV(raw string) []string {

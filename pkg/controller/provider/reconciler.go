@@ -59,11 +59,10 @@ const (
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get
 // +kubebuilder:rbac:groups=kyverno.io,resources=clusterpolicies,verbs=get
-// These resources are served through controller-runtime's shared cache. Even
-// read-only Get/List calls therefore require watch permission so the informer
-// can start before PlatformProvider reconciliation begins.
-// +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingwebhookconfigurations,verbs=get;list;watch
-// +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
+// These security-policy inputs intentionally bypass controller-runtime's
+// shared cache; bounded direct reads do not require watch permissions.
+// +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingwebhookconfigurations,verbs=get;list
+// +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get
 type PlatformProviderReconciler struct {
 	client.Client
 	Scheme                    *runtime.Scheme

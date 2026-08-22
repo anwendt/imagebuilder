@@ -46,12 +46,12 @@ func TestOperatorRBACIsScopedForProduction(t *testing.T) {
 			}
 		}
 		if !strings.Contains(text, `resources: ["validatingwebhookconfigurations"]
-    verbs: ["get", "list", "watch"]`) {
-			t.Fatalf("%s must grant get/list/watch on validating webhook configurations", path)
+    verbs: ["get", "list"]`) {
+			t.Fatalf("%s must grant get/list on validating webhook configurations", path)
 		}
 		if !strings.Contains(text, `resources: ["namespaces"]
-    verbs: ["get", "list", "watch"]`) {
-			t.Fatalf("%s must grant get/list/watch on Namespaces for webhook selector evaluation", path)
+    verbs: ["get"]`) {
+			t.Fatalf("%s must grant get on Namespaces for webhook selector evaluation", path)
 		}
 	}
 }

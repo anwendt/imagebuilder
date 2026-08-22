@@ -81,10 +81,10 @@ rules:
     verbs: ["get"]
   - apiGroups: ["admissionregistration.k8s.io"]
     resources: ["validatingwebhookconfigurations"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list"]
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
