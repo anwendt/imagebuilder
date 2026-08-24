@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
@@ -65,6 +66,35 @@ func TestProvisioner_Run_RejectsWorldReadableKey(t *testing.T) {
 		Spec:         v1alpha1.ProvisionerSpec{Type: "shell", Inline: "echo ok"},
 	}); err == nil {
 		t.Fatal("Run should reject world-readable private key")
+	}
+}
+
+func TestProvisionerRunPassesQuotedLiteralEnvironmentToGuest(t *testing.T) {
+	workspace := t.TempDir()
+	keyPath := filepath.Join(workspace, "id_ed25519")
+	if err := os.WriteFile(keyPath, []byte("key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &recordingShellRunner{}
+	p := shell.Provisioner{Runner: runner}
+	_, err := p.Run(context.Background(), &provisioner.RunRequest{
+		WorkspaceDir: workspace, Protocol: "ssh", VMAddress: "127.0.0.1", VMUser: "imagebuilder", SSHPort: 2222, SSHKeyPath: keyPath,
+		Spec: v1alpha1.ProvisionerSpec{Type: "shell", Inline: "echo ready", Env: []v1alpha1.EnvVar{{Name: "AGENT_URL", Value: "https://example.test/a'b"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(runner.command.Args, "\n")
+	if !strings.Contains(joined, `export AGENT_URL='https://example.test/a'"'"'b'`) || !strings.Contains(joined, "echo ready") {
+		t.Fatalf("ssh command did not contain safely quoted environment: %s", joined)
+	}
+}
+
+func TestProvisionerRejectsSecretBackedInProcessEnvironment(t *testing.T) {
+	p := shell.Provisioner{}
+	err := p.Validate(context.Background(), v1alpha1.ProvisionerSpec{Type: "shell", Inline: "echo ready", Env: []v1alpha1.EnvVar{{Name: "TOKEN", ValueFrom: &v1alpha1.EnvVarSource{SecretKeyRef: &v1alpha1.SecretKeyRef{Name: "secret", Key: "token"}}}}})
+	if err == nil {
+		t.Fatal("secret-backed in-process environment must fail closed")
 	}
 }
 

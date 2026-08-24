@@ -18,7 +18,8 @@ image-scripts/
     └── ubuntu/
         ├── 10-basic-tools.sh
         ├── 20-hardening.sh
-        └── 30-monitoring.sh
+        ├── 30-monitoring.sh
+        └── 40-platform-config-agent.sh
 ```
 
 The repository includes a concrete example under
@@ -152,6 +153,28 @@ With the `scripts/ubuntu` directory above, the effective provisioner sequence is
 
 Each file is expanded into a separate `shell` step with the file content copied
 into `inline` at build time.
+
+Literal, non-sensitive environment values can be attached to an in-process
+`shell` provisioner. They are shell-quoted before execution in the guest.
+Secret-backed `valueFrom` entries fail closed for this execution mode because
+they would otherwise cross the guest boundary without a defined secret
+transport. The PlatformFactory configuration-agent installer uses this for its
+immutable artifact URL and SHA-256:
+
+```yaml
+provisioners:
+  - type: shell
+    source:
+      git:
+        url: https://github.com/yourorg/image-scripts.git
+        ref: 7f6e5d4c3b2a190817263544536271809abcdef0
+        path: scripts/ubuntu/40-platform-config-agent.sh
+    env:
+      - name: PLATFORM_CONFIG_AGENT_URL
+        value: https://packages.example.net/platform-config-agent/1.0.0/linux-amd64
+      - name: PLATFORM_CONFIG_AGENT_SHA256
+        value: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+```
 
 ## Private Repository Authentication
 

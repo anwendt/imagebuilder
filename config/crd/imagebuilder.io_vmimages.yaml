@@ -474,7 +474,9 @@ spec:
                         type: string
                       type: array
                     env:
-                      description: Env variables for init-container provisioners
+                      description: |-
+                        Env variables for provisioners. In-process shell provisioners accept only
+                        literal, non-secret values; valueFrom remains an init-container feature.
                       items:
                         properties:
                           name:

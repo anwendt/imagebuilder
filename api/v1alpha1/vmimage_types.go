@@ -292,7 +292,8 @@ type ProvisionerSpec struct {
 	// +optional
 	Args []string `json:"args,omitempty"`
 
-	// Env variables for init-container provisioners
+	// Env variables for provisioners. In-process shell provisioners accept only
+	// literal, non-secret values; valueFrom remains an init-container feature.
 	// +optional
 	Env []EnvVar `json:"env,omitempty"`
 
