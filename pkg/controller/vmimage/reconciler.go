@@ -305,11 +305,13 @@ func (r *VMImageReconciler) reconcilePending(ctx context.Context, img *v1alpha1.
 		if err != nil {
 			return r.setFailed(ctx, img, fmt.Sprintf("provider lookup failed: %v", err))
 		}
-		providerPlugin, err := r.providerPlugin(ctx, providerName)
+		providerPlugin, providerOwned, err := r.providerPlugin(ctx, providerName)
 		if err != nil {
 			return r.setFailed(ctx, img, fmt.Sprintf("provider %q is not installed or not healthy: %v", providerName, err))
 		}
-		defer closeProviderPlugin(providerPlugin)
+		if providerOwned {
+			defer closeProviderPlugin(providerPlugin)
+		}
 		if err := r.initProviderForTarget(ctx, img.Namespace, target, providerPlugin); err != nil {
 			return r.setFailed(ctx, img, fmt.Sprintf("provider %q config %q rejected: %v", providerName, target.ProviderConfigRef.Name, err))
 		}
@@ -513,11 +515,13 @@ func (r *VMImageReconciler) reconcileRemoteBuild(ctx context.Context, img *v1alp
 	if err != nil {
 		return r.setFailed(ctx, img, fmt.Sprintf("provider lookup failed: %v", err))
 	}
-	providerPlugin, err := r.providerPlugin(ctx, providerName)
+	providerPlugin, providerOwned, err := r.providerPlugin(ctx, providerName)
 	if err != nil {
 		return r.setFailedWithReason(ctx, img, "RemoteBuildUnsupported", fmt.Sprintf("provider %q is not installed or not healthy: %v", providerName, err))
 	}
-	defer closeProviderPlugin(providerPlugin)
+	if providerOwned {
+		defer closeProviderPlugin(providerPlugin)
+	}
 	remotePlugin, ok := providerPlugin.(platform.RemoteBuildPlugin)
 	if !ok || !supportsBuildMode(remotePlugin.SupportedBuildModes(), v1alpha1.BuildModeRemote) {
 		return r.setFailedWithReason(ctx, img, "RemoteBuildUnsupported", fmt.Sprintf("provider %q does not advertise remote build support", providerName))
@@ -1699,13 +1703,15 @@ func (r *VMImageReconciler) cleanupRemoteBuild(ctx context.Context, img *v1alpha
 		r.markCleanupFailure(ctx, img, "remote-build", "RemoteBuildCleanupFailed", cleanupErr)
 		return cleanupErr
 	}
-	providerPlugin, err := r.providerPlugin(ctx, providerName)
+	providerPlugin, providerOwned, err := r.providerPlugin(ctx, providerName)
 	if err != nil {
 		cleanupErr := fmt.Errorf("get provider %q: %w", providerName, err)
 		r.markCleanupFailure(ctx, img, "remote-build", "RemoteBuildCleanupFailed", cleanupErr)
 		return cleanupErr
 	}
-	defer closeProviderPlugin(providerPlugin)
+	if providerOwned {
+		defer closeProviderPlugin(providerPlugin)
+	}
 	cleanupPlugin, ok := providerPlugin.(platform.RemoteBuildCleanupPlugin)
 	if !ok {
 		return nil
@@ -1796,20 +1802,26 @@ func (r *VMImageReconciler) providerNameForTarget(ctx context.Context, namespace
 // validation, remote build, and cleanup. A PlatformProvider whose resource name
 // equals ProviderConfig.spec.provider is an explicit external selection. When
 // no such installation exists, the built-in implementation is used.
-func (r *VMImageReconciler) providerPlugin(ctx context.Context, providerName string) (platform.Plugin, error) {
+// providerPlugin returns the selected provider and whether the caller owns its
+// lifecycle. External PlatformProvider adapters are shared registry clients and
+// must remain open across reconciles; factory-created built-in providers are
+// isolated instances and must be closed by the caller.
+func (r *VMImageReconciler) providerPlugin(ctx context.Context, providerName string) (platform.Plugin, bool, error) {
 	pp := &v1alpha1.PlatformProvider{}
 	if err := r.Get(ctx, types.NamespacedName{Name: providerName}, pp); err == nil {
 		if pp.Status.Phase != "Healthy" {
-			return nil, fmt.Errorf("PlatformProvider %q is not healthy (phase %q)", providerName, pp.Status.Phase)
+			return nil, false, fmt.Errorf("PlatformProvider %q is not healthy (phase %q)", providerName, pp.Status.Phase)
 		}
 		if pp.Status.Capabilities == nil || pp.Status.Capabilities.ProviderName != providerName {
-			return nil, fmt.Errorf("PlatformProvider %q has no matching capability handshake", providerName)
+			return nil, false, fmt.Errorf("PlatformProvider %q has no matching capability handshake", providerName)
 		}
-		return r.Registry.External(pp.Name, string(pp.UID), providerName)
+		providerPlugin, err := r.Registry.External(pp.Name, string(pp.UID), providerName)
+		return providerPlugin, false, err
 	} else if !apierrors.IsNotFound(err) {
-		return nil, fmt.Errorf("get PlatformProvider %q: %w", providerName, err)
+		return nil, false, fmt.Errorf("get PlatformProvider %q: %w", providerName, err)
 	}
-	return r.Registry.New(providerName)
+	providerPlugin, err := r.Registry.New(providerName)
+	return providerPlugin, true, err
 }
 
 func buildMode(img *v1alpha1.VMImage) string {

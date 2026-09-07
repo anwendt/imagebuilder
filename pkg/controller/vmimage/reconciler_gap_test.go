@@ -346,6 +346,9 @@ func TestReconcile_RemoteBuild_CollidingExternalTakesPrecedenceOverBuiltin(t *te
 	if builtin.remoteCalls != 0 {
 		t.Fatalf("builtin remote calls=%d, want 0", builtin.remoteCalls)
 	}
+	if external.closeCalls != 0 {
+		t.Fatalf("shared external provider close calls=%d, want 0", external.closeCalls)
+	}
 }
 
 func TestReconcile_RemoteBuild_UnhealthyExternalDoesNotFallbackToBuiltin(t *testing.T) {
@@ -1243,6 +1246,12 @@ type fakeRemoteBuildPlugin struct {
 	cleanupCalls   int
 	cleanupRequest *platform.RemoteBuildRequest
 	cleanupErr     error
+	closeCalls     int
+}
+
+func (p *fakeRemoteBuildPlugin) Close() error {
+	p.closeCalls++
+	return nil
 }
 
 func (p *fakeRemoteBuildPlugin) SupportedBuildModes() []string {
