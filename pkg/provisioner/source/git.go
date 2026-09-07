@@ -3,6 +3,7 @@ package source
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,11 +12,20 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
+	"golang.org/x/net/http/httpproxy"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/provisioner"
 	"github.com/anwendt/imagebuilder/pkg/security/netguard"
 )
+
+// ExpandOptions controls outbound access for remote provisioner sources.
+// Values are scoped to one expansion and never mutate process environment.
+type ExpandOptions struct {
+	HTTPProxy  string
+	HTTPSProxy string
+	NoProxy    string
+}
 
 const (
 	maxGitProvisionerFileBytes  = 1 << 20
@@ -23,6 +33,10 @@ const (
 )
 
 func ExpandProvisioners(ctx context.Context, workspaceDir string, specs []v1alpha1.ProvisionerSpec) ([]v1alpha1.ProvisionerSpec, error) {
+	return ExpandProvisionersWithOptions(ctx, workspaceDir, specs, ExpandOptions{})
+}
+
+func ExpandProvisionersWithOptions(ctx context.Context, workspaceDir string, specs []v1alpha1.ProvisionerSpec, options ExpandOptions) ([]v1alpha1.ProvisionerSpec, error) {
 	if len(specs) == 0 {
 		return nil, nil
 	}
@@ -32,7 +46,7 @@ func ExpandProvisioners(ctx context.Context, workspaceDir string, specs []v1alph
 			expanded = append(expanded, spec)
 			continue
 		}
-		steps, err := expandGitProvisioner(ctx, workspaceDir, i, spec)
+		steps, err := expandGitProvisioner(ctx, workspaceDir, i, spec, options)
 		if err != nil {
 			return nil, err
 		}
@@ -50,7 +64,7 @@ func HasSources(specs []v1alpha1.ProvisionerSpec) bool {
 	return false
 }
 
-func expandGitProvisioner(ctx context.Context, workspaceDir string, step int, spec v1alpha1.ProvisionerSpec) ([]v1alpha1.ProvisionerSpec, error) {
+func expandGitProvisioner(ctx context.Context, workspaceDir string, step int, spec v1alpha1.ProvisionerSpec, options ExpandOptions) ([]v1alpha1.ProvisionerSpec, error) {
 	gitSpec := spec.Source.Git
 	if err := validateGitProvisionerSource(ctx, step, gitSpec); err != nil {
 		return nil, err
@@ -62,9 +76,14 @@ func expandGitProvisioner(ctx context.Context, workspaceDir string, step int, sp
 	if err := os.MkdirAll(repoDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create git provisioner workspace: %w", err)
 	}
+	proxyOptions, err := gitProxyOptions(gitSpec.URL, options)
+	if err != nil {
+		return nil, fmt.Errorf("resolve proxy for provisioner git source: %w", err)
+	}
 	repo, err := git.PlainCloneContext(ctx, repoDir, false, &git.CloneOptions{
-		URL:  gitSpec.URL,
-		Auth: gitAuth(gitSpec),
+		URL:          gitSpec.URL,
+		Auth:         gitAuth(gitSpec),
+		ProxyOptions: proxyOptions,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("clone provisioner git source %q: %w", gitSpec.URL, err)
@@ -108,6 +127,25 @@ func expandGitProvisioner(ctx context.Context, workspaceDir string, step int, sp
 		steps = append(steps, next)
 	}
 	return steps, nil
+}
+
+func gitProxyOptions(rawURL string, options ExpandOptions) (transport.ProxyOptions, error) {
+	target, err := url.Parse(rawURL)
+	if err != nil {
+		return transport.ProxyOptions{}, err
+	}
+	proxyURL, err := (&httpproxy.Config{
+		HTTPProxy:  strings.TrimSpace(options.HTTPProxy),
+		HTTPSProxy: strings.TrimSpace(options.HTTPSProxy),
+		NoProxy:    strings.TrimSpace(options.NoProxy),
+	}).ProxyFunc()(target)
+	if err != nil {
+		return transport.ProxyOptions{}, err
+	}
+	if proxyURL == nil {
+		return transport.ProxyOptions{}, nil
+	}
+	return transport.ProxyOptions{URL: proxyURL.String()}, nil
 }
 
 func gitAuth(gitSpec *v1alpha1.GitProvisionerSourceSpec) transport.AuthMethod {
