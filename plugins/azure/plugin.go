@@ -778,10 +778,10 @@ func armClientOptions(cfg config) (*arm.ClientOptions, error) {
 	if err != nil {
 		return nil, fmt.Errorf("configure provider proxy: %w", err)
 	}
-	endpoint := firstNonEmpty(cfg.armEndpoint, defaultARMEndpoint(cfg.cloudName))
-	if endpoint == "" {
-		return nil, nil
-	}
+	// Always provide ARM client options, including for Azure Public Cloud. A
+	// nil options value makes the SDK fall back to its default HTTP transport
+	// and silently bypasses the ProviderConfig-scoped proxy.
+	endpoint := firstNonEmpty(cfg.armEndpoint, defaultARMEndpoint(cfg.cloudName), "https://management.azure.com")
 	audience := ensureTrailingSlash(firstNonEmpty(cfg.armAudience, defaultARMAudience(cfg.cloudName), "https://management.azure.com"))
 	authorityHost := ensureTrailingSlash(firstNonEmpty(cfg.authorityHost, defaultAuthorityHost(cfg.cloudName), cloud.AzurePublic.ActiveDirectoryAuthorityHost))
 	if strings.HasPrefix(strings.ToLower(endpoint), "http://") {
