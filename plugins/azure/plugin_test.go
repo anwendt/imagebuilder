@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/binary"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,6 +16,40 @@ import (
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
 	providererrors "github.com/anwendt/imagebuilder/pkg/provider/errors"
 )
+
+func TestARMClientOptionsUseScopedProxyForPublicCloud(t *testing.T) {
+	options, err := armClientOptions(config{
+		cloudName: "public",
+		extraConfig: map[string]string{
+			"httpsProxy": "http://proxy.example.com:8080",
+		},
+	})
+	if err != nil {
+		t.Fatalf("armClientOptions: %v", err)
+	}
+	if options == nil {
+		t.Fatal("armClientOptions returned nil for Azure Public Cloud")
+	}
+	httpClient, ok := options.ClientOptions.Transport.(*http.Client)
+	if !ok {
+		t.Fatalf("ARM transport type = %T, want *http.Client", options.ClientOptions.Transport)
+	}
+	transport, ok := httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("HTTP transport type = %T, want *http.Transport", httpClient.Transport)
+	}
+	target, err := url.Parse("https://management.azure.com/subscriptions/test")
+	if err != nil {
+		t.Fatalf("parse ARM URL: %v", err)
+	}
+	proxy, err := transport.Proxy(&http.Request{URL: target})
+	if err != nil {
+		t.Fatalf("resolve ARM proxy: %v", err)
+	}
+	if proxy == nil || proxy.String() != "http://proxy.example.com:8080" {
+		t.Fatalf("ARM proxy = %v, want http://proxy.example.com:8080", proxy)
+	}
+}
 
 func TestClassifyAzureRemoteError_RateLimitIsTransient(t *testing.T) {
 	err := classifyAzureRemoteError(&azcore.ResponseError{StatusCode: 429, ErrorCode: "TooManyRequests"})
