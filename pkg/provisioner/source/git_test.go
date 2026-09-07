@@ -53,6 +53,30 @@ func TestHasSources(t *testing.T) {
 	}
 }
 
+func TestGitProxyOptionsSelectsHTTPSProxyAndHonorsNoProxy(t *testing.T) {
+	options := ExpandOptions{
+		HTTPProxy:  "http://http-proxy.example.com:8080",
+		HTTPSProxy: "http://https-proxy.example.com:8443",
+		NoProxy:    ".internal.example.com",
+	}
+
+	proxy, err := gitProxyOptions("https://gitlab.example.com/group/repo.git", options)
+	if err != nil {
+		t.Fatalf("gitProxyOptions: %v", err)
+	}
+	if proxy.URL != "http://https-proxy.example.com:8443" {
+		t.Fatalf("proxy URL = %q, want HTTPS proxy", proxy.URL)
+	}
+
+	bypassed, err := gitProxyOptions("https://gitlab.internal.example.com/group/repo.git", options)
+	if err != nil {
+		t.Fatalf("gitProxyOptions for no-proxy host: %v", err)
+	}
+	if bypassed.URL != "" {
+		t.Fatalf("no-proxy URL = %q, want empty", bypassed.URL)
+	}
+}
+
 func TestExpandProvisionersRejectsMultiFileInitContainerSource(t *testing.T) {
 	repoDir := t.TempDir()
 	scriptsDir := filepath.Join(repoDir, "scripts")

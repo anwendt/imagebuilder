@@ -52,7 +52,7 @@ type azureRemoteBuildState struct {
 const azureRemoteBuildPublicKey = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDDzch/BPwsvvCVPklQJaRRO7gsqw4mLjnJiLHTQ5o0mBi7BLInDe12I5C9Qw2QU+mh46eaDzqa9vggfoZxWCENfhJ7zsdYReh27XzmpFD36THxci5awdPVmiF+kQ0LlxGZgtkf11lLt9hpSSqeXcIsnQRO9LAEXqBtMAR50zSBgeHcyXRNxeiR4D1c/FtsGcm+6GJu4eL+T1GPvNTr77dhVaOAYfba0QUTfnDOW3j0A8YqtH+0Aagzh6w2yAxP//NV1TtL0g1l0PTa8jTqjvBi13PI6RgpHP5HDsxyQPj7UoNiHLP2no/X3MguOYoqPZWDRdOzsAbL4+ufCOJu41bN imagebuilder-azure-remote-build"
 
 func (c *sdkClient) ReconcileRemoteBuild(ctx context.Context, input azureRemoteBuildInput) (*azureRemoteBuildState, error) {
-	expandedInput, cleanup, err := expandAzureRemoteProvisioners(ctx, input)
+	expandedInput, cleanup, err := expandAzureRemoteProvisioners(ctx, input, c.cfg.extraConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +124,7 @@ func (c *sdkClient) ReconcileRemoteBuild(ctx context.Context, input azureRemoteB
 	return c.finishRemoteBuildVM(ctx, input, ref)
 }
 
-func expandAzureRemoteProvisioners(ctx context.Context, input azureRemoteBuildInput) (azureRemoteBuildInput, func(), error) {
+func expandAzureRemoteProvisioners(ctx context.Context, input azureRemoteBuildInput, extra map[string]string) (azureRemoteBuildInput, func(), error) {
 	if !provisionersource.HasSources(input.Provisioners) {
 		return input, func() {}, nil
 	}
@@ -133,7 +133,11 @@ func expandAzureRemoteProvisioners(ctx context.Context, input azureRemoteBuildIn
 		return input, func() {}, fmt.Errorf("create Azure remote provisioner source workspace: %w", err)
 	}
 	cleanup := func() { _ = os.RemoveAll(workspace) }
-	provisioners, err := provisionersource.ExpandProvisioners(ctx, workspace, input.Provisioners)
+	provisioners, err := provisionersource.ExpandProvisionersWithOptions(ctx, workspace, input.Provisioners, provisionersource.ExpandOptions{
+		HTTPProxy:  extra["httpProxy"],
+		HTTPSProxy: extra["httpsProxy"],
+		NoProxy:    extra["noProxy"],
+	})
 	if err != nil {
 		cleanup()
 		return input, func() {}, err
