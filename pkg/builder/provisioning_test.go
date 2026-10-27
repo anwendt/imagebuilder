@@ -100,6 +100,8 @@ func TestSequentialProvisionerRunner_RequiresGuestAccessForRemoteProvisioner(t *
 }
 
 func TestSequentialProvisionerRunner_WaitsForInitContainerProvisioner(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	runner := builder.SequentialProvisionerRunner{
 		Lookup: func(string) (provisioner.Provisioner, bool) {
 			t.Fatal("init-container provisioner must not be resolved through in-process lookup")
@@ -145,7 +147,7 @@ func TestSequentialProvisionerRunner_WaitsForInitContainerProvisioner(t *testing
 		}
 	}()
 
-	err := runner.Run(context.Background(), builder.ProvisioningRequest{
+	err := runner.Run(ctx, builder.ProvisioningRequest{
 		Image:        img,
 		WorkspaceDir: workspace,
 		GuestAccess: builder.GuestAccess{

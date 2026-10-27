@@ -330,8 +330,21 @@ func writeProvisionerJSON(path string, value any) error {
 		return fmt.Errorf("marshal provisioner json: %w", err)
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return fmt.Errorf("write provisioner json %s: %w", path, err)
+	file, err := os.CreateTemp(filepath.Dir(path), ".provisioner-*.json")
+	if err != nil {
+		return fmt.Errorf("create provisioner json: %w", err)
+	}
+	temporary := file.Name()
+	defer os.Remove(temporary)
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("write provisioner json: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close provisioner json: %w", err)
+	}
+	if err := os.Rename(temporary, path); err != nil {
+		return fmt.Errorf("publish provisioner json: %w", err)
 	}
 	return nil
 }
