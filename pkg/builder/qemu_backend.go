@@ -2,6 +2,7 @@ package builder
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -85,9 +86,13 @@ func (b *QEMUImageBackend) Build(ctx context.Context, req BackendRequest) (*plat
 	if req.Format == platform.FormatGCETarball {
 		conversionPath = filepath.Join(workspaceDir, defaultArtifactFileName+".raw")
 	}
+	inputFormat, err := b.validateStandaloneSource(ctx, req.Source.Path, workspaceDir)
+	if err != nil {
+		return nil, Classify(ReasonArtifactConvertFailed, err)
+	}
 	if err := b.runner.Run(ctx, Command{
 		Name: b.qemuImgPath,
-		Args: []string{"convert", "-p", "-O", qemuFormat, req.Source.Path, conversionPath},
+		Args: []string{"convert", "-p", "-f", inputFormat, "-O", qemuFormat, req.Source.Path, conversionPath},
 		Dir:  workspaceDir,
 	}); err != nil {
 		_ = os.Remove(artifactPath)
@@ -115,6 +120,60 @@ func (b *QEMUImageBackend) Build(ctx context.Context, req BackendRequest) (*plat
 		OS:        platform.OSFamily(req.Image.Spec.OS.Family),
 		Metadata:  buildMetadata(req.BuildRequest, b.Name()),
 	}, nil
+}
+
+// QEMU metadata reports backing files, external data files and format-specific
+// extents. A downloaded source is one self-contained file; it must never cause
+// conversion to copy another builder file into the resulting guest disk.
+func (b *QEMUImageBackend) validateStandaloneSource(ctx context.Context, sourcePath, workspaceDir string) (string, error) {
+	runner, ok := b.runner.(OutputCommandRunner)
+	if !ok {
+		return "", fmt.Errorf("qemu runner cannot inspect source metadata")
+	}
+	output, err := runner.Output(ctx, Command{Name: b.qemuImgPath, Args: []string{"info", "--output=json", sourcePath}, Dir: workspaceDir})
+	if err != nil {
+		return "", fmt.Errorf("inspect source image: %w", err)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal(output, &metadata); err != nil {
+		return "", fmt.Errorf("decode source image metadata: %w", err)
+	}
+	format, _ := metadata["format"].(string)
+	if format == "" {
+		return "", fmt.Errorf("source image metadata has no format")
+	}
+	if err := validateImageFileReferences(metadata, filepath.Clean(sourcePath)); err != nil {
+		return "", err
+	}
+	return format, nil
+}
+
+func validateImageFileReferences(value any, sourcePath string) error {
+	switch node := value.(type) {
+	case map[string]any:
+		for key, child := range node {
+			if text, ok := child.(string); ok && text != "" {
+				switch key {
+				case "backing-filename", "full-backing-filename", "data-file":
+					return fmt.Errorf("source image must be self-contained: external %s is not allowed", key)
+				case "filename":
+					if filepath.Clean(text) != sourcePath {
+						return fmt.Errorf("source image must be self-contained: external file reference is not allowed")
+					}
+				}
+			}
+			if err := validateImageFileReferences(child, sourcePath); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, child := range node {
+			if err := validateImageFileReferences(child, sourcePath); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func qemuOutputFormat(format platform.ImageFormat) (string, bool) {

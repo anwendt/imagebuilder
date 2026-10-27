@@ -3,6 +3,7 @@ package source
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -105,21 +106,13 @@ func expandGitProvisioner(ctx context.Context, workspaceDir string, step int, sp
 	steps := make([]v1alpha1.ProvisionerSpec, 0, len(files))
 	var total int64
 	for _, file := range files {
-		info, err := os.Stat(file)
+		content, err := readGitProvisionerFile(repoDir, file)
 		if err != nil {
-			return nil, fmt.Errorf("stat git provisioner file %q: %w", file, err)
+			return nil, err
 		}
-		if info.Size() > maxGitProvisionerFileBytes {
-			return nil, fmt.Errorf("git provisioner file %q exceeds %d bytes", file, maxGitProvisionerFileBytes)
-		}
-		total += info.Size()
+		total += int64(len(content))
 		if total > maxGitProvisionerTotalBytes {
 			return nil, fmt.Errorf("git provisioner source exceeds %d bytes total", maxGitProvisionerTotalBytes)
-		}
-		// #nosec G304 -- file path was resolved under the cloned repository workspace.
-		content, err := os.ReadFile(file)
-		if err != nil {
-			return nil, fmt.Errorf("read git provisioner file %q: %w", file, err)
 		}
 		next := spec
 		next.Source = nil
@@ -225,6 +218,14 @@ func safeRepoPath(repoDir, rel string) (string, error) {
 		return "", fmt.Errorf("git provisioner path must be relative and stay within the repository")
 	}
 	full := filepath.Join(repoDir, clean)
+	repoDir, err := filepath.EvalSymlinks(repoDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve git repository: %w", err)
+	}
+	full, err = filepath.EvalSymlinks(full)
+	if err != nil {
+		return "", fmt.Errorf("resolve git provisioner path: %w", err)
+	}
 	relToRepo, err := filepath.Rel(repoDir, full)
 	if err != nil {
 		return "", fmt.Errorf("resolve git provisioner path: %w", err)
@@ -233,6 +234,44 @@ func safeRepoPath(repoDir, rel string) (string, error) {
 		return "", fmt.Errorf("git provisioner path must stay within the repository")
 	}
 	return full, nil
+}
+
+// Descriptor-relative opens enforce containment even if a symlink changes
+// after path validation. Limit the actual bytes read, not just a prior stat.
+func readGitProvisionerFile(repoDir, path string) ([]byte, error) {
+	resolvedRepo, err := filepath.EvalSymlinks(repoDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve git repository: %w", err)
+	}
+	rel, err := filepath.Rel(resolvedRepo, path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve git provisioner file: %w", err)
+	}
+	root, err := os.OpenRoot(resolvedRepo)
+	if err != nil {
+		return nil, fmt.Errorf("open git repository: %w", err)
+	}
+	defer root.Close()
+	file, err := root.Open(rel)
+	if err != nil {
+		return nil, fmt.Errorf("open git provisioner file: %w", err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat git provisioner file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("git provisioner source must be a regular file")
+	}
+	content, err := io.ReadAll(io.LimitReader(file, maxGitProvisionerFileBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read git provisioner file: %w", err)
+	}
+	if len(content) > maxGitProvisionerFileBytes {
+		return nil, fmt.Errorf("git provisioner file exceeds %d bytes", maxGitProvisionerFileBytes)
+	}
+	return content, nil
 }
 
 func provisionerSourceFiles(path string) ([]string, error) {
