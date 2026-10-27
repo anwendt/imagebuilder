@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
 )
 
@@ -18,6 +19,44 @@ type Command struct {
 // CommandRunner executes external tools such as qemu-img.
 type CommandRunner interface {
 	Run(ctx context.Context, cmd Command) error
+}
+
+// OutputCommandRunner captures bounded metadata from a tool before execution.
+type OutputCommandRunner interface {
+	CommandRunner
+	Output(ctx context.Context, cmd Command) ([]byte, error)
+}
+
+func (r ExecRunner) Output(ctx context.Context, cmd Command) ([]byte, error) {
+	if cmd.Name == "" {
+		return nil, fmt.Errorf("command name is required")
+	}
+	execCmd := exec.CommandContext(ctx, cmd.Name, cmd.Args...) // #nosec G204 -- Typed backend supplies an allowlisted internal tool.
+	execCmd.Dir = cmd.Dir
+	if len(cmd.Env) > 0 {
+		execCmd.Env = cmd.Env
+	}
+	stdout, err := execCmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := execCmd.Start(); err != nil {
+		return nil, err
+	}
+	const maxMetadataBytes = 1 << 20
+	output, readErr := io.ReadAll(io.LimitReader(stdout, maxMetadataBytes+1))
+	if readErr != nil || len(output) > maxMetadataBytes {
+		_ = execCmd.Process.Kill()
+		_ = execCmd.Wait()
+		if readErr != nil {
+			return nil, fmt.Errorf("read tool metadata: %w", readErr)
+		}
+		return nil, fmt.Errorf("tool metadata exceeds %d bytes", maxMetadataBytes)
+	}
+	if err := execCmd.Wait(); err != nil {
+		return nil, fmt.Errorf("inspect image metadata: %w", err)
+	}
+	return output, nil
 }
 
 // CommandProcess is a started external process.

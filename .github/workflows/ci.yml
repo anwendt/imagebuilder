@@ -31,8 +31,21 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Install QEMU for image boundary regression tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-utils
+
       - name: Run full Go test suite
         run: go test ./... -count=1
+
+      - name: Verify image boundary with the Debian 12 builder runtime
+        run: |
+          CGO_ENABLED=0 go test -c ./pkg/builder -o "$RUNNER_TEMP/builder-security.test"
+          docker run --rm \
+            -v "$RUNNER_TEMP/builder-security.test:/builder-security.test:ro" \
+            debian:12-slim@sha256:67b30a61dc87758f0caf819646104f29ecbda97d920aaf5edc834128ac8493d3 \
+            sh -ec 'apt-get update && apt-get install -y --no-install-recommends qemu-utils && /builder-security.test -test.run TestQEMUImageBackendStandaloneSourceSecurity -test.v'
 
       - name: Verify Go module integrity
         run: make verify-deps

@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -47,7 +48,7 @@ func TestQEMUImageBackend_Build_ConvertsCloudImageWithQEMUImg(t *testing.T) {
 		t.Fatalf("commands = %d, want 1", len(runner.commands))
 	}
 	cmd := runner.commands[0]
-	wantArgs := []string{"convert", "-p", "-O", "vmdk", sourcePath, filepath.Join(workspace, "artifact.vmdk")}
+	wantArgs := []string{"convert", "-p", "-f", "raw", "-O", "vmdk", sourcePath, filepath.Join(workspace, "artifact.vmdk")}
 	if cmd.Name != "/usr/bin/qemu-img" {
 		t.Fatalf("command name = %q, want /usr/bin/qemu-img", cmd.Name)
 	}
@@ -176,6 +177,10 @@ type recordingRunner struct {
 	writeOutput []byte
 	err         error
 	waitErr     error
+}
+
+func (r *recordingRunner) Output(_ context.Context, cmd builder.Command) ([]byte, error) {
+	return json.Marshal(map[string]string{"format": "raw", "filename": cmd.Args[len(cmd.Args)-1]})
 }
 
 func (r *recordingRunner) Run(ctx context.Context, cmd builder.Command) error {
