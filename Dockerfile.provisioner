@@ -28,7 +28,10 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 FROM debian:12-slim@sha256:67b30a61dc87758f0caf819646104f29ecbda97d920aaf5edc834128ac8493d3
 
 ARG PROVISIONER_TYPE=custom
+# Keep the build-argument name for existing callers; the chef image uses Cinc.
 ARG CHEF_VERSION=18.1.0
+ARG CINC_SHA256_AMD64=fb16b41ed8e504b09a8e05830cacd8a225c0f151b9de6ea811dfcbc1cdf9d632
+ARG CINC_SHA256_ARM64=79dbad588b1ffc1c14f70179339ff69a973681df97831f74e497e1dd9917ab22
 
 RUN apt-get update \
     && apt-get upgrade -y \
@@ -38,11 +41,23 @@ RUN apt-get update \
         apt-get install -y --no-install-recommends ansible \
         && ansible-playbook --version >/dev/null ;; \
       chef) \
-        curl -fsSL https://omnitruck.chef.io/install.sh -o /tmp/install-chef.sh \
-        && sh /tmp/install-chef.sh -P chef -v "${CHEF_VERSION}" \
+        arch="$(dpkg --print-architecture)" \
+        && case "${arch}" in \
+          amd64) checksum="${CINC_SHA256_AMD64}" ;; \
+          arm64) checksum="${CINC_SHA256_ARM64}" ;; \
+          *) echo "unsupported Cinc architecture: ${arch}" >&2; exit 1 ;; \
+        esac \
+        && curl --fail --show-error --silent --location --retry 3 --proto '=https' \
+          "https://packages.cinc.sh/files/stable/cinc/${CHEF_VERSION}/debian/11/cinc_${CHEF_VERSION}-1_${arch}.deb" \
+          -o /tmp/cinc.deb \
+        && printf '%s  %s\n' "${checksum}" /tmp/cinc.deb | sha256sum --check --strict - \
+        && dpkg-deb --info /tmp/cinc.deb >/dev/null \
+        && dpkg -i /tmp/cinc.deb \
+        && ln -s /opt/cinc/bin/cinc-client /usr/local/bin/chef-client \
+        && ln -s /opt/cinc/bin/cinc-apply /usr/local/bin/chef-apply \
         && chef-client --version >/dev/null \
         && chef-apply --version >/dev/null \
-        && rm -f /tmp/install-chef.sh ;; \
+        && rm -f /tmp/cinc.deb ;; \
       puppet) \
         apt-get install -y --no-install-recommends puppet-agent \
         && puppet --version >/dev/null ;; \

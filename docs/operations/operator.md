@@ -121,10 +121,24 @@ The released default provisioner images contain the matching runtime binaries:
 | Image value | Runtime included |
 |---|---|
 | `provisionerImages.ansible` | `ansible-playbook` |
-| `provisionerImages.chef` | `chef-client`, `chef-apply` |
+| `provisionerImages.chef` | `chef-client`, `chef-apply` (Cinc compatibility aliases) |
 | `provisionerImages.puppet` | `puppet` |
 | `provisionerImages.saltstack` | `salt-call`, `salt-minion` |
 | `provisionerImages.custom` | Image Builder provisioner runner and base OS tools only |
+
+The built-in `chef` image uses the Apache-2.0 Cinc distribution, pinned to
+18.1.0 for both amd64 and arm64. It exposes `chef-client` and `chef-apply` as
+aliases to the corresponding Cinc executables. The provisioner type, image name,
+and existing remote command contract remain unchanged; this does not install or
+replace software on target VMs.
+
+`Dockerfile.provisioner` downloads the architecture-specific Cinc Debian package
+over HTTPS, verifies a pinned SHA-256, and checks the Debian archive before
+installation. It does not use the Chef download endpoint that now requires a
+license key. The existing `CHEF_VERSION` build argument is retained for caller
+compatibility; changing it requires updating `CINC_SHA256_AMD64` and
+`CINC_SHA256_ARM64` from reviewed Cinc package metadata. A mismatched package fails
+the build. No license key or automatic license acceptance is added.
 
 Override the image reference when you need a pinned toolchain, additional
 Ansible collections, Chef cookbooks, Puppet modules, Salt states, or internal
