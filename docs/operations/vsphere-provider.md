@@ -109,7 +109,7 @@ Optional `extra` keys:
 | `requireManifest` | `false` | Requires `.mf` manifest files when publishing to Content Library. |
 | `buildFolder` | none | **Required for remote builds.** Absolute inventory path of the dedicated build folder; its name must start with `imagebuilder`. Build VMs (`imagebuilder-*`) live and die only here (ADR-009). The provider creates the folder below an existing parent. |
 | `protectedNames` | empty | Comma separated, case-insensitive substrings. ProviderConfig inventory names, build VM names and the build folder must not contain them. |
-| `downloadProxy` | empty | Proxy used only to download `cloud-image` sources (not for vCenter traffic). |
+| `downloadProxy` | empty | Proxy used only to download `cloud-image` sources and to fetch Git provisioner sources (`source.git`), not for vCenter traffic. |
 | `downloadDir` | `/var/lib/imagebuilder/uploads` | Scratch directory for downloaded source images. |
 | `buildDiskGiB` | image default | Grows the first disk of a cloud-image build VM to this size. |
 | `remote.publishTo` | none | `content-library` publishes the finished remote build as VM template item of `contentLibrary`/`contentLibraryID` and destroys the build VM. |

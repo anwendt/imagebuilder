@@ -87,7 +87,8 @@ already implemented: the controller or provider clones the repository
 (through the configured proxy, SSRF-checked), expands a directory into ordered
 steps and hands the file content to the provisioner. On vSphere the content
 reaches the guest through Guest Operations, so the build VM needs neither Git
-access nor credentials. Rules for orchestrators and manifests:
+access nor credentials. The provider fetches through the ProviderConfig
+`downloadProxy` when one is set (clusters that reach Git only via a proxy). Rules for orchestrators and manifests:
 
 - `ref` is a commit SHA or an immutable tag; branches are not used for versions.
   Orchestrators resolve a tag to its commit SHA when they create the `VMImage`
