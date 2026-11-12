@@ -63,13 +63,38 @@ spec:
       inline: |
         #!/bin/sh
         # Apply all pending package updates.
+        # The upgrade runs as a transient systemd unit: it can restart VMware Tools,
+        # which ends the Guest Operations process that runs this script. The unit
+        # keeps going, and the provider starts this script again, which then only waits
+        # for the unit (re-run safe).
         set -eu
+        UNIT=imagebuilder-update
+        RC=/var/lib/imagebuilder-update.rc
+        if [ ! -f "$RC" ] && ! systemctl is-active --quiet "$UNIT"; then
+          cat > /usr/local/sbin/imagebuilder-update <<'UPDEOF'
+        #!/bin/sh
         export DEBIAN_FRONTEND=noninteractive
-        echo "Updating system with the latest patches..."
+        dpkg --configure -a
         apt-get update -y
         apt-get upgrade -y -o Dpkg::Options::=--force-confold
         apt-get full-upgrade -y -o Dpkg::Options::=--force-confold
         apt-get autoremove -y
+        UPDEOF
+          chmod 0755 /usr/local/sbin/imagebuilder-update
+          rm -f "$RC"
+          systemd-run --unit="$UNIT" --collect --no-block \
+            --property=StandardOutput=append:/var/log/imagebuilder-update.log \
+            --property=StandardError=append:/var/log/imagebuilder-update.log \
+            /bin/sh -c '/usr/local/sbin/imagebuilder-update; echo $? > /var/lib/imagebuilder-update.rc'
+        fi
+        echo "waiting for the package upgrade unit"
+        while [ ! -f "$RC" ]; do
+          sleep 5
+        done
+        rc=$(cat "$RC")
+        tail -n 30 /var/log/imagebuilder-update.log || true
+        rm -f "$RC" /usr/local/sbin/imagebuilder-update
+        [ "$rc" = "0" ] || { echo "package upgrade failed with code $rc"; exit 1; }
         echo "System update and upgrade completed successfully."
     - type: shell
       inline: |
@@ -85,7 +110,8 @@ spec:
       inline: |
         #!/bin/sh
         # Baseline packages. Packages that do not exist on the release are reported
-        # and skipped.
+        # and skipped. --no-upgrade keeps already installed packages (open-vm-tools)
+        # from being restarted while this script runs through Guest Operations.
         set -eu
         export DEBIAN_FRONTEND=noninteractive
         echo "Install addon components"
@@ -93,7 +119,7 @@ spec:
                    apparmor apparmor-utils apparmor-profiles apparmor-profiles-extra \
                    net-tools cloud-guest-utils cloud-image-utils open-iscsi auditd acct; do
           if apt-cache show "$pkg" >/dev/null 2>&1; then
-            apt-get install -y "$pkg"
+            apt-get install -y --no-upgrade "$pkg"
           else
             echo "SKIP: package $pkg is not available on this release"
           fi
@@ -543,4 +569,6 @@ spec:
         managed-by: imagebuilder
   build:
     mode: remote
-    timeout: 3h
+    timeout: 3h0m0s
+    artifactStorage:
+      type: pvc

@@ -3,7 +3,9 @@ package vsphere
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path"
@@ -696,17 +698,33 @@ func (c *govmomiClient) runVSphereProvisioner(ctx context.Context, vm *object.Vi
 			"LANG=C.UTF-8",
 		}
 	}
-	pid, err := pm.StartProgram(ctx, auth, progSpec)
-	if err != nil {
-		return fmt.Errorf("start vSphere guest provisioner %d: %w", ref.ProvisionerIndex, err)
+	// A package upgrade can restart VMware Tools, which ends the running guest
+	// process without an exit code. Such a provisioner is started again after
+	// the tools are back; provisioners must therefore be safe to re-run.
+	var runErr error
+	for attempt := 1; attempt <= guestRunAttempts; attempt++ {
+		runErr = c.startAndWaitGuest(ctx, pm, auth, progSpec, ref.ProvisionerIndex)
+		if runErr == nil || !guestRetryable(runErr) || attempt == guestRunAttempts {
+			break
+		}
+		slog.Default().Warn("vsphere guest provisioner interrupted, starting it again",
+			slog.Int("provisioner", ref.ProvisionerIndex), slog.Int("attempt", attempt), slog.String("error", runErr.Error()))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(guestRetryDelay):
+		}
+		if err := c.ensureRemoteVMReady(ctx, vm); err != nil {
+			return err
+		}
 	}
-	if err := waitGuestProcess(ctx, pm, auth, pid, ref.ProvisionerIndex); err != nil {
+	if runErr != nil {
 		if input.OSFamily == platform.OSFamilyLinux {
 			if tail := c.guestLogTail(ctx, vm, auth); tail != "" {
-				return fmt.Errorf("%w; provisioning log tail:\n%s", err, tail)
+				return fmt.Errorf("%w; provisioning log tail:\n%s", runErr, tail)
 			}
 		}
-		return err
+		return runErr
 	}
 	return nil
 }
@@ -998,4 +1016,27 @@ func shellQuote(value string) string {
 
 func powershellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+const (
+	guestRunAttempts = 4
+	guestRetryDelay  = 20 * time.Second
+)
+
+func (c *govmomiClient) startAndWaitGuest(ctx context.Context, pm *guest.ProcessManager, auth types.BaseGuestAuthentication, spec *types.GuestProgramSpec, index int) error {
+	pid, err := pm.StartProgram(ctx, auth, spec)
+	if err != nil {
+		return fmt.Errorf("start %s: %w", guestProvisionerLabel(index), err)
+	}
+	return waitGuestProcess(ctx, pm, auth, pid, index)
+}
+
+// guestRetryable reports whether a guest run ended without a verdict of the
+// script itself (process vanished, tools unavailable) and may be started again.
+func guestRetryable(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var exitErr *guestExitError
+	return !errors.As(err, &exitErr)
 }
