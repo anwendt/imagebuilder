@@ -1,6 +1,6 @@
 module github.com/anwendt/imagebuilder
 
-go 1.26.10
+go 1.26.11
 
 require (
 	cloud.google.com/go/auth v0.23.0
@@ -21,8 +21,8 @@ require (
 	github.com/gophercloud/gophercloud/v2 v2.12.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/vmware/govmomi v0.54.0
-	golang.org/x/net v0.60.0
-	golang.org/x/sync v0.23.0
+	golang.org/x/net v0.62.0
+	golang.org/x/sync v0.24.0
 	google.golang.org/api v0.293.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260807164820-c8921c73eeea
 	google.golang.org/grpc v1.83.2
@@ -137,11 +137,11 @@ require (
 	go.uber.org/zap v1.28.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/crypto v0.57.0 // indirect
+	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
-	golang.org/x/term v0.46.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/term v0.47.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.5.0 // indirect
 	google.golang.org/genproto v0.0.0-20260519071638-aa98bba5eb94 // indirect
