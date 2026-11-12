@@ -70,7 +70,24 @@ accepted by the vSphere remote build:
    An existing item is never modified: the same build finding its own item (marker in the
    description) is a successful retry, anything else is an error.
 
-### 3. Operational details
+### 3. Credential revocation and template placement
+
+- **Revocation:** the temporary build login is provider-owned. After the last
+  provisioner the provider schedules `passwd -l` with a 30 second systemd timer,
+  waits, and then tries to log in with the build password. A rejected login is
+  the proof (`vsphere-build-credential-revoked`); a still working login fails the
+  build with `BuildCredentialNotRevoked`, an inconclusive probe fails closed.
+  Scripts inside the image cannot do this reliably: locking the login in the last
+  provisioner makes Guest Operations reject the login the provider still needs to
+  read the exit code, and a lock deferred to shutdown through a transient unit
+  did not take effect in a live build (the check above caught it). Disable only
+  with `revokeBuildCredential: "false"`.
+- **Template folder:** the Content Library publishes the template VM into
+  `extra.templateFolder`, which is required with `remote.publishTo` and must lie
+  outside the build folder, so the build folder keeps holding `imagebuilder-*`
+  VMs only. A ProviderConfig without it fails validation with a clear message.
+
+### 4. Operational details
 
 - `ProviderConfig.spec.endpoint` may be empty; the provider then reads the vCenter
   address from the Secret key `server`. This keeps the address out of manifests.

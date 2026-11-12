@@ -114,3 +114,28 @@ func parseProtectedNames(raw string) []string {
 	}
 	return out
 }
+
+// checkTemplateFolderPath validates the folder that receives the published
+// Content Library template VM. It must be a different folder than the build
+// folder (which holds imagebuilder-* VMs only) and not live inside it.
+func checkTemplateFolderPath(templateFolder, buildFolder string, protected []string) error {
+	templateFolder = strings.TrimSpace(templateFolder)
+	if templateFolder == "" {
+		return fmt.Errorf("vsphere guard: ProviderConfig extra templateFolder is required when publishing to a content library")
+	}
+	if !strings.HasPrefix(templateFolder, "/") {
+		return fmt.Errorf("vsphere guard: templateFolder %q must be an absolute inventory path", templateFolder)
+	}
+	trimmed := strings.TrimRight(templateFolder, "/")
+	if path.Clean(trimmed) != trimmed {
+		return fmt.Errorf("vsphere guard: templateFolder %q must be a clean path", templateFolder)
+	}
+	build := strings.TrimRight(strings.TrimSpace(buildFolder), "/")
+	if build != "" && (trimmed == build || strings.HasPrefix(trimmed, build+"/")) {
+		return fmt.Errorf("vsphere guard: templateFolder %q must be outside the build folder %q", templateFolder, buildFolder)
+	}
+	if hit := protectedHit(trimmed, protected); hit != "" {
+		return fmt.Errorf("vsphere guard: templateFolder %q matches protected name %q", templateFolder, hit)
+	}
+	return nil
+}

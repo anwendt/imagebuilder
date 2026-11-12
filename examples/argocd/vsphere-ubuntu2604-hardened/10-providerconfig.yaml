@@ -22,6 +22,8 @@ spec:
     protectedNames: ""
     contentLibrary: templates
     remote.publishTo: content-library
+    # Folder that receives the published template VM (not the build folder).
+    templateFolder: /dc-01/vm/golden-templates
     buildDiskGiB: "40"
     buildMemoryMiB: "2048"
     # Optional proxy used only to download the cloud image.

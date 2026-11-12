@@ -768,7 +768,16 @@ func waitGuestProcess(ctx context.Context, pm *guest.ProcessManager, auth types.
 }
 
 func (c *govmomiClient) finishRemoteVM(ctx context.Context, vm *object.VirtualMachine, input vsphereRemoteBuildInput, ref vsphereRemoteOperationRef) (*vsphereRemoteBuildState, error) {
+	credentialRevoked := false
 	if state, err := vmPowerState(ctx, vm); err == nil && state == types.VirtualMachinePowerStatePoweredOn {
+		if c.cfg.revokeBuildCredential && c.usesDerivedGuestCredential(input) {
+			revoked, err := c.revokeBuildLogin(ctx, vm, input)
+			if err != nil {
+				_ = c.cleanupVSphereRemoteVM(ctx, ref)
+				return nil, err
+			}
+			credentialRevoked = revoked
+		}
 		if err := vm.ShutdownGuest(ctx); err != nil {
 			_ = c.cleanupVSphereRemoteVM(ctx, ref)
 			return nil, fmt.Errorf("shutdown vSphere remote VM guest: %w", err)
@@ -796,7 +805,7 @@ func (c *govmomiClient) finishRemoteVM(ctx context.Context, vm *object.VirtualMa
 			Message:      "vSphere remote image published to the content library",
 			Done:         true,
 			Image:        image,
-			Hygiene:      vsphereRemoteHygieneLibrary(input, itemID),
+			Hygiene:      vsphereRemoteHygieneLibrary(input, itemID, credentialRevoked),
 		}, nil
 	}
 	if c.cfg.markAsTemplate {
@@ -986,8 +995,11 @@ func parseVSphereRemoteOperationRef(value string) (vsphereRemoteOperationRef, er
 	}, nil
 }
 
-func vsphereRemoteHygieneLibrary(input vsphereRemoteBuildInput, resultRef string) *platform.RemoteHygieneResult {
+func vsphereRemoteHygieneLibrary(input vsphereRemoteBuildInput, resultRef string, credentialRevoked bool) *platform.RemoteHygieneResult {
 	h := vsphereRemoteHygiene(input, resultRef)
+	if credentialRevoked {
+		h.Checks = append(h.Checks, revokeCheckName)
+	}
 	h.Checks = append(h.Checks, "vsphere-content-library-template-published", "vsphere-build-vm-destroyed")
 	return h
 }

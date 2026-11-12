@@ -471,7 +471,7 @@ func (c *govmomiClient) publishVMTemplate(ctx context.Context, vm *object.Virtua
 	if err != nil {
 		return "", err
 	}
-	folder, err := c.findBuildFolder(ctx, finder)
+	folder, err := c.ensureTemplateFolder(ctx, finder)
 	if err != nil {
 		return "", err
 	}
@@ -500,4 +500,51 @@ func ovfProperties(values map[string]string) []importer.Property {
 		out = append(out, p)
 	}
 	return out
+}
+
+// ensureTemplateFolder resolves the folder for the published template VM and
+// creates it (one level below an existing folder) when it does not exist.
+func (c *govmomiClient) ensureTemplateFolder(ctx context.Context, finder *find.Finder) (*object.Folder, error) {
+	if err := checkTemplateFolderPath(c.cfg.templateFolder, c.cfg.buildFolder, c.cfg.protectedNames); err != nil {
+		return nil, err
+	}
+	trimmed := strings.TrimRight(c.cfg.templateFolder, "/")
+	folder, err := finder.Folder(ctx, trimmed)
+	if err == nil {
+		return folder, nil
+	}
+	var notFound *find.NotFoundError
+	if !errors.As(err, &notFound) {
+		return nil, fmt.Errorf("find template folder %q: %w", c.cfg.templateFolder, err)
+	}
+	parent, perr := finder.Folder(ctx, path.Dir(trimmed))
+	if perr != nil {
+		return nil, fmt.Errorf("find parent of template folder %q: %w", c.cfg.templateFolder, perr)
+	}
+	created, cerr := parent.CreateFolder(ctx, path.Base(trimmed))
+	if cerr != nil {
+		return nil, fmt.Errorf("create template folder %q: %w", c.cfg.templateFolder, cerr)
+	}
+	return created, nil
+}
+
+// usesDerivedGuestCredential reports whether Guest Operations run with the
+// temporary per-build login (and not with credentials from the Secret).
+func (c *govmomiClient) usesDerivedGuestCredential(input vsphereRemoteBuildInput) bool {
+	username := firstNonEmpty(c.cfg.guestUsername, c.cfg.extraConfig["remote.guestUsername"], c.cfg.extraConfig["guestUsername"])
+	password := firstNonEmpty(c.cfg.guestPassword, c.cfg.extraConfig["remote.guestPassword"], c.cfg.extraConfig["guestPassword"])
+	return username == "" && password == "" && input.SourceType == "cloud-image"
+}
+
+// revokeBuildLogin locks the temporary build login and verifies the lock.
+func (c *govmomiClient) revokeBuildLogin(ctx context.Context, vm *object.VirtualMachine, input vsphereRemoteBuildInput) (bool, error) {
+	auth, err := c.remoteGuestAuthFor(input)
+	if err != nil {
+		return false, err
+	}
+	pm, err := guest.NewOperationsManager(c.vc.Client, vm.Reference()).ProcessManager(ctx)
+	if err != nil {
+		return false, fmt.Errorf("create vSphere guest process manager: %w", err)
+	}
+	return revokeBuildCredential(ctx, &vsphereGuestCredential{pm: pm, auth: auth}, sleepCtx, revokeDelay)
 }

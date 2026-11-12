@@ -35,7 +35,7 @@ source.type cloud-image  ->  provider downloads + verifies the OVA (optional pro
 | `70-system-role` | sysctl and limits drop-ins, module blacklist, PAM `nullok` removal, session timeout, removal of network-facing packages, service enable/disable |
 | `80-remove-containers` | remove podman |
 | `85-admin-user` | locked automation user with passwordless sudo (`--admin-user`) |
-| `90-cleanup` | logs, SSH host keys, machine-id, cloud-init state, build login locked last |
+| `90-cleanup` | logs, SSH host keys, machine-id, cloud-init state (the provider locks and verifies the build login afterwards) |
 
 Safety choices in the role (see `ansible/roles/system/defaults/main.yml`): `squashfs`,
 `fat` and `vfat` are not blocked (snapd, EFI partition); user `adm` and `dbus` are kept;

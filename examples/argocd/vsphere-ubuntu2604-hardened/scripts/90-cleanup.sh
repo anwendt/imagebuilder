@@ -1,6 +1,6 @@
 #!/bin/sh
 # Generalize the image: logs, SSH host keys, machine-id, cloud-init state.
-# The temporary build login is locked at shutdown.
+# The provider revokes the temporary build login afterwards.
 set -u
 systemctl stop rsyslog 2>/dev/null || true
 apt-get clean
@@ -41,10 +41,9 @@ hostnamectl set-hostname localhost 2>/dev/null || true
 # boot renders it for the new instance (the old netplan matches the build NIC).
 cloud-init clean --seed --logs --configs network
 
-# Lock the temporary build login (root password of the build VM) when the VM
-# shuts down. Locking it here would make Guest Operations reject the login the
-# provider still uses to read this script's exit code.
-systemd-run --unit=imagebuilder-lock-root --remain-after-exit \
-  --property=ExecStop='/usr/bin/passwd -l root' /bin/true
+# The temporary build login is locked and verified by the provider after the
+# last provisioner (ProviderConfig revokeBuildCredential, default on), not here:
+# locking it in this script would make Guest Operations reject the login the
+# provider still uses to read the exit code.
 rm -f /var/log/imagebuilder-provision.log
 sync

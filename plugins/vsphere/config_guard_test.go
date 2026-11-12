@@ -47,6 +47,7 @@ func TestInitRequiresLibraryForPublishTo(t *testing.T) {
 	p := &Plugin{client: &fakeClient{}}
 	assertErrContains(t, p.Init(context.Background(), cfg), "contentLibrary")
 	cfg.Extra["contentLibrary"] = "templates"
+	cfg.Extra["templateFolder"] = "/dc-01/vm/golden-templates"
 	p = &Plugin{client: &fakeClient{}}
 	if err := p.Init(context.Background(), cfg); err != nil {
 		t.Fatalf("Init: %v", err)

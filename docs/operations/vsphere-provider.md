@@ -112,6 +112,8 @@ Optional `extra` keys:
 | `downloadProxy` | empty | Proxy used only to download `cloud-image` sources and to fetch Git provisioner sources (`source.git`), not for vCenter traffic. |
 | `downloadDir` | `/var/lib/imagebuilder/uploads` | Scratch directory for downloaded source images. |
 | `buildDiskGiB` | image default | Grows the first disk of a cloud-image build VM to this size. |
+| `templateFolder` | none | **Required with `remote.publishTo`.** Absolute inventory path of the folder that receives the published template VM. It must be outside the build folder (which holds `imagebuilder-*` build VMs only). Created below an existing parent when missing. |
+| `revokeBuildCredential` | `true` | After the last provisioner the provider locks the temporary build login (`passwd -l` through a delayed systemd timer), then verifies that Guest Operations reject it, and fails the build with `BuildCredentialNotRevoked` otherwise. Only for cloud-image builds that use the derived build login; credentials from the Secret are never locked. Evidence check: `vsphere-build-credential-revoked`. |
 | `remote.publishTo` | none | `content-library` publishes the finished remote build as VM template item of `contentLibrary`/`contentLibraryID` and destroys the build VM. |
 | `httpProxy` | empty | HTTP proxy URL for provider API traffic. |
 | `httpsProxy` | empty | HTTPS proxy URL for provider API traffic. |
