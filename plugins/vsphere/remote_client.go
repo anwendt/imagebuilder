@@ -787,11 +787,25 @@ func (c *govmomiClient) finishRemoteVM(ctx context.Context, vm *object.VirtualMa
 			return nil, fmt.Errorf("wait for vSphere remote VM shutdown: %w", err)
 		}
 	}
+	templateVerified := false
+	if input.SourceType == "cloud-image" {
+		if err := c.scrubBuildConfig(ctx, vm); err != nil {
+			_ = c.cleanupVSphereRemoteVM(ctx, ref)
+			return nil, err
+		}
+	}
 	if c.cfg.publishToLibrary {
 		itemID, err := c.publishVMTemplate(ctx, vm, input)
 		if err != nil {
 			_ = c.cleanupVSphereRemoteVM(ctx, ref)
 			return nil, err
+		}
+		if input.SourceType == "cloud-image" {
+			if err := c.verifyPublishedTemplate(ctx, input.ImageName); err != nil {
+				_ = c.cleanupVSphereRemoteVM(ctx, ref)
+				return nil, err
+			}
+			templateVerified = true
 		}
 		if err := c.destroyOwnedBuildVM(ctx, vm); err != nil {
 			return nil, fmt.Errorf("remove build VM after publishing %q: %w", itemID, err)
@@ -805,7 +819,7 @@ func (c *govmomiClient) finishRemoteVM(ctx context.Context, vm *object.VirtualMa
 			Message:      "vSphere remote image published to the content library",
 			Done:         true,
 			Image:        image,
-			Hygiene:      vsphereRemoteHygieneLibrary(input, itemID, credentialRevoked),
+			Hygiene:      vsphereRemoteHygieneLibrary(input, itemID, credentialRevoked, templateVerified),
 		}, nil
 	}
 	if c.cfg.markAsTemplate {
@@ -995,10 +1009,13 @@ func parseVSphereRemoteOperationRef(value string) (vsphereRemoteOperationRef, er
 	}, nil
 }
 
-func vsphereRemoteHygieneLibrary(input vsphereRemoteBuildInput, resultRef string, credentialRevoked bool) *platform.RemoteHygieneResult {
+func vsphereRemoteHygieneLibrary(input vsphereRemoteBuildInput, resultRef string, credentialRevoked, templateVerified bool) *platform.RemoteHygieneResult {
 	h := vsphereRemoteHygiene(input, resultRef)
 	if credentialRevoked {
 		h.Checks = append(h.Checks, revokeCheckName)
+	}
+	if templateVerified {
+		h.Checks = append(h.Checks, templateConfigCleanCheck)
 	}
 	h.Checks = append(h.Checks, "vsphere-content-library-template-published", "vsphere-build-vm-destroyed")
 	return h

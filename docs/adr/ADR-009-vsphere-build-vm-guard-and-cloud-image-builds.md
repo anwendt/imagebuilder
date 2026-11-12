@@ -66,7 +66,8 @@ accepted by the vSphere remote build:
    `/var/log/imagebuilder-provision.log`; on failure the tail is returned in the error.
 4. With `extra.remote.publishTo: content-library` the powered-off build VM is published
    as a **VM template item** of the configured Content Library and the build VM is
-   destroyed. The vApp properties (and with them the build user-data) are removed first.
+   destroyed. The build configuration is scrubbed first and the template is verified
+   afterwards (see section 3).
    An existing item is never modified: the same build finding its own item (marker in the
    description) is a successful retry, anything else is an error.
 
@@ -86,6 +87,20 @@ accepted by the vSphere remote build:
   `extra.templateFolder`, which is required with `remote.publishTo` and must lie
   outside the build folder, so the build folder keeps holding `imagebuilder-*`
   VMs only. A ProviderConfig without it fails validation with a clear message.
+
+- **Build data in the template:** the build user-data reaches the guest as an OVF
+  vApp property (and a root password is derived for it). Before publishing, the
+  provider powers the VM off and removes every vApp property, the vApp
+  configuration and all guestinfo configuration keys (VMware Tools maintained
+  `guestinfo.vmtools.*` keys stay). After publishing it reads the configuration
+  of the template VM the Content Library created and fails the build with
+  `BuildDataInTemplate` if any vApp property or guestinfo configuration key is
+  still there. The evidence check `vsphere-template-config-clean` states exactly
+  that: the template configuration carries no vApp properties and no guestinfo
+  configuration. It does not boot a clone, and
+  `vsphere-build-credential-revoked` only describes the build VM. Without this
+  scrub every clone's cloud-init would read the build user-data again on first
+  boot and set the build password on root (found in a live clone test).
 
 ### 4. Operational details
 
