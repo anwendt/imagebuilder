@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -371,6 +372,7 @@ func vspherePlatformRemoteBuildRequest(input sdk.RemoteBuildInput) *platform.Rem
 			Playbook:  provisioner.Playbook,
 			Args:      append([]string(nil), provisioner.Args...),
 			ExtraVars: cloneStringMap(provisioner.ExtraVars),
+			Env:       vsphereSDKEnv(provisioner.Env),
 			Source:    vsphereSDKProvisionerSource(provisioner.Source),
 		})
 	}
@@ -447,6 +449,19 @@ func vsphereSDKRemoteBuildResult(result *platform.RemoteBuildResult) sdk.RemoteB
 			Checksum:           image.Checksum,
 			Tags:               cloneStringMap(image.ImageRef.Tags),
 		})
+	}
+	return out
+}
+
+func vsphereSDKEnv(env map[string]string) []v1alpha1.EnvVar {
+	names := make([]string, 0, len(env))
+	for name := range env {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]v1alpha1.EnvVar, 0, len(names))
+	for _, name := range names {
+		out = append(out, v1alpha1.EnvVar{Name: name, Value: env[name]})
 	}
 	return out
 }

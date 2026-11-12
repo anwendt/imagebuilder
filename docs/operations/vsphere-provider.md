@@ -203,6 +203,12 @@ the provider clones the source as a temporary VM, powers it on, waits for VMware
 Tools, runs supported provisioners through VMware Guest Operations, shuts the
 guest down, and then marks the result as a template.
 
+Provisioner `env` (literal values) reaches the guest process as environment
+variables and overrides the Linux defaults (`HOME`, `PATH`, `DEBIAN_FRONTEND`,
+`LANG`) of the same name. `valueFrom` is rejected for remote builds. The
+`RemoteProvisioner.env` field (number 8) is an additive extension of the v1
+provider contract (ADR-005).
+
 Supported remote provisioners:
 
 | OS family | Provisioners |

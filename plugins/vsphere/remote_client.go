@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -698,14 +699,11 @@ func (c *govmomiClient) runVSphereProvisioner(ctx context.Context, vm *object.Vi
 		ProgramPath: program,
 		Arguments:   args,
 	}
-	if input.OSFamily == platform.OSFamilyLinux {
-		progSpec.EnvVariables = []string{
-			"HOME=/root",
-			"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-			"DEBIAN_FRONTEND=noninteractive",
-			"LANG=C.UTF-8",
-		}
+	guestEnv, err := vsphereGuestEnv(input, spec)
+	if err != nil {
+		return err
 	}
+	progSpec.EnvVariables = guestEnv
 	// A package upgrade can restart VMware Tools, which ends the running guest
 	// process without an exit code. Such a provisioner is started again after
 	// the tools are back; provisioners must therefore be safe to re-run.
@@ -1059,4 +1057,40 @@ func guestRetryable(err error) bool {
 	}
 	var exitErr *guestExitError
 	return !errors.As(err, &exitErr)
+}
+
+var guestEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// vsphereGuestEnv builds the environment of a guest provisioner process: the
+// Linux defaults first, then the provisioner's literal env, which overrides a
+// default of the same name.
+func vsphereGuestEnv(input vsphereRemoteBuildInput, spec v1alpha1.ProvisionerSpec) ([]string, error) {
+	values := map[string]string{}
+	var order []string
+	set := func(name, value string) {
+		if _, ok := values[name]; !ok {
+			order = append(order, name)
+		}
+		values[name] = value
+	}
+	if input.OSFamily == platform.OSFamilyLinux {
+		set("HOME", "/root")
+		set("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+		set("DEBIAN_FRONTEND", "noninteractive")
+		set("LANG", "C.UTF-8")
+	}
+	for _, e := range spec.Env {
+		if e.ValueFrom != nil {
+			return nil, fmt.Errorf("provisioner env %q: valueFrom is not supported for vSphere remote builds", e.Name)
+		}
+		if !guestEnvName.MatchString(e.Name) {
+			return nil, fmt.Errorf("provisioner env name %q is invalid", e.Name)
+		}
+		set(e.Name, e.Value)
+	}
+	out := make([]string, 0, len(order))
+	for _, name := range order {
+		out = append(out, name+"="+values[name])
+	}
+	return out, nil
 }

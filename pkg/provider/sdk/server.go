@@ -395,6 +395,7 @@ func remoteBuildInputFromProto(req *providerv1.RemoteBuildRequest) RemoteBuildIn
 			Args:      append([]string(nil), provisioner.GetArgs()...),
 			ExtraVars: cloneStringMap(provisioner.GetExtraVars()),
 			Source:    sdkRemoteProvisionerSource(provisioner.GetSource()),
+			Env:       cloneStringMap(provisioner.GetEnv()),
 		})
 	}
 	if guest := req.GetGuestAccess(); guest != nil {

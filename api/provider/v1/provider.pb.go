@@ -520,14 +520,16 @@ func (x *MarketplaceRef) GetVersion() string {
 }
 
 type RemoteProvisioner struct {
-	state         protoimpl.MessageState   `protogen:"open.v1"`
-	Type          string                   `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
-	Image         string                   `protobuf:"bytes,2,opt,name=image,proto3" json:"image,omitempty"`
-	Inline        string                   `protobuf:"bytes,3,opt,name=inline,proto3" json:"inline,omitempty"`
-	Playbook      string                   `protobuf:"bytes,4,opt,name=playbook,proto3" json:"playbook,omitempty"`
-	Args          []string                 `protobuf:"bytes,5,rep,name=args,proto3" json:"args,omitempty"`
-	ExtraVars     map[string]string        `protobuf:"bytes,6,rep,name=extra_vars,json=extraVars,proto3" json:"extra_vars,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	Source        *RemoteProvisionerSource `protobuf:"bytes,7,opt,name=source,proto3" json:"source,omitempty"`
+	state     protoimpl.MessageState   `protogen:"open.v1"`
+	Type      string                   `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	Image     string                   `protobuf:"bytes,2,opt,name=image,proto3" json:"image,omitempty"`
+	Inline    string                   `protobuf:"bytes,3,opt,name=inline,proto3" json:"inline,omitempty"`
+	Playbook  string                   `protobuf:"bytes,4,opt,name=playbook,proto3" json:"playbook,omitempty"`
+	Args      []string                 `protobuf:"bytes,5,rep,name=args,proto3" json:"args,omitempty"`
+	ExtraVars map[string]string        `protobuf:"bytes,6,rep,name=extra_vars,json=extraVars,proto3" json:"extra_vars,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Source    *RemoteProvisionerSource `protobuf:"bytes,7,opt,name=source,proto3" json:"source,omitempty"`
+	// Literal environment variables for the provisioner process (additive, v1).
+	Env           map[string]string `protobuf:"bytes,8,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -607,6 +609,13 @@ func (x *RemoteProvisioner) GetExtraVars() map[string]string {
 func (x *RemoteProvisioner) GetSource() *RemoteProvisionerSource {
 	if x != nil {
 		return x.Source
+	}
+	return nil
+}
+
+func (x *RemoteProvisioner) GetEnv() map[string]string {
+	if x != nil {
+		return x.Env
 	}
 	return nil
 }
@@ -2137,7 +2146,7 @@ const file_provider_proto_rawDesc = "" +
 	"\tpublisher\x18\x01 \x01(\tR\tpublisher\x12\x14\n" +
 	"\x05offer\x18\x02 \x01(\tR\x05offer\x12\x10\n" +
 	"\x03sku\x18\x03 \x01(\tR\x03sku\x12\x18\n" +
-	"\aversion\x18\x04 \x01(\tR\aversion\"\xe9\x02\n" +
+	"\aversion\x18\x04 \x01(\tR\aversion\"\xe9\x03\n" +
 	"\x11RemoteProvisioner\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x14\n" +
 	"\x05image\x18\x02 \x01(\tR\x05image\x12\x16\n" +
@@ -2146,8 +2155,12 @@ const file_provider_proto_rawDesc = "" +
 	"\x04args\x18\x05 \x03(\tR\x04args\x12Y\n" +
 	"\n" +
 	"extra_vars\x18\x06 \x03(\v2:.imagebuilder.provider.v1.RemoteProvisioner.ExtraVarsEntryR\textraVars\x12I\n" +
-	"\x06source\x18\a \x01(\v21.imagebuilder.provider.v1.RemoteProvisionerSourceR\x06source\x1a<\n" +
+	"\x06source\x18\a \x01(\v21.imagebuilder.provider.v1.RemoteProvisionerSourceR\x06source\x12F\n" +
+	"\x03env\x18\b \x03(\v24.imagebuilder.provider.v1.RemoteProvisioner.EnvEntryR\x03env\x1a<\n" +
 	"\x0eExtraVarsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a6\n" +
+	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"a\n" +
 	"\x17RemoteProvisionerSource\x12F\n" +
@@ -2315,7 +2328,7 @@ func file_provider_proto_rawDescGZIP() []byte {
 	return file_provider_proto_rawDescData
 }
 
-var file_provider_proto_msgTypes = make([]protoimpl.MessageInfo, 34)
+var file_provider_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
 var file_provider_proto_goTypes = []any{
 	(*Empty)(nil),                      // 0: imagebuilder.provider.v1.Empty
 	(*CapabilitiesResponse)(nil),       // 1: imagebuilder.provider.v1.CapabilitiesResponse
@@ -2344,13 +2357,14 @@ var file_provider_proto_goTypes = []any{
 	(*HealthResponse)(nil),             // 24: imagebuilder.provider.v1.HealthResponse
 	nil,                                // 25: imagebuilder.provider.v1.RemoteBuildRequest.TagsEntry
 	nil,                                // 26: imagebuilder.provider.v1.RemoteProvisioner.ExtraVarsEntry
-	nil,                                // 27: imagebuilder.provider.v1.RemoteImageRef.TagsEntry
-	nil,                                // 28: imagebuilder.provider.v1.RemoteArtifact.MetadataEntry
-	nil,                                // 29: imagebuilder.provider.v1.ValidateConfigRequest.CredentialsEntry
-	nil,                                // 30: imagebuilder.provider.v1.ValidateConfigRequest.ExtraEntry
-	nil,                                // 31: imagebuilder.provider.v1.UploadChunk.MetadataEntry
-	nil,                                // 32: imagebuilder.provider.v1.RegisterRequest.TagsEntry
-	nil,                                // 33: imagebuilder.provider.v1.ImageRef.TagsEntry
+	nil,                                // 27: imagebuilder.provider.v1.RemoteProvisioner.EnvEntry
+	nil,                                // 28: imagebuilder.provider.v1.RemoteImageRef.TagsEntry
+	nil,                                // 29: imagebuilder.provider.v1.RemoteArtifact.MetadataEntry
+	nil,                                // 30: imagebuilder.provider.v1.ValidateConfigRequest.CredentialsEntry
+	nil,                                // 31: imagebuilder.provider.v1.ValidateConfigRequest.ExtraEntry
+	nil,                                // 32: imagebuilder.provider.v1.UploadChunk.MetadataEntry
+	nil,                                // 33: imagebuilder.provider.v1.RegisterRequest.TagsEntry
+	nil,                                // 34: imagebuilder.provider.v1.ImageRef.TagsEntry
 }
 var file_provider_proto_depIdxs = []int32{
 	25, // 0: imagebuilder.provider.v1.RemoteBuildRequest.tags:type_name -> imagebuilder.provider.v1.RemoteBuildRequest.TagsEntry
@@ -2360,40 +2374,41 @@ var file_provider_proto_depIdxs = []int32{
 	3,  // 4: imagebuilder.provider.v1.RemoteBuildRequest.evidence:type_name -> imagebuilder.provider.v1.RemoteEvidencePolicy
 	26, // 5: imagebuilder.provider.v1.RemoteProvisioner.extra_vars:type_name -> imagebuilder.provider.v1.RemoteProvisioner.ExtraVarsEntry
 	6,  // 6: imagebuilder.provider.v1.RemoteProvisioner.source:type_name -> imagebuilder.provider.v1.RemoteProvisionerSource
-	7,  // 7: imagebuilder.provider.v1.RemoteProvisionerSource.git:type_name -> imagebuilder.provider.v1.RemoteGitProvisionerSource
-	8,  // 8: imagebuilder.provider.v1.RemoteGitProvisionerSource.auth:type_name -> imagebuilder.provider.v1.RemoteGitProvisionerAuth
-	13, // 9: imagebuilder.provider.v1.RemoteBuildResponse.images:type_name -> imagebuilder.provider.v1.RemoteImageRef
-	14, // 10: imagebuilder.provider.v1.RemoteBuildResponse.artifact:type_name -> imagebuilder.provider.v1.RemoteArtifact
-	12, // 11: imagebuilder.provider.v1.RemoteBuildResponse.hygiene:type_name -> imagebuilder.provider.v1.RemoteHygieneResult
-	11, // 12: imagebuilder.provider.v1.RemoteBuildResponse.evidence:type_name -> imagebuilder.provider.v1.RemoteEvidenceResult
-	27, // 13: imagebuilder.provider.v1.RemoteImageRef.tags:type_name -> imagebuilder.provider.v1.RemoteImageRef.TagsEntry
-	28, // 14: imagebuilder.provider.v1.RemoteArtifact.metadata:type_name -> imagebuilder.provider.v1.RemoteArtifact.MetadataEntry
-	29, // 15: imagebuilder.provider.v1.ValidateConfigRequest.credentials:type_name -> imagebuilder.provider.v1.ValidateConfigRequest.CredentialsEntry
-	30, // 16: imagebuilder.provider.v1.ValidateConfigRequest.extra:type_name -> imagebuilder.provider.v1.ValidateConfigRequest.ExtraEntry
-	31, // 17: imagebuilder.provider.v1.UploadChunk.metadata:type_name -> imagebuilder.provider.v1.UploadChunk.MetadataEntry
-	32, // 18: imagebuilder.provider.v1.RegisterRequest.tags:type_name -> imagebuilder.provider.v1.RegisterRequest.TagsEntry
-	33, // 19: imagebuilder.provider.v1.ImageRef.tags:type_name -> imagebuilder.provider.v1.ImageRef.TagsEntry
-	0,  // 20: imagebuilder.provider.v1.PlatformProvider.GetCapabilities:input_type -> imagebuilder.provider.v1.Empty
-	16, // 21: imagebuilder.provider.v1.PlatformProvider.ValidateConfig:input_type -> imagebuilder.provider.v1.ValidateConfigRequest
-	18, // 22: imagebuilder.provider.v1.PlatformProvider.UploadArtifact:input_type -> imagebuilder.provider.v1.UploadChunk
-	20, // 23: imagebuilder.provider.v1.PlatformProvider.RegisterImage:input_type -> imagebuilder.provider.v1.RegisterRequest
-	22, // 24: imagebuilder.provider.v1.PlatformProvider.DeleteArtifact:input_type -> imagebuilder.provider.v1.DeleteRequest
-	0,  // 25: imagebuilder.provider.v1.PlatformProvider.HealthCheck:input_type -> imagebuilder.provider.v1.Empty
-	2,  // 26: imagebuilder.provider.v1.PlatformProvider.ReconcileRemoteBuild:input_type -> imagebuilder.provider.v1.RemoteBuildRequest
-	2,  // 27: imagebuilder.provider.v1.PlatformProvider.CleanupRemoteBuild:input_type -> imagebuilder.provider.v1.RemoteBuildRequest
-	1,  // 28: imagebuilder.provider.v1.PlatformProvider.GetCapabilities:output_type -> imagebuilder.provider.v1.CapabilitiesResponse
-	17, // 29: imagebuilder.provider.v1.PlatformProvider.ValidateConfig:output_type -> imagebuilder.provider.v1.ValidateConfigResponse
-	19, // 30: imagebuilder.provider.v1.PlatformProvider.UploadArtifact:output_type -> imagebuilder.provider.v1.UploadProgress
-	21, // 31: imagebuilder.provider.v1.PlatformProvider.RegisterImage:output_type -> imagebuilder.provider.v1.ImageRef
-	23, // 32: imagebuilder.provider.v1.PlatformProvider.DeleteArtifact:output_type -> imagebuilder.provider.v1.DeleteResponse
-	24, // 33: imagebuilder.provider.v1.PlatformProvider.HealthCheck:output_type -> imagebuilder.provider.v1.HealthResponse
-	10, // 34: imagebuilder.provider.v1.PlatformProvider.ReconcileRemoteBuild:output_type -> imagebuilder.provider.v1.RemoteBuildResponse
-	15, // 35: imagebuilder.provider.v1.PlatformProvider.CleanupRemoteBuild:output_type -> imagebuilder.provider.v1.RemoteBuildCleanupResponse
-	28, // [28:36] is the sub-list for method output_type
-	20, // [20:28] is the sub-list for method input_type
-	20, // [20:20] is the sub-list for extension type_name
-	20, // [20:20] is the sub-list for extension extendee
-	0,  // [0:20] is the sub-list for field type_name
+	27, // 7: imagebuilder.provider.v1.RemoteProvisioner.env:type_name -> imagebuilder.provider.v1.RemoteProvisioner.EnvEntry
+	7,  // 8: imagebuilder.provider.v1.RemoteProvisionerSource.git:type_name -> imagebuilder.provider.v1.RemoteGitProvisionerSource
+	8,  // 9: imagebuilder.provider.v1.RemoteGitProvisionerSource.auth:type_name -> imagebuilder.provider.v1.RemoteGitProvisionerAuth
+	13, // 10: imagebuilder.provider.v1.RemoteBuildResponse.images:type_name -> imagebuilder.provider.v1.RemoteImageRef
+	14, // 11: imagebuilder.provider.v1.RemoteBuildResponse.artifact:type_name -> imagebuilder.provider.v1.RemoteArtifact
+	12, // 12: imagebuilder.provider.v1.RemoteBuildResponse.hygiene:type_name -> imagebuilder.provider.v1.RemoteHygieneResult
+	11, // 13: imagebuilder.provider.v1.RemoteBuildResponse.evidence:type_name -> imagebuilder.provider.v1.RemoteEvidenceResult
+	28, // 14: imagebuilder.provider.v1.RemoteImageRef.tags:type_name -> imagebuilder.provider.v1.RemoteImageRef.TagsEntry
+	29, // 15: imagebuilder.provider.v1.RemoteArtifact.metadata:type_name -> imagebuilder.provider.v1.RemoteArtifact.MetadataEntry
+	30, // 16: imagebuilder.provider.v1.ValidateConfigRequest.credentials:type_name -> imagebuilder.provider.v1.ValidateConfigRequest.CredentialsEntry
+	31, // 17: imagebuilder.provider.v1.ValidateConfigRequest.extra:type_name -> imagebuilder.provider.v1.ValidateConfigRequest.ExtraEntry
+	32, // 18: imagebuilder.provider.v1.UploadChunk.metadata:type_name -> imagebuilder.provider.v1.UploadChunk.MetadataEntry
+	33, // 19: imagebuilder.provider.v1.RegisterRequest.tags:type_name -> imagebuilder.provider.v1.RegisterRequest.TagsEntry
+	34, // 20: imagebuilder.provider.v1.ImageRef.tags:type_name -> imagebuilder.provider.v1.ImageRef.TagsEntry
+	0,  // 21: imagebuilder.provider.v1.PlatformProvider.GetCapabilities:input_type -> imagebuilder.provider.v1.Empty
+	16, // 22: imagebuilder.provider.v1.PlatformProvider.ValidateConfig:input_type -> imagebuilder.provider.v1.ValidateConfigRequest
+	18, // 23: imagebuilder.provider.v1.PlatformProvider.UploadArtifact:input_type -> imagebuilder.provider.v1.UploadChunk
+	20, // 24: imagebuilder.provider.v1.PlatformProvider.RegisterImage:input_type -> imagebuilder.provider.v1.RegisterRequest
+	22, // 25: imagebuilder.provider.v1.PlatformProvider.DeleteArtifact:input_type -> imagebuilder.provider.v1.DeleteRequest
+	0,  // 26: imagebuilder.provider.v1.PlatformProvider.HealthCheck:input_type -> imagebuilder.provider.v1.Empty
+	2,  // 27: imagebuilder.provider.v1.PlatformProvider.ReconcileRemoteBuild:input_type -> imagebuilder.provider.v1.RemoteBuildRequest
+	2,  // 28: imagebuilder.provider.v1.PlatformProvider.CleanupRemoteBuild:input_type -> imagebuilder.provider.v1.RemoteBuildRequest
+	1,  // 29: imagebuilder.provider.v1.PlatformProvider.GetCapabilities:output_type -> imagebuilder.provider.v1.CapabilitiesResponse
+	17, // 30: imagebuilder.provider.v1.PlatformProvider.ValidateConfig:output_type -> imagebuilder.provider.v1.ValidateConfigResponse
+	19, // 31: imagebuilder.provider.v1.PlatformProvider.UploadArtifact:output_type -> imagebuilder.provider.v1.UploadProgress
+	21, // 32: imagebuilder.provider.v1.PlatformProvider.RegisterImage:output_type -> imagebuilder.provider.v1.ImageRef
+	23, // 33: imagebuilder.provider.v1.PlatformProvider.DeleteArtifact:output_type -> imagebuilder.provider.v1.DeleteResponse
+	24, // 34: imagebuilder.provider.v1.PlatformProvider.HealthCheck:output_type -> imagebuilder.provider.v1.HealthResponse
+	10, // 35: imagebuilder.provider.v1.PlatformProvider.ReconcileRemoteBuild:output_type -> imagebuilder.provider.v1.RemoteBuildResponse
+	15, // 36: imagebuilder.provider.v1.PlatformProvider.CleanupRemoteBuild:output_type -> imagebuilder.provider.v1.RemoteBuildCleanupResponse
+	29, // [29:37] is the sub-list for method output_type
+	21, // [21:29] is the sub-list for method input_type
+	21, // [21:21] is the sub-list for extension type_name
+	21, // [21:21] is the sub-list for extension extendee
+	0,  // [0:21] is the sub-list for field type_name
 }
 
 func init() { file_provider_proto_init() }
@@ -2407,7 +2422,7 @@ func file_provider_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_provider_proto_rawDesc), len(file_provider_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   34,
+			NumMessages:   35,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -161,6 +161,8 @@ type RemoteProvisioner struct {
 	Args      []string
 	ExtraVars map[string]string
 	Source    *RemoteProvisionerSource
+	// Env holds literal environment variables for the provisioner process.
+	Env map[string]string
 }
 
 type RemoteProvisionerSource struct {
