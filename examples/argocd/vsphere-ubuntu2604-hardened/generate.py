@@ -60,6 +60,7 @@ def main():
     ap.add_argument("--admin-user", default="admin")
     ap.add_argument("--provider-config", default="vsphere-templates")
     ap.add_argument("--image-name", default="ubuntu-2604-vsphere-v1-0-0")
+    ap.add_argument("--revision", default="", help="spec.build.revision, change it to rebuild")
     ap.add_argument("--out", default=os.path.join(here, "40-vmimage.yaml"))
     a = ap.parse_args()
     with open(os.path.join(here, "scripts/70-system-role.sh"), "w") as f:
@@ -96,8 +97,12 @@ spec:
         managed-by: imagebuilder
   build:
     mode: remote
-    timeout: 3h
-"""
+    timeout: 3h0m0s
+    artifactStorage:
+      type: pvc
+__REV__"""
+    rev = f"    revision: \"{a.revision}\"\n" if a.revision else ""
+    doc = doc.replace("__REV__", rev)
     with open(a.out, "w") as f:
         f.write(doc)
     print("generated", a.out)

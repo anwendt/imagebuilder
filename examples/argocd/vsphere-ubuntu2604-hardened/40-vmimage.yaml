@@ -63,13 +63,21 @@ spec:
       inline: |
         #!/bin/sh
         # Apply all pending package updates.
+        # open-vm-tools is held during the upgrade: its restart would kill the guest
+        # process that VMware Guest Operations runs this script in. It is not upgraded
+        # here (the next regular update takes it).
         set -eu
         export DEBIAN_FRONTEND=noninteractive
+        dpkg --configure -a
+        if dpkg -s open-vm-tools >/dev/null 2>&1; then
+          apt-mark hold open-vm-tools
+        fi
         echo "Updating system with the latest patches..."
         apt-get update -y
         apt-get upgrade -y -o Dpkg::Options::=--force-confold
         apt-get full-upgrade -y -o Dpkg::Options::=--force-confold
         apt-get autoremove -y
+        apt-mark unhold open-vm-tools || true
         echo "System update and upgrade completed successfully."
     - type: shell
       inline: |
@@ -85,7 +93,8 @@ spec:
       inline: |
         #!/bin/sh
         # Baseline packages. Packages that do not exist on the release are reported
-        # and skipped.
+        # and skipped. --no-upgrade keeps already installed packages (open-vm-tools)
+        # from being restarted while this script runs through Guest Operations.
         set -eu
         export DEBIAN_FRONTEND=noninteractive
         echo "Install addon components"
@@ -93,7 +102,7 @@ spec:
                    apparmor apparmor-utils apparmor-profiles apparmor-profiles-extra \
                    net-tools cloud-guest-utils cloud-image-utils open-iscsi auditd acct; do
           if apt-cache show "$pkg" >/dev/null 2>&1; then
-            apt-get install -y "$pkg"
+            apt-get install -y --no-upgrade "$pkg"
           else
             echo "SKIP: package $pkg is not available on this release"
           fi
@@ -543,4 +552,6 @@ spec:
         managed-by: imagebuilder
   build:
     mode: remote
-    timeout: 3h
+    timeout: 3h0m0s
+    artifactStorage:
+      type: pvc
