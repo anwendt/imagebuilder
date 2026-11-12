@@ -462,6 +462,23 @@ func (c *govmomiClient) publishVMTemplate(ctx context.Context, vm *object.Virtua
 		spec.DiskStorage = storage
 		spec.VMHomeStorage = storage
 	}
+	// vCenter requires an explicit placement for the published template.
+	finder, err := c.vmFinder(ctx)
+	if err != nil {
+		return "", err
+	}
+	rp, err := c.resolveResourcePool(ctx, finder)
+	if err != nil {
+		return "", err
+	}
+	folder, err := c.findBuildFolder(ctx, finder)
+	if err != nil {
+		return "", err
+	}
+	spec.Placement = &vcenter.Placement{
+		ResourcePool: rp.Reference().Value,
+		Folder:       folder.Reference().Value,
+	}
 	id, err := vcenter.NewManager(restClient).CreateTemplate(ctx, spec)
 	if err != nil {
 		return "", fmt.Errorf("publish build VM as content library template %q: %w", itemName, err)
