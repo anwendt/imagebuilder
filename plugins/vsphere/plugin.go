@@ -52,42 +52,44 @@ var (
 )
 
 type config struct {
-	providerConfigName string
-	endpoint           string
-	insecure           bool
-	username           string
-	password           string
-	guestUsername      string
-	guestPassword      string
-	datacenter         string
-	datastore          string
-	folder             string
-	cluster            string
-	resourcePool       string
-	host               string
-	network            string
-	ovfNetworkName     string
-	diskProvisioning   string
-	deployment         string
-	ipAllocationPolicy string
-	ipProtocol         string
-	annotation         string
-	markAsTemplate     bool
-	contentLibrary     string
-	contentLibraryID   string
-	requireManifest    bool
-	uploadPathPrefix   string
-	buildFolder        string
-	protectedNames     []string
-	downloadProxy      string
-	downloadDir        string
-	buildDiskGiB       int
-	publishToLibrary   bool
-	keepFailedBuild    bool
-	buildNet           *buildNetwork
-	buildCPUs          int32
-	buildMemoryMiB     int
-	extraConfig        map[string]string
+	providerConfigName    string
+	endpoint              string
+	insecure              bool
+	username              string
+	password              string
+	guestUsername         string
+	guestPassword         string
+	datacenter            string
+	datastore             string
+	folder                string
+	cluster               string
+	resourcePool          string
+	host                  string
+	network               string
+	ovfNetworkName        string
+	diskProvisioning      string
+	deployment            string
+	ipAllocationPolicy    string
+	ipProtocol            string
+	annotation            string
+	markAsTemplate        bool
+	contentLibrary        string
+	contentLibraryID      string
+	requireManifest       bool
+	uploadPathPrefix      string
+	buildFolder           string
+	templateFolder        string
+	revokeBuildCredential bool
+	protectedNames        []string
+	downloadProxy         string
+	downloadDir           string
+	buildDiskGiB          int
+	publishToLibrary      bool
+	keepFailedBuild       bool
+	buildNet              *buildNetwork
+	buildCPUs             int32
+	buildMemoryMiB        int
+	extraConfig           map[string]string
 }
 
 type client interface {
@@ -148,41 +150,43 @@ func (p *Plugin) SupportedBuildModes() []string {
 func (p *Plugin) Init(ctx context.Context, cfg platform.PluginConfig) error {
 	p.log = slog.Default().With(slog.String("plugin", p.Name()))
 	p.config = config{
-		providerConfigName: cfg.ProviderConfigName,
-		endpoint:           normalizeEndpoint(firstNonEmpty(cfg.Endpoint, firstSecretValue(cfg.SecretData, "server", "endpoint"))),
-		insecure:           cfg.Insecure,
-		username:           firstSecretValue(cfg.SecretData, "username", "user"),
-		password:           firstSecretValue(cfg.SecretData, "password", "pass"),
-		guestUsername:      firstSecretValue(cfg.SecretData, "guestUsername", "remoteGuestUsername"),
-		guestPassword:      firstSecretValue(cfg.SecretData, "guestPassword", "remoteGuestPassword"),
-		datacenter:         strings.TrimSpace(cfg.Extra["datacenter"]),
-		datastore:          strings.TrimSpace(cfg.Extra["datastore"]),
-		folder:             strings.TrimSpace(cfg.Extra["folder"]),
-		cluster:            strings.TrimSpace(cfg.Extra["cluster"]),
-		resourcePool:       strings.TrimSpace(cfg.Extra["resourcePool"]),
-		host:               strings.TrimSpace(cfg.Extra["host"]),
-		network:            strings.TrimSpace(cfg.Extra["network"]),
-		ovfNetworkName:     strings.TrimSpace(cfg.Extra["ovfNetworkName"]),
-		diskProvisioning:   strings.TrimSpace(firstNonEmpty(cfg.Extra["diskProvisioning"], "thin")),
-		deployment:         strings.TrimSpace(cfg.Extra["deployment"]),
-		ipAllocationPolicy: strings.TrimSpace(cfg.Extra["ipAllocationPolicy"]),
-		ipProtocol:         strings.TrimSpace(cfg.Extra["ipProtocol"]),
-		annotation:         strings.TrimSpace(cfg.Extra["annotation"]),
-		markAsTemplate:     boolFromExtra(cfg.Extra, "markAsTemplate", true),
-		contentLibrary:     strings.TrimSpace(cfg.Extra["contentLibrary"]),
-		contentLibraryID:   strings.TrimSpace(cfg.Extra["contentLibraryID"]),
-		requireManifest:    boolFromExtra(cfg.Extra, "requireManifest", false),
-		uploadPathPrefix:   strings.TrimSpace(firstNonEmpty(cfg.Extra["uploadPathPrefix"], cfg.Extra["uploadPath"], "imagebuilder")),
-		buildFolder:        strings.TrimSpace(cfg.Extra["buildFolder"]),
-		protectedNames:     parseProtectedNames(cfg.Extra["protectedNames"]),
-		downloadProxy:      strings.TrimSpace(cfg.Extra["downloadProxy"]),
-		downloadDir:        strings.TrimSpace(firstNonEmpty(cfg.Extra["downloadDir"], "/var/lib/imagebuilder/uploads")),
-		buildDiskGiB:       intFromExtra(cfg.Extra, "buildDiskGiB", 0),
-		publishToLibrary:   strings.EqualFold(strings.TrimSpace(cfg.Extra["remote.publishTo"]), "content-library"),
-		keepFailedBuild:    boolFromExtra(cfg.Extra, "keepFailedBuild", false),
-		buildCPUs:          int32FromExtra(cfg.Extra, "buildCPUs"),
-		buildMemoryMiB:     intFromExtra(cfg.Extra, "buildMemoryMiB", 0),
-		extraConfig:        cloneStringMap(cfg.Extra),
+		providerConfigName:    cfg.ProviderConfigName,
+		endpoint:              normalizeEndpoint(firstNonEmpty(cfg.Endpoint, firstSecretValue(cfg.SecretData, "server", "endpoint"))),
+		insecure:              cfg.Insecure,
+		username:              firstSecretValue(cfg.SecretData, "username", "user"),
+		password:              firstSecretValue(cfg.SecretData, "password", "pass"),
+		guestUsername:         firstSecretValue(cfg.SecretData, "guestUsername", "remoteGuestUsername"),
+		guestPassword:         firstSecretValue(cfg.SecretData, "guestPassword", "remoteGuestPassword"),
+		datacenter:            strings.TrimSpace(cfg.Extra["datacenter"]),
+		datastore:             strings.TrimSpace(cfg.Extra["datastore"]),
+		folder:                strings.TrimSpace(cfg.Extra["folder"]),
+		cluster:               strings.TrimSpace(cfg.Extra["cluster"]),
+		resourcePool:          strings.TrimSpace(cfg.Extra["resourcePool"]),
+		host:                  strings.TrimSpace(cfg.Extra["host"]),
+		network:               strings.TrimSpace(cfg.Extra["network"]),
+		ovfNetworkName:        strings.TrimSpace(cfg.Extra["ovfNetworkName"]),
+		diskProvisioning:      strings.TrimSpace(firstNonEmpty(cfg.Extra["diskProvisioning"], "thin")),
+		deployment:            strings.TrimSpace(cfg.Extra["deployment"]),
+		ipAllocationPolicy:    strings.TrimSpace(cfg.Extra["ipAllocationPolicy"]),
+		ipProtocol:            strings.TrimSpace(cfg.Extra["ipProtocol"]),
+		annotation:            strings.TrimSpace(cfg.Extra["annotation"]),
+		markAsTemplate:        boolFromExtra(cfg.Extra, "markAsTemplate", true),
+		contentLibrary:        strings.TrimSpace(cfg.Extra["contentLibrary"]),
+		contentLibraryID:      strings.TrimSpace(cfg.Extra["contentLibraryID"]),
+		requireManifest:       boolFromExtra(cfg.Extra, "requireManifest", false),
+		uploadPathPrefix:      strings.TrimSpace(firstNonEmpty(cfg.Extra["uploadPathPrefix"], cfg.Extra["uploadPath"], "imagebuilder")),
+		buildFolder:           strings.TrimSpace(cfg.Extra["buildFolder"]),
+		templateFolder:        strings.TrimSpace(cfg.Extra["templateFolder"]),
+		revokeBuildCredential: boolFromExtra(cfg.Extra, "revokeBuildCredential", true),
+		protectedNames:        parseProtectedNames(cfg.Extra["protectedNames"]),
+		downloadProxy:         strings.TrimSpace(cfg.Extra["downloadProxy"]),
+		downloadDir:           strings.TrimSpace(firstNonEmpty(cfg.Extra["downloadDir"], "/var/lib/imagebuilder/uploads")),
+		buildDiskGiB:          intFromExtra(cfg.Extra, "buildDiskGiB", 0),
+		publishToLibrary:      strings.EqualFold(strings.TrimSpace(cfg.Extra["remote.publishTo"]), "content-library"),
+		keepFailedBuild:       boolFromExtra(cfg.Extra, "keepFailedBuild", false),
+		buildCPUs:             int32FromExtra(cfg.Extra, "buildCPUs"),
+		buildMemoryMiB:        intFromExtra(cfg.Extra, "buildMemoryMiB", 0),
+		extraConfig:           cloneStringMap(cfg.Extra),
 	}
 	buildNet, err := parseBuildNetwork(cfg.Extra)
 	if err != nil {
@@ -216,6 +220,7 @@ func (c config) validate() error {
 		"host":             c.host,
 		"network":          c.network,
 		"buildFolder":      c.buildFolder,
+		"templateFolder":   c.templateFolder,
 		"contentLibrary":   c.contentLibrary,
 		"contentLibraryID": c.contentLibraryID,
 	}, c.protectedNames); err != nil {
@@ -223,6 +228,11 @@ func (c config) validate() error {
 	}
 	if c.publishToLibrary && c.contentLibrary == "" && c.contentLibraryID == "" {
 		return fmt.Errorf("vsphere plugin: remote.publishTo content-library requires ProviderConfig extra contentLibrary or contentLibraryID")
+	}
+	if c.publishToLibrary {
+		if err := checkTemplateFolderPath(c.templateFolder, c.buildFolder, c.protectedNames); err != nil {
+			return err
+		}
 	}
 	if c.endpoint == "" {
 		return fmt.Errorf("vsphere plugin: endpoint is required in ProviderConfig")
