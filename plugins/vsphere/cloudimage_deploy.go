@@ -230,7 +230,7 @@ func (c *govmomiClient) deployCloudImage(ctx context.Context, input vsphereRemot
 	if c.cfg.buildCPUs > 0 || c.cfg.buildMemoryMiB > 0 {
 		spec := types.VirtualMachineConfigSpec{}
 		if c.cfg.buildCPUs > 0 {
-			spec.NumCPUs = int32(c.cfg.buildCPUs)
+			spec.NumCPUs = c.cfg.buildCPUs
 		}
 		if c.cfg.buildMemoryMiB > 0 {
 			spec.MemoryMB = int64(c.cfg.buildMemoryMiB)

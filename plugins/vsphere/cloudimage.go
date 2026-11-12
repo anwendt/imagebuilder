@@ -150,7 +150,7 @@ func isLoopbackHTTP(rawURL string) bool {
 }
 
 func fileSHA256(name string) (string, error) {
-	f, err := os.Open(name)
+	f, err := os.Open(filepath.Clean(name)) // #nosec G304 -- name is built from the provider-owned download directory
 	if err != nil {
 		return "", err
 	}

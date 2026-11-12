@@ -85,7 +85,7 @@ type config struct {
 	publishToLibrary   bool
 	keepFailedBuild    bool
 	buildNet           *buildNetwork
-	buildCPUs          int
+	buildCPUs          int32
 	buildMemoryMiB     int
 	extraConfig        map[string]string
 }
@@ -180,7 +180,7 @@ func (p *Plugin) Init(ctx context.Context, cfg platform.PluginConfig) error {
 		buildDiskGiB:       intFromExtra(cfg.Extra, "buildDiskGiB", 0),
 		publishToLibrary:   strings.EqualFold(strings.TrimSpace(cfg.Extra["remote.publishTo"]), "content-library"),
 		keepFailedBuild:    boolFromExtra(cfg.Extra, "keepFailedBuild", false),
-		buildCPUs:          intFromExtra(cfg.Extra, "buildCPUs", 0),
+		buildCPUs:          int32(min(intFromExtra(cfg.Extra, "buildCPUs", 0), 1024)), // #nosec G115 -- bounded above
 		buildMemoryMiB:     intFromExtra(cfg.Extra, "buildMemoryMiB", 0),
 		extraConfig:        cloneStringMap(cfg.Extra),
 	}
