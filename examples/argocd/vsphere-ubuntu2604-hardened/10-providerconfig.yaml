@@ -1,0 +1,34 @@
+apiVersion: imagebuilder.io/v1alpha1
+kind: ProviderConfig
+metadata:
+  name: vsphere-templates
+  namespace: imagebuilder-system
+spec:
+  provider: vsphere
+  credentials:
+    secretRef:
+      name: vsphere-credentials   # keys: server (optional), username, password
+  extra:
+    datacenter: dc-01
+    cluster: cluster-01
+    resourcePool: /dc-01/host/cluster-01/Resources/imagebuilder
+    datastore: datastore-01
+    network: build-net
+    # Dedicated folder: the provider only creates and destroys imagebuilder-*
+    # VMs here (ADR-009). Its name must start with "imagebuilder".
+    buildFolder: /dc-01/vm/imagebuilder-builds
+    # Optional: names (substrings) that must never appear in any configured or
+    # generated inventory name, for example the name of a critical workload.
+    protectedNames: ""
+    contentLibrary: templates
+    remote.publishTo: content-library
+    buildDiskGiB: "40"
+    buildMemoryMiB: "2048"
+    # Optional proxy used only to download the cloud image.
+    # downloadProxy: http://proxy.example.com:3128
+    # Networks without DHCP: static address of the build VM (volatile, not part
+    # of the template).
+    # buildIPv4: 192.0.2.9/27
+    # buildGateway: 192.0.2.1
+    # buildDNS: 192.0.2.5
+    diskProvisioning: thin

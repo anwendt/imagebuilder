@@ -25,6 +25,7 @@ references the old one.
 | [ADR-006](ADR-006-no-go-plugin-mechanism.md) | No Go Plugin Mechanism (.so Files) | Accepted |
 | [ADR-007](ADR-007-remote-build-provider-contract.md) | Remote Build as Provider-Owned Execution Mode | Accepted |
 | [ADR-008](ADR-008-vm-image-evidence-contract.md) | Provider-Neutral VM Image Evidence Contract | Accepted |
+| [ADR-009](ADR-009-vsphere-build-vm-guard-and-cloud-image-builds.md) | vSphere Build VM Guard and Cloud-Image Remote Builds | Accepted |
 
 ## ADR Status Values
 

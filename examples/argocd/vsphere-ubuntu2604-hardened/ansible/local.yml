@@ -1,0 +1,9 @@
+---
+# Local playbook for the baseline hardening role.
+- name: Hardening of the Ubuntu 26.04 golden image
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: true
+  roles:
+    - system

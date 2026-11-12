@@ -107,6 +107,12 @@ Optional `extra` keys:
 | `contentLibrary` | empty | Content Library name for OVA/OVF publishing. |
 | `contentLibraryID` | empty | Content Library ID; takes precedence over `contentLibrary`. |
 | `requireManifest` | `false` | Requires `.mf` manifest files when publishing to Content Library. |
+| `buildFolder` | none | **Required for remote builds.** Absolute inventory path of the dedicated build folder; its name must start with `imagebuilder`. Build VMs (`imagebuilder-*`) live and die only here (ADR-009). The provider creates the folder below an existing parent. |
+| `protectedNames` | empty | Comma separated, case-insensitive substrings. ProviderConfig inventory names, build VM names and the build folder must not contain them. |
+| `downloadProxy` | empty | Proxy used only to download `cloud-image` sources (not for vCenter traffic). |
+| `downloadDir` | `/var/lib/imagebuilder/uploads` | Scratch directory for downloaded source images. |
+| `buildDiskGiB` | image default | Grows the first disk of a cloud-image build VM to this size. |
+| `remote.publishTo` | none | `content-library` publishes the finished remote build as VM template item of `contentLibrary`/`contentLibraryID` and destroys the build VM. |
 | `httpProxy` | empty | HTTP proxy URL for provider API traffic. |
 | `httpsProxy` | empty | HTTPS proxy URL for provider API traffic. |
 | `noProxy` | empty | Comma-separated proxy bypass list, for example vCenter and cluster-local endpoints. |
@@ -258,6 +264,25 @@ Optional variables:
 | `VSPHERE_E2E_CONTENT_LIBRARY_ID` | unset |
 | `VSPHERE_E2E_MARK_AS_TEMPLATE` | provider default `true` |
 | `VSPHERE_E2E_REQUIRE_MANIFEST` | provider default `false` |
+
+## Cloud-Image Builds and the Build VM Guard
+
+`spec.source.type: cloud-image` with `source.url` (https) and `source.checksum`
+(sha256) builds from a public cloud image OVA, for example the Ubuntu
+`*-server-cloudimg-amd64.ova`. The provider downloads and verifies the OVA,
+deploys it as build VM, gives it a temporary per-build root login through
+cloud-init, runs the `shell`/`file` provisioners through Guest Operations and
+(with `remote.publishTo: content-library`) publishes a VM template item. An
+existing library item is never modified.
+
+The provider only creates, changes and destroys VMs that are named
+`imagebuilder-*` and sit directly in `extra.buildFolder`. See
+[ADR-009](../adr/ADR-009-vsphere-build-vm-guard-and-cloud-image-builds.md).
+
+`ProviderConfig.spec.endpoint` may be omitted when the Secret contains the
+vCenter address in the key `server`.
+
+Example: `examples/argocd/vsphere-ubuntu2604-hardened`.
 
 ## Limitations
 
