@@ -26,6 +26,7 @@ references the old one.
 | [ADR-007](ADR-007-remote-build-provider-contract.md) | Remote Build as Provider-Owned Execution Mode | Accepted |
 | [ADR-008](ADR-008-vm-image-evidence-contract.md) | Provider-Neutral VM Image Evidence Contract | Accepted |
 | [ADR-009](ADR-009-vsphere-build-vm-guard-and-cloud-image-builds.md) | vSphere Build VM Guard and Cloud-Image Remote Builds | Accepted |
+| [ADR-010](ADR-010-image-derivation-and-immutable-versions.md) | Image Derivation From Published Base Images and Immutable Versions | Accepted |
 
 ## ADR Status Values
 
