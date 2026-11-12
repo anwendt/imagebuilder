@@ -177,3 +177,17 @@ func containsString(values []string, want string) bool {
 	}
 	return false
 }
+
+func TestGitSourceExpandOptionsUseTheDownloadProxy(t *testing.T) {
+	options := gitSourceExpandOptions("  http://proxy.example.test:8080 ")
+	if options.HTTPProxy != "http://proxy.example.test:8080" || options.HTTPSProxy != "http://proxy.example.test:8080" {
+		t.Fatalf("unexpected proxy options: %+v", options)
+	}
+	if options.NoProxy != "" {
+		t.Fatalf("no bypass list expected: %+v", options)
+	}
+	empty := gitSourceExpandOptions("")
+	if empty.HTTPProxy != "" || empty.HTTPSProxy != "" {
+		t.Fatalf("an empty proxy must stay empty: %+v", empty)
+	}
+}

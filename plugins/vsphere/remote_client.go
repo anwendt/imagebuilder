@@ -55,7 +55,7 @@ type vsphereRemoteBuildState struct {
 }
 
 func (c *govmomiClient) ReconcileRemoteBuild(ctx context.Context, input vsphereRemoteBuildInput) (*vsphereRemoteBuildState, error) {
-	expandedInput, cleanup, err := expandVSphereRemoteProvisioners(ctx, input)
+	expandedInput, cleanup, err := c.expandVSphereRemoteProvisioners(ctx, input)
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +250,15 @@ func compactUniqueStrings(values []string) []string {
 	return out
 }
 
-func expandVSphereRemoteProvisioners(ctx context.Context, input vsphereRemoteBuildInput) (vsphereRemoteBuildInput, func(), error) {
+// gitSourceExpandOptions returns the outbound proxy for fetching provisioner
+// sources from Git. Clusters that reach Git only through a proxy use the same
+// downloadProxy as for cloud images; it never applies to vCenter traffic.
+func gitSourceExpandOptions(downloadProxy string) provisionersource.ExpandOptions {
+	proxy := strings.TrimSpace(downloadProxy)
+	return provisionersource.ExpandOptions{HTTPProxy: proxy, HTTPSProxy: proxy}
+}
+
+func (c *govmomiClient) expandVSphereRemoteProvisioners(ctx context.Context, input vsphereRemoteBuildInput) (vsphereRemoteBuildInput, func(), error) {
 	if !provisionersource.HasSources(input.Provisioners) {
 		return input, func() {}, nil
 	}
@@ -259,7 +267,7 @@ func expandVSphereRemoteProvisioners(ctx context.Context, input vsphereRemoteBui
 		return input, func() {}, fmt.Errorf("create vSphere remote provisioner source workspace: %w", err)
 	}
 	cleanup := func() { _ = os.RemoveAll(workspace) }
-	provisioners, err := provisionersource.ExpandProvisioners(ctx, workspace, input.Provisioners)
+	provisioners, err := provisionersource.ExpandProvisionersWithOptions(ctx, workspace, input.Provisioners, gitSourceExpandOptions(c.cfg.downloadProxy))
 	if err != nil {
 		cleanup()
 		return input, func() {}, err
