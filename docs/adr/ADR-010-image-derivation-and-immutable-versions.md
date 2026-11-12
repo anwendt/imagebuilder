@@ -78,7 +78,31 @@ objects, owning the objects they create and never overwriting foreign ones. The
 `extra` keys documented in the provider operations guide are the supported
 contract; a key may be added but not renamed within a minor version.
 
-### 5. No engine change for vSphere
+### 5. Provisioning content lives in Git and is fetched provider-side
+
+Scripts, Ansible roles and configuration files are not inlined in manifests.
+A provisioner references them with `spec.provisioners[].source.git`
+(`url`, `ref`, `path`, optional `auth.secretRef` to a read-only token). This is
+already implemented: the controller or provider clones the repository
+(through the configured proxy, SSRF-checked), expands a directory into ordered
+steps and hands the file content to the provisioner. On vSphere the content
+reaches the guest through Guest Operations, so the build VM needs neither Git
+access nor credentials. Rules for orchestrators and manifests:
+
+- `ref` is a commit SHA or an immutable tag; branches are not used for versions.
+  Orchestrators resolve a tag to its commit SHA when they create the `VMImage`
+  and record both (tag in an annotation), so the built version names the exact
+  scripts. Changing scripts means a new tag and a new image version.
+- The manifest holds only URL, ref, path and the Secret name. Smaller manifests
+  keep the stored objects small and the scripts reviewable as Git diffs.
+- The token is read-only and scoped to the repository.
+
+Open engine follow-up: report the resolved commit SHA of every Git source in
+`status` and refuse a branch name when a policy flag requires immutable refs.
+Until then the orchestrator pins and records the SHA.
+
+### 6. No engine change for vSphere derivation
+
 
 The vSphere provider already resolves `content-library:` and `library-item:`
 references for remote builds. This ADR adds no code. Two follow-ups are open and
