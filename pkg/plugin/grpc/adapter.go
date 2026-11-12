@@ -660,6 +660,7 @@ func remoteBuildProtoRequest(req *platform.RemoteBuildRequest) *providerv1.Remot
 			Args:      provisioner.Args,
 			ExtraVars: provisioner.ExtraVars,
 			Source:    grpcRemoteProvisionerSource(provisioner.Source),
+			Env:       literalProvisionerEnv(provisioner.Env),
 		})
 	}
 	if req.GuestAccess != nil {
@@ -722,6 +723,23 @@ func grpcRemoteProvisionerSource(source *v1alpha1.ProvisionerSourceSpec) *provid
 				Password: source.Git.Auth.RuntimePassword,
 			}
 		}
+	}
+	return out
+}
+
+// literalProvisionerEnv returns the literal variables of a provisioner. Values
+// that come from Secrets (valueFrom) are not sent to remote providers; the
+// admission webhook rejects them for remote builds.
+func literalProvisionerEnv(env []v1alpha1.EnvVar) map[string]string {
+	var out map[string]string
+	for _, e := range env {
+		if e.ValueFrom != nil || e.Name == "" {
+			continue
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[e.Name] = e.Value
 	}
 	return out
 }

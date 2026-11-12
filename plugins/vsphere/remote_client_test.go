@@ -191,3 +191,33 @@ func TestGitSourceExpandOptionsUseTheDownloadProxy(t *testing.T) {
 		t.Fatalf("an empty proxy must stay empty: %+v", empty)
 	}
 }
+
+func TestVSphereGuestEnv(t *testing.T) {
+	linux := vsphereRemoteBuildInput{OSFamily: platform.OSFamilyLinux}
+	env, err := vsphereGuestEnv(linux, v1alpha1.ProvisionerSpec{Type: "shell", Env: []v1alpha1.EnvVar{
+		{Name: "HTTPS_PROXY", Value: "http://proxy.example.com:3128"},
+		{Name: "DEBIAN_FRONTEND", Value: "readline"},
+	}})
+	if err != nil {
+		t.Fatalf("vsphereGuestEnv: %v", err)
+	}
+	joined := strings.Join(env, "\n")
+	for _, want := range []string{"HOME=/root", "HTTPS_PROXY=http://proxy.example.com:3128", "DEBIAN_FRONTEND=readline"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("env %v missing %q", env, want)
+		}
+	}
+	if strings.Contains(joined, "DEBIAN_FRONTEND=noninteractive") {
+		t.Fatalf("provisioner env must override the default: %v", env)
+	}
+	if _, err := vsphereGuestEnv(linux, v1alpha1.ProvisionerSpec{Env: []v1alpha1.EnvVar{{Name: "BAD NAME", Value: "x"}}}); err == nil {
+		t.Fatal("invalid variable names must be rejected")
+	}
+	if _, err := vsphereGuestEnv(linux, v1alpha1.ProvisionerSpec{Env: []v1alpha1.EnvVar{{Name: "A", ValueFrom: &v1alpha1.EnvVarSource{}}}}); err == nil {
+		t.Fatal("valueFrom is not supported for remote builds")
+	}
+	win, _ := vsphereGuestEnv(vsphereRemoteBuildInput{OSFamily: platform.OSFamilyWindows}, v1alpha1.ProvisionerSpec{Env: []v1alpha1.EnvVar{{Name: "A", Value: "b"}}})
+	if len(win) != 1 || win[0] != "A=b" {
+		t.Fatalf("windows env = %v", win)
+	}
+}

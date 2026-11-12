@@ -1310,3 +1310,18 @@ func TestVMImageWebhook_ProvisionerGitSource_RejectsInline(t *testing.T) {
 		t.Fatal("provisioner git source with inline should be rejected")
 	}
 }
+
+func TestVMImageWebhook_RemoteBuildRejectsEnvValueFrom(t *testing.T) {
+	img := validRemoteImageWithEvidence()
+	img.Spec.Evidence = nil
+	img.Spec.Provisioners = []ProvisionerSpec{{Type: "shell", Inline: "true", Env: []EnvVar{
+		{Name: "A", ValueFrom: &EnvVarSource{SecretKeyRef: &SecretKeyRef{Name: "s", Key: "k"}}},
+	}}}
+	if _, err := img.validate(); err == nil || !strings.Contains(err.Error(), "valueFrom") {
+		t.Fatalf("expected valueFrom rejection for remote builds, got %v", err)
+	}
+	img.Spec.Provisioners[0].Env = []EnvVar{{Name: "A", Value: "b"}}
+	if _, err := img.validate(); err != nil {
+		t.Fatalf("literal env must be accepted: %v", err)
+	}
+}

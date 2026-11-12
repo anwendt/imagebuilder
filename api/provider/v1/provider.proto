@@ -151,6 +151,8 @@ message RemoteProvisioner {
   repeated string args = 5;
   map<string, string> extra_vars = 6;
   RemoteProvisionerSource source = 7;
+  // Literal environment variables for the provisioner process (additive, v1).
+  map<string, string> env = 8;
 }
 
 message RemoteProvisionerSource {

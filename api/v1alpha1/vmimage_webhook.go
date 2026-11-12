@@ -158,6 +158,15 @@ func (r *VMImage) validate() (admission.Warnings, error) {
 			errs = append(errs, err)
 		}
 	}
+	if buildMode == BuildModeRemote {
+		for i, p := range r.Spec.Provisioners {
+			for _, e := range p.Env {
+				if e.ValueFrom != nil {
+					errs = append(errs, fmt.Errorf("spec.provisioners[%d].env %q: valueFrom is not supported for spec.build.mode remote", i, e.Name))
+				}
+			}
+		}
+	}
 	if err := validateProvisionerTypes(r.Spec.Provisioners); err != nil {
 		errs = append(errs, err)
 	}
