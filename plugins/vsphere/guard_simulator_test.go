@@ -8,6 +8,7 @@ import (
 	"github.com/vmware/govmomi/find"
 	"github.com/vmware/govmomi/object"
 	"github.com/vmware/govmomi/simulator"
+	"github.com/vmware/govmomi/vim25/mo"
 	"github.com/vmware/govmomi/vim25/types"
 )
 
@@ -145,4 +146,55 @@ func createSimulatorBuildVM(t *testing.T, c *govmomiClient, folder *object.Folde
 		t.Fatalf("wait create VM: %v", err)
 	}
 	return object.NewVirtualMachine(c.vc.Client, info.Result.(types.ManagedObjectReference))
+}
+
+func TestScrubBuildConfigWithSimulator(t *testing.T) {
+	c, _, done := newGuardSimulatorClient(t, nil)
+	defer done()
+	ctx := context.Background()
+	finder, err := c.vmFinder(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	folder, err := c.ensureBuildFolder(ctx, finder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm := createSimulatorBuildVM(t, c, folder, "imagebuilder-scrub-1")
+	task, err := vm.Reconfigure(ctx, types.VirtualMachineConfigSpec{
+		ExtraConfig: []types.BaseOptionValue{
+			&types.OptionValue{Key: "guestinfo.userdata", Value: "secret"},
+			&types.OptionValue{Key: "disk.enableUUID", Value: "TRUE"},
+		},
+		VAppConfig: &types.VmConfigSpec{Property: []types.VAppPropertySpec{{
+			ArrayUpdateSpec: types.ArrayUpdateSpec{Operation: types.ArrayUpdateOperationAdd},
+			Info:            &types.VAppPropertyInfo{Key: 1, Id: "user-data", Value: "secret", UserConfigurable: types.NewBool(true)},
+		}}},
+	})
+	if err != nil {
+		t.Fatalf("seed VM: %v", err)
+	}
+	if err := task.Wait(ctx); err != nil {
+		t.Fatalf("seed VM: %v", err)
+	}
+	read := func() []string {
+		var p mo.VirtualMachine
+		if err := vm.Properties(ctx, vm.Reference(), []string{"config.vAppConfig", "config.extraConfig"}, &p); err != nil {
+			t.Fatal(err)
+		}
+		var vapp *types.VmConfigInfo
+		if p.Config.VAppConfig != nil {
+			vapp = p.Config.VAppConfig.GetVmConfigInfo()
+		}
+		return templateConfigFindings(vapp, p.Config.ExtraConfig)
+	}
+	if len(read()) == 0 {
+		t.Fatal("seeded VM should carry build data")
+	}
+	if err := c.scrubBuildConfig(ctx, vm); err != nil {
+		t.Fatalf("scrubBuildConfig: %v", err)
+	}
+	if left := read(); len(left) != 0 {
+		t.Fatalf("build data left after scrub: %v", left)
+	}
 }
