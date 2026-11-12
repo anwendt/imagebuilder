@@ -1,0 +1,24 @@
+apiVersion: imagebuilder.io/v1alpha1
+kind: ProviderConfig
+metadata:
+  name: vsphere-classic-os
+  namespace: imagebuilder-system
+spec:
+  provider: vsphere
+  insecure: true
+  credentials:
+    secretRef:
+      name: cloud-credential-cwd-042-vsphere   # keys: server, username, password
+  extra:
+    datacenter: c042-fra1
+    cluster: c042-fra1-cl01
+    resourcePool: /c042-fra1/host/c042-fra1-cl01/Resources/uvp001c042fra1x/c042-packer
+    datastore: vds001c042fra1x
+    network: c042_nsm-bootstrap-net
+    buildFolder: /c042-fra1/vm/Workloads/imagebuilder-builds
+    protectedNames: mif
+    contentLibrary: classic-os
+    remote.publishTo: content-library
+    buildDiskGiB: "40"
+    downloadProxy: http://172.28.236.246:8080
+    diskProvisioning: thin

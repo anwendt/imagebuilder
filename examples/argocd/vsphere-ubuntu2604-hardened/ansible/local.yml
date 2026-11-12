@@ -1,0 +1,11 @@
+---
+# Port of ansible/_org/local.yml. The original pre_tasks installed Docker from
+# the CentOS repository with yum; the Ubuntu image does not install Docker
+# (container runtimes are removed by 80-remove-containers.sh).
+- name: Hardening of the Ubuntu 26.04 golden image
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: true
+  roles:
+    - system

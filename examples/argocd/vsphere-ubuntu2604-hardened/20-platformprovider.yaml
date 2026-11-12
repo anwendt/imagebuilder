@@ -1,0 +1,12 @@
+apiVersion: imagebuilder.io/v1alpha1
+kind: PlatformProvider
+metadata:
+  name: vsphere
+spec:
+  package: ghcr.io/anwendt/imagebuilder-provider-vsphere@sha256:REPLACE_WITH_RELEASE_DIGEST
+  packagePullPolicy: IfNotPresent
+  security:
+    allowedRegistries:
+      - ghcr.io/anwendt
+    requireDigest: true
+    verifySignature: true

@@ -1,0 +1,108 @@
+---
+# Port of roles/system/tasks/main.yml (fci-dt/ubuntu-2204): yum -> apt,
+# /etc/sysctl.conf and limits.conf replaced by drop-ins, PAM and profile edits
+# moved to the locations Ubuntu regenerates from.
+
+- name: Restrict dynamic mounting and unmounting of filesystems
+  ansible.builtin.template:
+    src: hardening.conf.j2
+    dest: /etc/modprobe.d/hardening.conf
+    mode: "0644"
+
+- name: Kernel parameters
+  ansible.builtin.template:
+    src: sysctl.conf.j2
+    dest: /etc/sysctl.d/99-imagebuilder-hardening.conf
+    mode: "0644"
+
+- name: Apply kernel parameters
+  ansible.builtin.command: sysctl --system
+  changed_when: false
+  failed_when: false
+
+- name: Set security limits to prevent DoS
+  ansible.builtin.template:
+    src: limits.conf.j2
+    dest: /etc/security/limits.d/99-imagebuilder-hardening.conf
+    mode: "0644"
+
+- name: Removal of not needed accounts
+  ansible.builtin.user:
+    name: "{{ item }}"
+    state: absent
+  loop: "{{ removal_of_users }}"
+
+- name: Removal of not needed groups
+  ansible.builtin.group:
+    name: "{{ item }}"
+    state: absent
+  loop: "{{ removal_of_groups }}"
+
+- name: Check whether pam-auth-update manages unix authentication
+  ansible.builtin.stat:
+    path: /usr/share/pam-configs/unix
+  register: pam_unix_config
+
+- name: Remove nullok from the PAM unix profile
+  ansible.builtin.replace:
+    path: /usr/share/pam-configs/unix
+    regexp: '\s+nullok(_secure)?\b'
+    replace: ''
+  when: pam_unix_config.stat.exists
+  register: pam_unix_changed
+
+- name: Regenerate PAM configuration
+  ansible.builtin.command: pam-auth-update --package --force
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  when: pam_unix_config.stat.exists and pam_unix_changed.changed
+
+- name: Set interactive session timeout
+  ansible.builtin.copy:
+    dest: /etc/profile.d/99-imagebuilder-tmout.sh
+    content: |
+      # Interactive session timeout (imagebuilder hardening)
+      readonly TMOUT={{ session_timeout_seconds }}
+      export TMOUT
+    mode: "0644"
+
+- name: Simulate removal of packages
+  ansible.builtin.command: "apt-get -s purge {{ removal_of_packages | join(' ') }}"
+  register: removal_simulation
+  changed_when: false
+  failed_when: false
+
+- name: Refuse removals that would take protected packages with them
+  ansible.builtin.assert:
+    that:
+      - not (removal_simulation.stdout is search('^Purg ' + item, multiline=True))
+    fail_msg: "Removing the hardening package list would also remove {{ item }}"
+  loop: "{{ removal_protected_packages }}"
+
+- name: Removal of packages
+  ansible.builtin.apt:
+    name: "{{ removal_of_packages }}"
+    state: absent
+    purge: true
+    autoremove: false
+
+- name: Installation of packages
+  ansible.builtin.apt:
+    name: "{{ installing_of_packages }}"
+    state: present
+  failed_when: false
+
+- name: Disable of services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop: "{{ disable_of_services }}"
+  failed_when: false
+
+- name: Enabling of services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+  loop: "{{ enable_of_services }}"
+  failed_when: false

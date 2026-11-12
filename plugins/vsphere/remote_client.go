@@ -75,6 +75,9 @@ func (c *govmomiClient) ReconcileRemoteBuild(ctx context.Context, input vsphereR
 	if err := c.validateVSphereRemoteNetwork(input); err != nil {
 		return nil, err
 	}
+	if err := checkBuildFolderPath(c.cfg.buildFolder, c.cfg.protectedNames); err != nil {
+		return nil, err
+	}
 	ref, err := parseVSphereRemoteOperationRef(input.OperationRef)
 	if err != nil {
 		return nil, err
@@ -93,12 +96,23 @@ func (c *govmomiClient) ReconcileRemoteBuild(ctx context.Context, input vsphereR
 		return c.cloneRemoteSource(ctx, input)
 	}
 	vm := object.NewVirtualMachine(c.vc.Client, types.ManagedObjectReference{Type: "VirtualMachine", Value: ref.VMRef})
+	if err := c.requireOwnedBuildVM(ctx, vm); err != nil {
+		return nil, err
+	}
 	if ref.ProvisionerIndex < len(input.Provisioners) {
 		if err := c.ensureRemoteVMReady(ctx, vm); err != nil {
 			return nil, err
 		}
+		if ref.ProvisionerIndex == 0 {
+			if err := c.waitGuestOperations(ctx, vm, input); err != nil {
+				_ = c.cleanupVSphereRemoteVM(ctx, ref)
+				return nil, err
+			}
+		}
 		if err := c.runVSphereProvisioner(ctx, vm, input, ref, input.Provisioners[ref.ProvisionerIndex]); err != nil {
-			_ = c.cleanupVSphereRemoteVM(ctx, ref)
+			if !c.cfg.keepFailedBuild {
+				_ = c.cleanupVSphereRemoteVM(ctx, ref)
+			}
 			return nil, err
 		}
 		ref.ProvisionerIndex++
@@ -261,12 +275,15 @@ func (c *govmomiClient) CleanupRemoteBuild(ctx context.Context, input vsphereRem
 		ref.BuildID = input.BuildID
 	}
 	if ref.VMName == "" && input.BuildID != "" {
-		ref.VMName = vsphereRemoteVMName(input.BuildID)
+		ref.VMName = buildVMName(input.ImageName, input.BuildID)
 	}
 	return c.cleanupVSphereRemoteVM(ctx, ref)
 }
 
 func (c *govmomiClient) cloneRemoteSource(ctx context.Context, input vsphereRemoteBuildInput) (*vsphereRemoteBuildState, error) {
+	if input.SourceType == "cloud-image" {
+		return c.deployCloudImage(ctx, input)
+	}
 	if isVSphereContentLibraryRef(input.SourceRef) {
 		return c.deployRemoteLibrarySource(ctx, input)
 	}
@@ -288,9 +305,9 @@ func (c *govmomiClient) cloneRemoteSource(ctx context.Context, input vsphereRemo
 	if err != nil {
 		return nil, err
 	}
-	folder, err := vmFinder.FolderOrDefault(ctx, firstNonEmpty(c.cfg.folder, "vm"))
+	folder, err := c.ensureBuildFolder(ctx, vmFinder)
 	if err != nil {
-		return nil, fmt.Errorf("find VM folder %q: %w", firstNonEmpty(c.cfg.folder, "vm"), err)
+		return nil, err
 	}
 	dsRef := ds.Reference()
 	rpRef := rp.Reference()
@@ -302,7 +319,7 @@ func (c *govmomiClient) cloneRemoteSource(ctx context.Context, input vsphereRemo
 		hostRef := host.Reference()
 		relocate.Host = &hostRef
 	}
-	name := firstNonEmpty(input.ImageName, vsphereRemoteVMName(input.BuildID))
+	name := buildVMName(input.ImageName, input.BuildID)
 	ref := vsphereRemoteOperationRef{BuildID: input.BuildID, VMName: name}
 	task, err := source.Clone(ctx, folder, name, types.VirtualMachineCloneSpec{
 		Location: relocate,
@@ -361,16 +378,16 @@ func (c *govmomiClient) deployRemoteLibrarySource(ctx context.Context, input vsp
 	if err != nil {
 		return nil, err
 	}
-	folder, err := vmFinder.FolderOrDefault(ctx, firstNonEmpty(c.cfg.folder, "vm"))
+	folder, err := c.ensureBuildFolder(ctx, vmFinder)
 	if err != nil {
-		return nil, fmt.Errorf("find VM folder %q: %w", firstNonEmpty(c.cfg.folder, "vm"), err)
+		return nil, err
 	}
 	restClient, err := c.restClient(ctx)
 	if err != nil {
 		return nil, err
 	}
 	manager := vcenter.NewManager(restClient)
-	name := firstNonEmpty(input.ImageName, vsphereRemoteVMName(input.BuildID))
+	name := buildVMName(input.ImageName, input.BuildID)
 	ref := vsphereRemoteOperationRef{BuildID: input.BuildID, VMName: name}
 	moref, err := c.deployContentLibraryItem(ctx, manager, item, name, ds.Reference().Value, rp.Reference().Value, hostReferenceValue(host), folder.Reference().Value)
 	if err != nil {
@@ -658,7 +675,7 @@ func (c *govmomiClient) runVSphereProvisioner(ctx context.Context, vm *object.Vi
 	if err != nil {
 		return err
 	}
-	auth, err := c.remoteGuestAuth()
+	auth, err := c.remoteGuestAuthFor(input)
 	if err != nil {
 		return err
 	}
@@ -667,37 +684,52 @@ func (c *govmomiClient) runVSphereProvisioner(ctx context.Context, vm *object.Vi
 	if err != nil {
 		return fmt.Errorf("create vSphere guest process manager: %w", err)
 	}
-	pid, err := pm.StartProgram(ctx, auth, &types.GuestProgramSpec{
+	progSpec := &types.GuestProgramSpec{
 		ProgramPath: program,
 		Arguments:   args,
-	})
+	}
+	if input.OSFamily == platform.OSFamilyLinux {
+		progSpec.EnvVariables = []string{
+			"HOME=/root",
+			"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+			"DEBIAN_FRONTEND=noninteractive",
+			"LANG=C.UTF-8",
+		}
+	}
+	pid, err := pm.StartProgram(ctx, auth, progSpec)
 	if err != nil {
 		return fmt.Errorf("start vSphere guest provisioner %d: %w", ref.ProvisionerIndex, err)
 	}
-	return waitGuestProcess(ctx, pm, auth, pid, ref.ProvisionerIndex)
+	if err := waitGuestProcess(ctx, pm, auth, pid, ref.ProvisionerIndex); err != nil {
+		if input.OSFamily == platform.OSFamilyLinux {
+			if tail := c.guestLogTail(ctx, vm, auth); tail != "" {
+				return fmt.Errorf("%w; provisioning log tail:\n%s", err, tail)
+			}
+		}
+		return err
+	}
+	return nil
 }
 
-func (c *govmomiClient) remoteGuestAuth() (*types.NamePasswordAuthentication, error) {
-	username := firstNonEmpty(c.cfg.guestUsername, c.cfg.extraConfig["remote.guestUsername"], c.cfg.extraConfig["guestUsername"])
-	password := firstNonEmpty(c.cfg.guestPassword, c.cfg.extraConfig["remote.guestPassword"], c.cfg.extraConfig["guestPassword"])
-	if username == "" || password == "" {
-		return nil, fmt.Errorf("vSphere remote build with provisioners requires secret keys guestUsername and guestPassword")
+func guestProvisionerLabel(index int) string {
+	if index < 0 {
+		return "vSphere guest command"
 	}
-	return &types.NamePasswordAuthentication{Username: username, Password: password}, nil
+	return fmt.Sprintf("vSphere guest provisioner %d", index)
 }
 
 func waitGuestProcess(ctx context.Context, pm *guest.ProcessManager, auth types.BaseGuestAuthentication, pid int64, index int) error {
 	for {
 		procs, err := pm.ListProcesses(ctx, auth, []int64{pid})
 		if err != nil {
-			return fmt.Errorf("list vSphere guest process for provisioner %d: %w", index, err)
+			return fmt.Errorf("list %s process: %w", guestProvisionerLabel(index), err)
 		}
 		if len(procs) == 0 {
-			return fmt.Errorf("vSphere guest process %d for provisioner %d disappeared", pid, index)
+			return fmt.Errorf("%s process %d disappeared", guestProvisionerLabel(index), pid)
 		}
 		if procs[0].EndTime != nil {
 			if procs[0].ExitCode != 0 {
-				return fmt.Errorf("vSphere guest provisioner %d exited with code %d", index, procs[0].ExitCode)
+				return fmt.Errorf("%s: %w", guestProvisionerLabel(index), &guestExitError{code: procs[0].ExitCode})
 			}
 			return nil
 		}
@@ -719,6 +751,27 @@ func (c *govmomiClient) finishRemoteVM(ctx context.Context, vm *object.VirtualMa
 			_ = c.cleanupVSphereRemoteVM(ctx, ref)
 			return nil, fmt.Errorf("wait for vSphere remote VM shutdown: %w", err)
 		}
+	}
+	if c.cfg.publishToLibrary {
+		itemID, err := c.publishVMTemplate(ctx, vm, input)
+		if err != nil {
+			_ = c.cleanupVSphereRemoteVM(ctx, ref)
+			return nil, err
+		}
+		if err := c.destroyOwnedBuildVM(ctx, vm); err != nil {
+			return nil, fmt.Errorf("remove build VM after publishing %q: %w", itemID, err)
+		}
+		ref.ImageRef = itemID
+		image := vsphereRemoteImage(input, firstNonEmpty(c.cfg.contentLibrary, c.cfg.contentLibraryID), itemID)
+		image.Tags["imagebuilder.io/registration-mode"] = "content-library-template"
+		return &vsphereRemoteBuildState{
+			OperationRef: ref.String(),
+			Phase:        platform.RemoteBuildPhaseReady,
+			Message:      "vSphere remote image published to the content library",
+			Done:         true,
+			Image:        image,
+			Hygiene:      vsphereRemoteHygieneLibrary(input, itemID),
+		}, nil
 	}
 	if c.cfg.markAsTemplate {
 		if err := vm.MarkAsTemplate(ctx); err != nil {
@@ -742,34 +795,25 @@ func (c *govmomiClient) cleanupVSphereRemoteVM(ctx context.Context, ref vsphereR
 	if ref.VMRef == "" && ref.VMName == "" {
 		return nil
 	}
+	if err := checkBuildFolderPath(c.cfg.buildFolder, c.cfg.protectedNames); err != nil {
+		return err
+	}
 	vm := object.NewVirtualMachine(c.vc.Client, types.ManagedObjectReference{Type: "VirtualMachine", Value: ref.VMRef})
 	if ref.VMRef == "" {
-		dc, err := c.finder.Datacenter(ctx, c.cfg.datacenter)
+		if err := checkBuildVMName(ref.VMName, c.cfg.protectedNames); err != nil {
+			return err
+		}
+		finder, err := c.vmFinder(ctx)
 		if err != nil {
 			return err
 		}
-		finder := c.finder
-		finder.SetDatacenter(dc)
-		resolved, err := finder.VirtualMachine(ctx, ref.VMName)
+		resolved, err := finder.VirtualMachine(ctx, strings.TrimRight(c.cfg.buildFolder, "/")+"/"+ref.VMName)
 		if err != nil {
 			return nil
 		}
 		vm = resolved
 	}
-	if state, err := vmPowerState(ctx, vm); err == nil && state == types.VirtualMachinePowerStatePoweredOn {
-		task, err := vm.PowerOff(ctx)
-		if err == nil {
-			_ = task.Wait(ctx)
-		}
-	}
-	task, err := vm.Destroy(ctx)
-	if err != nil {
-		return nil
-	}
-	if task != nil {
-		return task.Wait(ctx)
-	}
-	return nil
+	return c.destroyOwnedBuildVM(ctx, vm)
 }
 
 func vmPowerState(ctx context.Context, vm *object.VirtualMachine) (types.VirtualMachinePowerState, error) {
@@ -812,7 +856,7 @@ func vsphereGuestProgram(input vsphereRemoteBuildInput, spec v1alpha1.Provisione
 		if strings.TrimSpace(spec.Inline) == "" {
 			return "", "", fmt.Errorf("shell provisioner requires inline content for vSphere remote build")
 		}
-		return "/bin/sh", "-c " + shellQuote(spec.Inline), nil
+		return "/bin/sh", "-c " + shellQuote("exec >>"+guestProvisionLog+" 2>&1\n"+spec.Inline), nil
 	case "powershell":
 		if input.OSFamily != platform.OSFamilyWindows {
 			return "", "", fmt.Errorf("powershell provisioner requires windows OS family for vSphere remote build")
@@ -916,8 +960,10 @@ func parseVSphereRemoteOperationRef(value string) (vsphereRemoteOperationRef, er
 	}, nil
 }
 
-func vsphereRemoteVMName(buildID string) string {
-	return "imagebuilder-" + sanitizeName(buildID)
+func vsphereRemoteHygieneLibrary(input vsphereRemoteBuildInput, resultRef string) *platform.RemoteHygieneResult {
+	h := vsphereRemoteHygiene(input, resultRef)
+	h.Checks = append(h.Checks, "vsphere-content-library-template-published", "vsphere-build-vm-destroyed")
+	return h
 }
 
 func vsphereRemoteImage(input vsphereRemoteBuildInput, location, id string) *platform.ImageRef {

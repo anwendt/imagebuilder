@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -76,6 +77,16 @@ type config struct {
 	contentLibraryID   string
 	requireManifest    bool
 	uploadPathPrefix   string
+	buildFolder        string
+	protectedNames     []string
+	downloadProxy      string
+	downloadDir        string
+	buildDiskGiB       int
+	publishToLibrary   bool
+	keepFailedBuild    bool
+	buildNet           *buildNetwork
+	buildCPUs          int
+	buildMemoryMiB     int
 	extraConfig        map[string]string
 }
 
@@ -113,7 +124,7 @@ type registerInput struct {
 }
 
 func (p *Plugin) Name() string    { return "vsphere" }
-func (p *Plugin) Version() string { return "v0.3.0" }
+func (p *Plugin) Version() string { return "v0.4.0" }
 
 func (p *Plugin) SupportedFormats() []platform.ImageFormat {
 	return []platform.ImageFormat{
@@ -138,7 +149,7 @@ func (p *Plugin) Init(ctx context.Context, cfg platform.PluginConfig) error {
 	p.log = slog.Default().With(slog.String("plugin", p.Name()))
 	p.config = config{
 		providerConfigName: cfg.ProviderConfigName,
-		endpoint:           strings.TrimSpace(cfg.Endpoint),
+		endpoint:           normalizeEndpoint(firstNonEmpty(cfg.Endpoint, firstSecretValue(cfg.SecretData, "server", "endpoint"))),
 		insecure:           cfg.Insecure,
 		username:           firstSecretValue(cfg.SecretData, "username", "user"),
 		password:           firstSecretValue(cfg.SecretData, "password", "pass"),
@@ -162,8 +173,22 @@ func (p *Plugin) Init(ctx context.Context, cfg platform.PluginConfig) error {
 		contentLibraryID:   strings.TrimSpace(cfg.Extra["contentLibraryID"]),
 		requireManifest:    boolFromExtra(cfg.Extra, "requireManifest", false),
 		uploadPathPrefix:   strings.TrimSpace(firstNonEmpty(cfg.Extra["uploadPathPrefix"], cfg.Extra["uploadPath"], "imagebuilder")),
+		buildFolder:        strings.TrimSpace(cfg.Extra["buildFolder"]),
+		protectedNames:     parseProtectedNames(cfg.Extra["protectedNames"]),
+		downloadProxy:      strings.TrimSpace(cfg.Extra["downloadProxy"]),
+		downloadDir:        strings.TrimSpace(firstNonEmpty(cfg.Extra["downloadDir"], "/var/lib/imagebuilder/uploads")),
+		buildDiskGiB:       intFromExtra(cfg.Extra, "buildDiskGiB", 0),
+		publishToLibrary:   strings.EqualFold(strings.TrimSpace(cfg.Extra["remote.publishTo"]), "content-library"),
+		keepFailedBuild:    boolFromExtra(cfg.Extra, "keepFailedBuild", false),
+		buildCPUs:          intFromExtra(cfg.Extra, "buildCPUs", 0),
+		buildMemoryMiB:     intFromExtra(cfg.Extra, "buildMemoryMiB", 0),
 		extraConfig:        cloneStringMap(cfg.Extra),
 	}
+	buildNet, err := parseBuildNetwork(cfg.Extra)
+	if err != nil {
+		return err
+	}
+	p.config.buildNet = buildNet
 	if err := p.config.validate(); err != nil {
 		return err
 	}
@@ -175,7 +200,6 @@ func (p *Plugin) Init(ctx context.Context, cfg platform.PluginConfig) error {
 		p.client = c
 	}
 	p.log.Info("vsphere plugin initialised",
-		slog.String("endpoint", p.config.endpoint),
 		slog.String("datacenter", p.config.datacenter),
 		slog.String("datastore", p.config.datastore),
 	)
@@ -183,6 +207,23 @@ func (p *Plugin) Init(ctx context.Context, cfg platform.PluginConfig) error {
 }
 
 func (c config) validate() error {
+	if err := checkProtectedConfig(map[string]string{
+		"datacenter":       c.datacenter,
+		"datastore":        c.datastore,
+		"folder":           c.folder,
+		"cluster":          c.cluster,
+		"resourcePool":     c.resourcePool,
+		"host":             c.host,
+		"network":          c.network,
+		"buildFolder":      c.buildFolder,
+		"contentLibrary":   c.contentLibrary,
+		"contentLibraryID": c.contentLibraryID,
+	}, c.protectedNames); err != nil {
+		return err
+	}
+	if c.publishToLibrary && c.contentLibrary == "" && c.contentLibraryID == "" {
+		return fmt.Errorf("vsphere plugin: remote.publishTo content-library requires ProviderConfig extra contentLibrary or contentLibraryID")
+	}
 	if c.endpoint == "" {
 		return fmt.Errorf("vsphere plugin: endpoint is required in ProviderConfig")
 	}
@@ -486,6 +527,16 @@ func newGovmomiClient(ctx context.Context, cfg config) (client, error) {
 	vimClient, err := vim25.NewClient(ctx, soapClient)
 	if err != nil {
 		return nil, fmt.Errorf("connect to vCenter: %w", err)
+	}
+	// ESXi hosts named in NFC upload URLs may be unknown to the cluster DNS.
+	dialer := &inventoryDialer{
+		base:      &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second},
+		dnsLookup: net.DefaultResolver.LookupHost,
+		inventory: func(ctx context.Context) (map[string]string, error) { return esxManagementAddresses(ctx, vimClient) },
+	}
+	soapTransport.DialContext = dialer.DialContext
+	if soapTransport.DialTLSContext != nil {
+		soapTransport.DialTLSContext = dialer.dialTLS(soapTransport.DialTLSContext, soapTransport.TLSClientConfig)
 	}
 	vc := &govmomi.Client{Client: vimClient, SessionManager: session.NewManager(vimClient)}
 	if err := vc.Login(ctx, u.User); err != nil {
@@ -992,6 +1043,28 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func intFromExtra(extra map[string]string, key string, defaultValue int) int {
+	value := strings.TrimSpace(extra[key])
+	if value == "" {
+		return defaultValue
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 {
+		return defaultValue
+	}
+	return parsed
+}
+
+// normalizeEndpoint accepts a bare host or host:port, as found in Secrets that
+// carry the vCenter address, and turns it into an https URL.
+func normalizeEndpoint(endpoint string) string {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" || strings.Contains(endpoint, "://") {
+		return endpoint
+	}
+	return "https://" + endpoint
 }
 
 func boolFromExtra(extra map[string]string, key string, defaultValue bool) bool {
