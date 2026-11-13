@@ -51,29 +51,39 @@ func scrubSpec(extra []types.BaseOptionValue) types.VirtualMachineConfigSpec {
 	return spec
 }
 
-// vappValueClearing keeps the vApp product and property definitions and the
-// OVF environment transport, but empties every property value and default
-// (the build user-data with the temporary root password lives there). Without
-// the definitions a platform that delivers cloud-init through the OVF
-// environment (for example vRA) cannot inject user-data into clones.
-func vappValueClearing(vapp *types.VmConfigInfo) *types.VmConfigSpec {
+// vappValueClearing keeps the vApp product, the property definitions and the
+// OVF environment transport, but drops every property value and default (the
+// build user-data with the temporary root password lives there). Without the
+// definitions a platform that delivers cloud-init through the OVF environment
+// (for example vRA) cannot inject user-data into clones.
+//
+// govmomi serialises VAppPropertyInfo.Value and DefaultValue with omitempty,
+// so an edit to "" is never sent and vCenter keeps the old value. The values
+// can only be cleared by removing each property and adding the definition
+// again without value and default. It returns the two specs to apply in
+// order: remove all properties, then add the definitions.
+func vappValueClearing(vapp *types.VmConfigInfo) []*types.VmConfigSpec {
 	if vapp == nil || len(vapp.Property) == 0 {
 		return nil
 	}
-	spec := &types.VmConfigSpec{OvfEnvironmentTransport: vapp.OvfEnvironmentTransport}
-	if len(spec.OvfEnvironmentTransport) == 0 {
-		spec.OvfEnvironmentTransport = []string{ovfTransportGuest}
+	remove := &types.VmConfigSpec{}
+	add := &types.VmConfigSpec{OvfEnvironmentTransport: vapp.OvfEnvironmentTransport}
+	if len(add.OvfEnvironmentTransport) == 0 {
+		add.OvfEnvironmentTransport = []string{ovfTransportGuest}
 	}
 	for _, p := range vapp.Property {
+		remove.Property = append(remove.Property, types.VAppPropertySpec{
+			ArrayUpdateSpec: types.ArrayUpdateSpec{Operation: types.ArrayUpdateOperationRemove, RemoveKey: p.Key},
+		})
 		info := p
 		info.Value = ""
 		info.DefaultValue = ""
-		spec.Property = append(spec.Property, types.VAppPropertySpec{
-			ArrayUpdateSpec: types.ArrayUpdateSpec{Operation: types.ArrayUpdateOperationEdit},
+		add.Property = append(add.Property, types.VAppPropertySpec{
+			ArrayUpdateSpec: types.ArrayUpdateSpec{Operation: types.ArrayUpdateOperationAdd},
 			Info:            &info,
 		})
 	}
-	return spec
+	return []*types.VmConfigSpec{remove, add}
 }
 
 // templateConfigFindings lists build data still present in a VM configuration:
@@ -125,17 +135,21 @@ func (c *govmomiClient) scrubBuildConfig(ctx context.Context, vm *object.Virtual
 			vapp = props.Config.VAppConfig.GetVmConfigInfo()
 		}
 	}
-	spec := scrubSpec(extra)
-	spec.VAppConfig = vappValueClearing(vapp)
-	if len(spec.ExtraConfig) == 0 && spec.VAppConfig == nil {
-		return nil
+	steps := []types.VirtualMachineConfigSpec{scrubSpec(extra)}
+	for _, v := range vappValueClearing(vapp) {
+		steps = append(steps, types.VirtualMachineConfigSpec{VAppConfig: v})
 	}
-	task, err := vm.Reconfigure(ctx, spec)
-	if err != nil {
-		return fmt.Errorf("remove build configuration from the build VM: %w", err)
-	}
-	if err := task.Wait(ctx); err != nil {
-		return fmt.Errorf("remove build configuration from the build VM: %w", err)
+	for _, spec := range steps {
+		if len(spec.ExtraConfig) == 0 && spec.VAppConfig == nil {
+			continue
+		}
+		task, err := vm.Reconfigure(ctx, spec)
+		if err != nil {
+			return fmt.Errorf("remove build configuration from the build VM: %w", err)
+		}
+		if err := task.Wait(ctx); err != nil {
+			return fmt.Errorf("remove build configuration from the build VM: %w", err)
+		}
 	}
 	return nil
 }
