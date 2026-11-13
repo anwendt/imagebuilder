@@ -186,7 +186,7 @@ func TestScrubBuildConfigWithSimulator(t *testing.T) {
 		if p.Config.VAppConfig != nil {
 			vapp = p.Config.VAppConfig.GetVmConfigInfo()
 		}
-		return templateConfigFindings(vapp, p.Config.ExtraConfig)
+		return templateConfigFindings(vapp, p.Config.ExtraConfig, true)
 	}
 	if len(read()) == 0 {
 		t.Fatal("seeded VM should carry build data")
@@ -196,5 +196,23 @@ func TestScrubBuildConfigWithSimulator(t *testing.T) {
 	}
 	if left := read(); len(left) != 0 {
 		t.Fatalf("build data left after scrub: %v", left)
+	}
+	// Regression: the definitions and the transport survive, values are empty.
+	var p mo.VirtualMachine
+	if err := vm.Properties(ctx, vm.Reference(), []string{"config.vAppConfig"}, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Config.VAppConfig == nil {
+		t.Fatal("vApp configuration must survive the scrub")
+	}
+	info := p.Config.VAppConfig.GetVmConfigInfo()
+	if len(info.Property) != 1 || info.Property[0].Id != "user-data" {
+		t.Fatalf("user-data definition lost: %+v", info.Property)
+	}
+	if info.Property[0].Value != "" || info.Property[0].DefaultValue != "" {
+		t.Fatalf("property value survived: %+v", info.Property[0])
+	}
+	if len(info.OvfEnvironmentTransport) == 0 {
+		t.Fatal("OVF environment transport lost")
 	}
 }

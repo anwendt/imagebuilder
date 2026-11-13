@@ -32,12 +32,16 @@ func isBuildGuestinfoKey(key string) bool {
 	return true
 }
 
-// scrubSpec removes the configuration the provider injected into the build VM:
-// the vApp (OVF environment) properties, which carry the build user-data with
-// the temporary root password, and guestinfo configuration keys. An empty
-// extraConfig value deletes the key.
+const (
+	userDataPropertyID = "user-data"
+	ovfTransportGuest  = "com.vmware.guestInfo"
+)
+
+// scrubSpec clears the guestinfo configuration keys the provider injected into
+// the build VM. An empty extraConfig value deletes the key. The vApp
+// properties are handled by vappValueClearing: their definitions stay.
 func scrubSpec(extra []types.BaseOptionValue) types.VirtualMachineConfigSpec {
-	spec := types.VirtualMachineConfigSpec{VAppConfigRemoved: types.NewBool(true)}
+	var spec types.VirtualMachineConfigSpec
 	for _, o := range extra {
 		ov := o.GetOptionValue()
 		if isBuildGuestinfoKey(ov.Key) {
@@ -47,13 +51,54 @@ func scrubSpec(extra []types.BaseOptionValue) types.VirtualMachineConfigSpec {
 	return spec
 }
 
-// templateConfigFindings lists build data still present in a VM configuration.
-func templateConfigFindings(vapp *types.VmConfigInfo, extra []types.BaseOptionValue) []string {
+// vappValueClearing keeps the vApp product and property definitions and the
+// OVF environment transport, but empties every property value and default
+// (the build user-data with the temporary root password lives there). Without
+// the definitions a platform that delivers cloud-init through the OVF
+// environment (for example vRA) cannot inject user-data into clones.
+func vappValueClearing(vapp *types.VmConfigInfo) *types.VmConfigSpec {
+	if vapp == nil || len(vapp.Property) == 0 {
+		return nil
+	}
+	spec := &types.VmConfigSpec{OvfEnvironmentTransport: vapp.OvfEnvironmentTransport}
+	if len(spec.OvfEnvironmentTransport) == 0 {
+		spec.OvfEnvironmentTransport = []string{ovfTransportGuest}
+	}
+	for _, p := range vapp.Property {
+		info := p
+		info.Value = ""
+		info.DefaultValue = ""
+		spec.Property = append(spec.Property, types.VAppPropertySpec{
+			ArrayUpdateSpec: types.ArrayUpdateSpec{Operation: types.ArrayUpdateOperationEdit},
+			Info:            &info,
+		})
+	}
+	return spec
+}
+
+// templateConfigFindings lists build data still present in a VM configuration:
+// non-empty vApp property values or defaults and data-carrying guestinfo keys.
+// Property definitions alone are not a finding. With requireUserData a missing
+// user-data property definition is a finding too, because clones could not
+// receive cloud-init through the OVF environment.
+func templateConfigFindings(vapp *types.VmConfigInfo, extra []types.BaseOptionValue, requireUserData bool) []string {
 	var out []string
+	hasUserData := false
 	if vapp != nil {
 		for _, p := range vapp.Property {
-			out = append(out, "vApp property "+p.Id)
+			if p.Id == userDataPropertyID {
+				hasUserData = true
+			}
+			if p.Value != "" {
+				out = append(out, "vApp property "+p.Id+" has a value")
+			}
+			if p.DefaultValue != "" {
+				out = append(out, "vApp property "+p.Id+" has a default value")
+			}
 		}
+	}
+	if requireUserData && !hasUserData {
+		out = append(out, "vApp property "+userDataPropertyID+" definition missing")
 	}
 	for _, o := range extra {
 		ov := o.GetOptionValue()
@@ -64,24 +109,9 @@ func templateConfigFindings(vapp *types.VmConfigInfo, extra []types.BaseOptionVa
 	return out
 }
 
-// vappPropertyRemovals returns the specs that delete every vApp property.
-func vappPropertyRemovals(vapp *types.VmConfigInfo) []types.VAppPropertySpec {
-	if vapp == nil {
-		return nil
-	}
-	out := make([]types.VAppPropertySpec, 0, len(vapp.Property))
-	for _, p := range vapp.Property {
-		out = append(out, types.VAppPropertySpec{
-			ArrayUpdateSpec: types.ArrayUpdateSpec{Operation: types.ArrayUpdateOperationRemove, RemoveKey: p.Key},
-			Info:            &types.VAppPropertyInfo{Key: p.Key},
-		})
-	}
-	return out
-}
-
-// scrubBuildConfig removes the injected build configuration from the powered
-// off build VM before it is published: first every vApp property and the
-// guestinfo keys explicitly, then the vApp configuration as a whole.
+// scrubBuildConfig clears the injected build configuration from the powered
+// off build VM before it is published: guestinfo keys are removed and vApp
+// property values and defaults are emptied, the definitions stay.
 func (c *govmomiClient) scrubBuildConfig(ctx context.Context, vm *object.VirtualMachine) error {
 	var props mo.VirtualMachine
 	if err := vm.Properties(ctx, vm.Reference(), []string{"config.extraConfig", "config.vAppConfig"}, &props); err != nil {
@@ -95,34 +125,25 @@ func (c *govmomiClient) scrubBuildConfig(ctx context.Context, vm *object.Virtual
 			vapp = props.Config.VAppConfig.GetVmConfigInfo()
 		}
 	}
-	first := scrubSpec(extra)
-	first.VAppConfigRemoved = nil
-	if removals := vappPropertyRemovals(vapp); len(removals) > 0 {
-		first.VAppConfig = &types.VmConfigSpec{Property: removals}
+	spec := scrubSpec(extra)
+	spec.VAppConfig = vappValueClearing(vapp)
+	if len(spec.ExtraConfig) == 0 && spec.VAppConfig == nil {
+		return nil
 	}
-	steps := []types.VirtualMachineConfigSpec{first}
-	if vapp != nil {
-		steps = append(steps, types.VirtualMachineConfigSpec{VAppConfigRemoved: types.NewBool(true)})
+	task, err := vm.Reconfigure(ctx, spec)
+	if err != nil {
+		return fmt.Errorf("remove build configuration from the build VM: %w", err)
 	}
-	for _, spec := range steps {
-		if len(spec.ExtraConfig) == 0 && spec.VAppConfig == nil && spec.VAppConfigRemoved == nil {
-			continue
-		}
-		task, err := vm.Reconfigure(ctx, spec)
-		if err != nil {
-			return fmt.Errorf("remove build configuration from the build VM: %w", err)
-		}
-		if err := task.Wait(ctx); err != nil {
-			return fmt.Errorf("remove build configuration from the build VM: %w", err)
-		}
+	if err := task.Wait(ctx); err != nil {
+		return fmt.Errorf("remove build configuration from the build VM: %w", err)
 	}
 	return nil
 }
 
 // verifyPublishedTemplate inspects the configuration of the template VM that
 // the Content Library created and fails when it still carries build data. It
-// proves the template configuration (no vApp properties, no guestinfo
-// user-data/metadata); it does not boot a clone.
+// proves the template configuration (empty vApp property values, user-data
+// definition present, no guestinfo user-data/metadata); it does not boot a clone.
 func (c *govmomiClient) verifyPublishedTemplate(ctx context.Context, itemName string) error {
 	finder, err := c.vmFinder(ctx)
 	if err != nil {
@@ -148,7 +169,7 @@ func (c *govmomiClient) verifyPublishedTemplate(ctx context.Context, itemName st
 	if props.Config.VAppConfig != nil {
 		vapp = props.Config.VAppConfig.GetVmConfigInfo()
 	}
-	if findings := templateConfigFindings(vapp, props.Config.ExtraConfig); len(findings) > 0 {
+	if findings := templateConfigFindings(vapp, props.Config.ExtraConfig, c.cfg.requireUserDataProperty); len(findings) > 0 {
 		return fmt.Errorf("%w: %s", errBuildDataInTemplate, strings.Join(findings, ", "))
 	}
 	return nil
