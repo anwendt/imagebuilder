@@ -90,17 +90,23 @@ accepted by the vSphere remote build:
 
 - **Build data in the template:** the build user-data reaches the guest as an OVF
   vApp property (and a root password is derived for it). Before publishing, the
-  provider powers the VM off and removes every vApp property, the vApp
-  configuration and all guestinfo configuration keys (VMware Tools maintained
-  `guestinfo.vmtools.*` keys stay). After publishing it reads the configuration
-  of the template VM the Content Library created and fails the build with
-  `BuildDataInTemplate` if any vApp property or guestinfo configuration key is
-  still there. The evidence check `vsphere-template-config-clean` states exactly
-  that: the template configuration carries no vApp properties and no guestinfo
-  configuration. It does not boot a clone, and
-  `vsphere-build-credential-revoked` only describes the build VM. Without this
-  scrub every clone's cloud-init would read the build user-data again on first
-  boot and set the build password on root (found in a live clone test).
+  provider powers the VM off, empties the value and default of every vApp
+  property and removes all guestinfo configuration keys that carry data
+  (VMware Tools maintained `guestinfo.vmtools.*` keys stay). The vApp
+  product, the property **definitions** (`user-data`, `hostname`,
+  `instance-id`, `public-keys`, `seedfrom`, `password`) and the OVF environment
+  transport stay: a platform such as VMware Aria Automation delivers the
+  machine's cloud-init through the OVF `user-data` property of the clone, and
+  without the definitions clones boot without cloud-init (v0.5.9 removed them
+  and broke this). After publishing it reads the configuration of the template
+  VM the Content Library created and fails the build with `BuildDataInTemplate`
+  if any property value or default is non-empty, a data-carrying guestinfo key
+  exists, or (unless `requireUserDataProperty: "false"`) the `user-data`
+  property definition is missing. The evidence check
+  `vsphere-template-config-clean` states exactly that. It does not boot a clone,
+  and `vsphere-build-credential-revoked` only describes the build VM. Without
+  emptied values every clone's cloud-init would read the build user-data again
+  on first boot and set the build password on root (found in a live clone test).
 
 ### 4. Operational details
 
