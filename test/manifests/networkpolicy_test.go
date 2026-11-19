@@ -210,6 +210,34 @@ func TestHelmChartRendersImageSignaturePolicy(t *testing.T) {
 	}
 }
 
+func TestHelmChartRendersCELAuditImageSignaturePolicies(t *testing.T) {
+	templatePath := filepath.Join(repoRoot, "charts", "imagebuilder", "templates", "image-signature-policy-cel.yaml")
+	template, err := os.ReadFile(templatePath)
+	if err != nil {
+		t.Fatalf("read Helm CEL image signature policy template: %v", err)
+	}
+	templateText := string(template)
+	for _, want := range []string{
+		".Values.imageSignaturePolicy.celAudit.enabled",
+		"kind: ValidatingPolicy",
+		"kind: ImageValidatingPolicy",
+		"validationActions: [Audit]",
+		"failurePolicy: Ignore",
+		"mutateDigest: false",
+		"required: true",
+		"verifyDigest: true",
+		"verifyImageSignatures(",
+		`imagebuilder.io/provider-pod: "true"`,
+	} {
+		if !strings.Contains(templateText, want) {
+			t.Fatalf("CEL image signature policy template missing %q", want)
+		}
+	}
+	if strings.Contains(templateText, "Deny") || strings.Contains(templateText, "kind: ClusterPolicy") {
+		t.Fatalf("CEL image signature policy template must stay audit-only and must not replace the legacy ClusterPolicy")
+	}
+}
+
 func TestHelmChartImagesAreDigestConfigurable(t *testing.T) {
 	valuesPath := filepath.Join(repoRoot, "charts", "imagebuilder", "values.yaml")
 	values, err := os.ReadFile(valuesPath)

@@ -226,6 +226,16 @@
           },
           "required": ["issuer", "subject", "rekorUrl"]
         }
+      ,
+        "celAudit": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Renders the CEL counterparts (policies.kyverno.io ValidatingPolicy and ImageValidatingPolicy) in Audit mode next to the legacy ClusterPolicy (Kyverno 1.20 migration stage 1)."
+            }
+          }
+        }
       },
       "required": ["enabled", "imageReferences", "keyless"]
     },
