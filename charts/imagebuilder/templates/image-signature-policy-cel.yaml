@@ -1,0 +1,91 @@
+{{- /*
+  CEL counterparts (policies.kyverno.io) of the ClusterPolicy in
+  image-signature-policy.yaml, needed before Kyverno 1.20 stops running
+  kyverno.io/v1 ClusterPolicies. Stage 1 renders them in Audit only next to the
+  enforcing legacy policy; they change nothing (no digest mutation).
+*/}}
+{{- if and .Values.imageSignaturePolicy.enabled .Values.imageSignaturePolicy.celAudit.enabled }}
+{{- $subjectRegExp := printf "^%s$" (.Values.imageSignaturePolicy.keyless.subject | regexQuoteMeta | replace "\\*" ".*") }}
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: {{ include "imagebuilder.fullname" . }}-require-signed-digests-cel
+  labels:
+    {{- include "imagebuilder.labels" . | nindent 4 }}
+  annotations:
+    platform.tsigitops.t-systems.net/migrated-from: kyverno.io/ClusterPolicy/{{ include "imagebuilder.fullname" . }}-require-signed-digests (rule require-provider-and-job-image-digests)
+spec:
+  validationActions: [Audit]
+  failurePolicy: Ignore
+  evaluation:
+    admission:
+      enabled: true
+    background:
+      enabled: true
+  matchConstraints:
+    objectSelector:
+      matchLabels:
+        app.kubernetes.io/managed-by: imagebuilder
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        resources: [pods]
+        operations: [CREATE]
+  validations:
+    - expression: >-
+        object.spec.containers.all(c, c.image.matches('^.*@sha256:.*$')) &&
+        object.spec.?initContainers.orValue([]).all(c, c.image.matches('^.*@sha256:.*$'))
+      message: imagebuilder pods must use digest-pinned images.
+      reason: Forbidden
+---
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: {{ include "imagebuilder.fullname" . }}-verify-images-cel
+  labels:
+    {{- include "imagebuilder.labels" . | nindent 4 }}
+  annotations:
+    platform.tsigitops.t-systems.net/migrated-from: kyverno.io/ClusterPolicy/{{ include "imagebuilder.fullname" . }}-require-signed-digests (rule verify-imagebuilder-images)
+spec:
+  validationActions: [Audit]
+  failurePolicy: Ignore
+  evaluation:
+    admission:
+      enabled: true
+    background:
+      enabled: true
+  # The legacy policy keeps pinning the digest; the audit policy only reports.
+  validationConfigurations:
+    mutateDigest: false
+    verifyDigest: true
+    required: true
+  matchConstraints:
+    objectSelector:
+      matchLabels:
+        app.kubernetes.io/managed-by: imagebuilder
+        imagebuilder.io/provider-pod: "true"
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        resources: [pods]
+        operations: [CREATE]
+  matchImageReferences:
+    {{- range .Values.imageSignaturePolicy.imageReferences }}
+    - glob: {{ . | quote }}
+    {{- end }}
+  attestors:
+    - name: github
+      cosign:
+        keyless:
+          identities:
+            - issuer: {{ .Values.imageSignaturePolicy.keyless.issuer | quote }}
+              subjectRegExp: {{ $subjectRegExp | quote }}
+        ctlog:
+          url: {{ .Values.imageSignaturePolicy.keyless.rekorUrl | quote }}
+  validations:
+    - expression: >-
+        images.containers.map(i, verifyImageSignatures(i, [attestors.github])).all(e, e > 0) &&
+        images.initContainers.map(i, verifyImageSignatures(i, [attestors.github])).all(e, e > 0)
+      message: imagebuilder provider images must carry a keyless GitHub Actions signature.
+      reason: Forbidden
+{{- end }}

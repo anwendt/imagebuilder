@@ -114,6 +114,11 @@ imageSignaturePolicy:
     issuer: https://token.actions.githubusercontent.com
     subject: https://github.com/*
     rekorUrl: https://rekor.sigstore.dev
+  # Kyverno 1.20 migration stage 1: renders the CEL counterparts
+  # (ValidatingPolicy + ImageValidatingPolicy, Audit only) next to the legacy
+  # ClusterPolicy. Needs Kyverno >= 1.16 (policies.kyverno.io/v1).
+  celAudit:
+    enabled: false
 
 maxConcurrentBuilds: 3
 logLevel: info
