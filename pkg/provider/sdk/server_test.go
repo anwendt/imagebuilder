@@ -150,10 +150,20 @@ func TestServer_ImplementsProviderContract(t *testing.T) {
 			VulnerabilityScanner: "trivy",
 			FailOnSeverity:       []string{"HIGH", "CRITICAL"},
 			RegistryRepository:   "oci://registry.example.com/evidence",
+			Publisher:            "controller",
+			Subject:              &providerv1.RemoteEvidenceSubject{Name: "ubuntu-2604-base", Version: "1.2.0", Platform: "vsphere-fci-c042"},
 		},
+		ImageVersion:               "1.2.0",
+		EvidenceBundleAcknowledged: true,
 	})
 	if err != nil {
 		t.Fatalf("ReconcileRemoteBuild returned error: %v", err)
+	}
+	if in := provider.remoteInput; in.Evidence.Publisher != "controller" || in.Evidence.Subject == nil || in.Evidence.Subject.Platform != "vsphere-fci-c042" || in.ImageVersion != "1.2.0" || !in.EvidenceBundleAcknowledged {
+		t.Fatalf("ADR-011 input fields not mapped: %#v", in)
+	}
+	if remote.GetEvidenceBundle() == nil || string(remote.GetEvidenceBundle().GetContent()) != "bundle" || remote.GetEvidenceBundle().GetSha256() != strings.Repeat("b", 64) {
+		t.Fatalf("evidence bundle not returned: %#v", remote.GetEvidenceBundle())
 	}
 	if remote.Hygiene == nil || remote.Hygiene.Status != "passed" {
 		t.Fatalf("remote hygiene = %#v, want passed", remote.Hygiene)
@@ -478,6 +488,7 @@ func (p *fakeProvider) ReconcileRemoteBuild(_ context.Context, input sdk.RemoteB
 			ProvenanceRef:          "oci://registry.example.com/evidence/provenance@sha256:" + strings.Repeat("a", 64),
 			SignatureRef:           "oci://registry.example.com/evidence/signature@sha256:" + strings.Repeat("a", 64),
 		},
+		EvidenceBundle: &sdk.RemoteEvidenceBundle{Content: []byte("bundle"), SHA256: strings.Repeat("b", 64), MediaType: "application/x-test"},
 	}, nil
 }
 

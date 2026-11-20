@@ -63,7 +63,46 @@ spec:
             - --metrics-bind-address={{ .Values.metrics.bindAddress }}
             - --health-probe-bind-address=:8081
             - --log-level={{ .Values.logLevel }}
+            {{- with .Values.evidencePublisher }}
+            {{- if .enabled }}
+            - --evidence-publisher-enabled=true
+            - --evidence-namespace={{ include "imagebuilder.namespace" $ }}
+            - --evidence-oras-image={{ required "evidencePublisher.orasImage is required" .orasImage }}
+            - --evidence-cosign-image={{ required "evidencePublisher.cosignImage is required" .cosignImage }}
+            - --evidence-registry-secret={{ required "evidencePublisher.registryCredentialsSecret is required when evidencePublisher.enabled" .registryCredentialsSecret }}
+            - --evidence-cosign-secret={{ required "evidencePublisher.cosignKeySecret.name is required when evidencePublisher.enabled" .cosignKeySecret.name }}
+            - --evidence-cosign-key-key={{ .cosignKeySecret.keyKey | default "cosign.key" }}
+            - --evidence-cosign-password-key={{ .cosignKeySecret.passwordKey | default "cosign.password" }}
+            - --evidence-job-timeout={{ .jobTimeout | default "30m" }}
+            {{- with .resources }}
+            {{- with .requests }}
+            {{- with .cpu }}
+            - --evidence-cpu-request={{ . }}
+            {{- end }}
+            {{- with .memory }}
+            - --evidence-memory-request={{ . }}
+            {{- end }}
+            {{- end }}
+            {{- with .limits }}
+            {{- with .cpu }}
+            - --evidence-cpu-limit={{ . }}
+            {{- end }}
+            {{- with .memory }}
+            - --evidence-memory-limit={{ . }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- with .httpsProxy }}
+            - --evidence-https-proxy={{ . }}
+            {{- end }}
+            {{- with .noProxy }}
+            - --evidence-no-proxy={{ . }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
           env:
+            - name: IMAGEBUILDER_VERSION
+              value: {{ .Chart.AppVersion | quote }}
             - name: BUILDER_IMAGE
               value: {{ include "imagebuilder.imageRef" .Values.builderImage | quote }}
             - name: UPLOADER_IMAGE

@@ -117,6 +117,7 @@ Optional `extra` keys:
 | `templateFolder` | none | **Required with `remote.publishTo`.** Absolute inventory path of the folder that receives the published template VM. It must be outside the build folder (which holds `imagebuilder-*` build VMs only). Created below an existing parent when missing. |
 | `revokeBuildCredential` | `true` | After the last provisioner the provider locks the temporary build login (`passwd -l` through a delayed systemd timer), then verifies that Guest Operations reject it, and fails the build with `BuildCredentialNotRevoked` otherwise. Only for cloud-image builds that use the derived build login; credentials from the Secret are never locked. Evidence check: `vsphere-build-credential-revoked`. |
 | `remote.publishTo` | none | `content-library` publishes the finished remote build as VM template item of `contentLibrary`/`contentLibraryID` and destroys the build VM. |
+| `remote.verifyBoot` | `false` | `"true"` boots a throwaway VM from the published template before the build is reported Done (see [Verify Boot](#verify-boot-adr-011)). Requires `remote.publishTo: content-library`; anything else fails validation. Evidence check: `verify-boot-passed`. |
 | `httpProxy` | empty | HTTP proxy URL for provider API traffic. |
 | `httpsProxy` | empty | HTTPS proxy URL for provider API traffic. |
 | `noProxy` | empty | Comma-separated proxy bypass list, for example vCenter and cluster-local endpoints. |
@@ -143,6 +144,14 @@ The service account needs permissions to:
   and destroy failed temporary clones for remote builds with provisioners.
 - Create and update Content Library items when `contentLibrary` or
   `contentLibraryID` is configured.
+- Evidence outbox retrieval (ADR-011): Guest Operations program execution and
+  file transfer from the guest (`VirtualMachine.GuestOperations.Execute`,
+  `VirtualMachine.GuestOperations.Query`, `VirtualMachine.GuestOperations.Modify`).
+- `remote.verifyBoot`: deploy a VM from a Content Library VM template
+  (`ContentLibrary.DeployLibraryItem`, `VirtualMachine.Provisioning.DeployTemplate`,
+  `VirtualMachine.Inventory.CreateFromExisting`), edit vApp properties
+  (`VApp.ApplicationConfig`), power on/off, delete the verify VM and delete the
+  library item of a build whose verify boot failed (`ContentLibrary.DeleteLibraryItem`).
 
 ## Validation
 
@@ -293,6 +302,73 @@ The provider only creates, changes and destroys VMs that are named
 vCenter address in the key `server`.
 
 Example: `examples/argocd/vsphere-ubuntu2604-hardened`.
+
+## Evidence Outbox Retrieval (ADR-011)
+
+vSphere supports the `evidence` provisioner only with
+`spec.evidence.publisher: controller` and Linux guests; with the default
+publisher (`provider`, ADR-008) the build fails validation because the guest has
+no registry identity. The provider:
+
+1. runs the evidence provisioner like a `shell` provisioner through Guest
+   Operations. The script gets `IMAGEBUILDER_EVIDENCE_OUTBOX`,
+   `IMAGEBUILDER_BUILD_ID`, `IMAGEBUILDER_IMAGE_NAME`, `IMAGEBUILDER_SOURCE_REF`,
+   `IMAGEBUILDER_EVIDENCE_SUBJECT_{NAME,VERSION,PLATFORM}`,
+   `IMAGEBUILDER_EVIDENCE_SBOM_FORMAT`, `IMAGEBUILDER_EVIDENCE_VULNERABILITY_SCANNER`
+   and `IMAGEBUILDER_EVIDENCE_FAIL_ON_SEVERITY` plus its literal `env`. No
+   credentials are passed to the guest.
+2. right after it succeeds, packs `/var/lib/imagebuilder/evidence` with
+   `tar czf` into `/var/tmp/imagebuilder-evidence-<build>.tar.gz`, downloads the
+   file over the Guest Operations file transfer URL (ESXi host URLs use the same
+   host resolution and proxy handling as NFC uploads), rejects bundles above
+   900 KiB, validates it (`sbom.cdx.json` CycloneDX and `trivy-report.json`
+   Trivy JSON required, `collector.json` optional, nothing else) and deletes the
+   outbox and the packed file in the guest. Every failure fails the build
+   (`EvidenceCollectionFailed`, `EvidenceBundleTooLarge`, `EvidenceBundleInvalid`).
+3. keeps the bundle on the provider volume (`<downloadDir>/evidence/<build>.tar.gz`,
+   mode 0600) and records its sha256 in the operation reference
+   (`evidenceSha256`). Provisioners after the evidence provisioner still run.
+4. returns the bundle with every Done response until the core acknowledges it
+   (`evidence_bundle_acknowledged`), then deletes the file. `CleanupRemoteBuild`
+   deletes it as well. A build that reaches publication without a retrieved
+   bundle fails with `EvidenceBundleMissing`; a bundle that disappeared from the
+   provider volume before the core stored it (for example an `emptyDir` after a
+   provider restart) fails with `EvidenceBundleLost` and needs a rebuild.
+
+The core controller publishes and signs the evidence; see
+[ADR-011](../adr/ADR-011-controller-published-vm-image-evidence.md).
+
+## Verify Boot (ADR-011)
+
+With `remote.verifyBoot: "true"` the provider does not report Done right after
+publishing. The operation reference gets `verifyBoot=pending` and the next
+reconcile runs the verification as its own step:
+
+1. deploys the published Content Library VM template into the build folder as
+   `imagebuilder-verify-<image>-<build>` (the build VM guard applies; a leftover
+   of the same name is removed first),
+2. sets **only** the value of the OVF vApp property `user-data` (base64
+   cloud-config), the way VMware Aria Automation delivers cloud-init. A template
+   without the `user-data` property definition fails the verification,
+3. the cloud-config sets the hostname `ib-verify-<8 characters of the build ID>`,
+   writes a marker file with a random nonce and sets a temporary root password
+   derived from the provider secret and the build ID (as for the build VM; SSH
+   password login stays disabled),
+4. powers the VM on, waits up to 15 minutes until Guest Operations accept that
+   login and checks: `cloud-init status` reports `status: done`, the hostname,
+   the marker content and an active `open-vm-tools` (or `vmtoolsd`) service,
+5. always destroys the verify VM.
+
+On success the operation reference records `verifyBoot=passed` and the hygiene
+checks contain `verify-boot-passed`. On failure the build fails with
+`VerifyBootFailed: <reason>` and the published library item is deleted if its
+description carries this build's marker; `CleanupRemoteBuild` also deletes such
+an item while `verifyBoot=pending`. Cost: one additional VM with the template's
+size for a few minutes; no other resources are created.
+
+Operation reference fields added for ADR-011: `evidenceSha256`, `verifyBoot`
+(`pending`/`passed`), `credentialRevoked`, `templateVerified` (the last two keep
+the hygiene checks of the publish step for later Done responses).
 
 ## Limitations
 

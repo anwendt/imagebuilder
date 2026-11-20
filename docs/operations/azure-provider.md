@@ -67,11 +67,12 @@ The `ProviderConfig` uses `region` as the Azure image location and the following
 | `diskSizeGiB` | no | Optional OS disk size override. |
 | `remote.vmSize` | no | Temporary VM size for remote builds with provisioners; defaults to `Standard_B2s`. |
 | `remote.networkInterfaceId` | only for remote provisioners or SSH guest access | Existing NIC resource ID attached to the temporary build VM. |
-| `remote.managedIdentityId` | for required evidence | User-assigned managed identity attached to the temporary build VM for registry and KMS access. |
-| `remote.evidence.cosignKeyRef` | for required evidence | Non-secret Cosign KMS URI used to sign VM-image provenance, for example `azurekms://vault/key`. |
+| `remote.managedIdentityId` | for required evidence with `publisher: provider` | User-assigned managed identity attached to the temporary build VM for registry and KMS access. Not used with `publisher: controller`. |
+| `remote.evidence.cosignKeyRef` | for required evidence with `publisher: provider` | Non-secret Cosign KMS URI used to sign VM-image provenance, for example `azurekms://vault/key`. Not used with `publisher: controller`. |
+| `remote.verifyBoot` | no | `"true"` boots a throwaway VM from the published image after registration and smoke-tests it (ADR-011). Requires `remote.networkInterfaceId`, a Linux image and `osState: generalized`. |
 | `galleryName` | no | Compute Gallery name. |
 | `galleryImageName` | no | Gallery image definition name. |
-| `galleryVersion` | no | Gallery version; defaults to a timestamp version if omitted. |
+| `galleryVersion` | no | Gallery version. When empty, the provider uses the logical image version from the VMImage (`spec.evidence.subject.version`, else the annotation `imagebuilder.io/image-version`; it must be `Major.Minor.Patch`), and only without either falls back to a timestamp version. |
 | `galleryTargetRegions` | no | Comma-separated replication regions. |
 | `pageUploadConcurrency` | no | Parallel Azure Page Blob range uploads; defaults to `4`. |
 | `pageUploadChunkMiB` | no | Upload chunk size in MiB; defaults to `4` and must be 512-byte aligned. |
@@ -83,7 +84,7 @@ The `ProviderConfig` uses `region` as the Azure image location and the following
 | `armAudience` | no | ARM token audience override for private clouds. |
 | `authorityHost` | no | Entra authority host override for private clouds. |
 | `httpProxy` | no | HTTP proxy URL for provider API traffic. |
-| `httpsProxy` | no | HTTPS proxy URL for provider API traffic. |
+| `httpsProxy` | no | HTTPS proxy URL for provider API traffic. With `publisher: controller` the guest also retries the evidence upload through it when the direct upload fails. |
 | `noProxy` | no | Comma-separated proxy bypass list, for example cluster-local names and metadata endpoints. |
 
 Example proxy values in `spec.extra`:
@@ -114,6 +115,11 @@ are handed to the Azure provider.
 The identity needs, at minimum:
 
 - Blob container create/read/write/delete on the staging storage account.
+- With `publisher: controller` and no `storageAccountKey` (Workload or Managed
+  Identity): `Storage Blob Delegator` on the staging storage account (to sign
+  the user delegation SAS, action
+  `Microsoft.Storage/storageAccounts/blobServices/generateUserDelegationKey/action`,
+  included in the starter role) in addition to `Storage Blob Data Contributor`.
 - `Microsoft.Compute/images/*` on the target resource group.
 - For remote builds with provisioners, `Microsoft.Compute/disks/*` and
   `Microsoft.Compute/virtualMachines/*` on the target resource group.
@@ -150,8 +156,8 @@ Supported remote provisioners:
 
 | OS family | Provisioners |
 | --- | --- |
-| Linux | `shell`, `file`, final `evidence` |
-| Windows | `powershell`, `file`, final `evidence` |
+| Linux | `shell`, `file`, `evidence` (final for `publisher: provider`; any position for `publisher: controller`) |
+| Windows | `powershell`, `file`, final `evidence` (`publisher: provider` only) |
 
 Remote provisioner mode and explicit `spec.build.guestAccess.protocol: ssh`
 require `extra.remote.networkInterfaceId`. The NIC must already exist, be
@@ -172,6 +178,62 @@ Required evidence additionally needs:
 The provider principal needs permission to assign the configured user-assigned
 identity to the temporary VM. The build identity itself receives only the data
 plane permissions needed for the evidence repository and signing key.
+
+## Controller-Published Evidence (ADR-011)
+
+With `spec.evidence.publisher: controller` the guest only collects evidence;
+it needs no registry access, managed identity or signing key. The evidence
+provisioner script writes `/var/lib/imagebuilder/evidence/sbom.cdx.json`,
+`trivy-report.json` and optionally `collector.json` (see the user guide for the
+outbox contract). Provisioners after the evidence provisioner are allowed, for
+example a `waagent -deprovision` scheduled through `systemd-run` that must run
+last. Linux only.
+
+Right after the evidence provisioner succeeds the provider:
+
+1. deletes a stale blob and creates a write-only (create + write), HTTPS-only
+   SAS valid for 15 minutes for exactly one blob
+   `<blobPrefix>/evidence/<buildID>.tar.gz` in the staging container. With
+   `storageAccountKey` it is a service SAS, otherwise a user delegation SAS;
+2. runs one Run Command that checks both required files, streams
+   `tar czf - -C /var/lib/imagebuilder evidence` with `curl --fail -X PUT
+   -H 'x-ms-blob-type: BlockBlob'` to the SAS URL (first without any proxy,
+   then through `extra.httpsProxy` when set), deletes the outbox and proves it
+   is gone;
+3. checks the blob size (more than 900 KiB fails the build), downloads and
+   validates the bundle (both files present, valid JSON) and records its
+   sha256 and blob name in the operation reference.
+
+The SAS is never logged: it only appears inside the Run Command script, and
+errors or command output are redacted before they are returned. Anyone allowed
+to read Run Command instance views of the build VM could still see it during
+its 15 minute lifetime; it only allows writing that one blob.
+
+The blob is the provider-side persisted copy. Every Done response returns the
+bundle until the core acknowledges it (then the blob is deleted) or the build is
+cleaned up (`CleanupRemoteBuild` deletes it). A Done replay whose blob is gone
+fails with `EvidenceBundleLost`; a build that finishes without a collected
+outbox fails with `EvidenceBundleMissing`.
+
+## Verify Boot
+
+`extra.remote.verifyBoot: "true"` adds a smoke test after registration and
+before the build reports Done:
+
+- a VM `ib-<buildID>-verify` is created from the published image (the gallery
+  image version, else the managed image) with the same `remote.vmSize` and the
+  configured `remote.networkInterfaceId` (free again because the build VM was
+  deleted), key-only login and `customData` cloud-config that sets the hostname
+  and writes a marker file with a random nonce;
+- one Run Command checks: `cloud-init status --wait` ends in `status: done`,
+  the hostname from the user-data is set (the computer name is the same value),
+  the marker file holds the nonce and `walinuxagent` is active;
+- the verify VM and its OS disk are deleted immediately (the NIC stays).
+
+Success adds the hygiene check `verify-boot-passed`. A failed check fails the
+build with `VerifyBootFailed: <reason>` and deletes the gallery image version
+and managed image this build created (images that existed before the build are
+never deleted). Costs: one extra VM of the build size for a few minutes.
 
 ## Live E2E
 

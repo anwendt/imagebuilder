@@ -330,6 +330,13 @@ func (s *Server) ReconcileRemoteBuild(ctx context.Context, req *providerv1.Remot
 			SignatureRef:           result.Evidence.SignatureRef,
 		}
 	}
+	if result.EvidenceBundle != nil {
+		resp.EvidenceBundle = &providerv1.RemoteEvidenceBundle{
+			Content:   append([]byte(nil), result.EvidenceBundle.Content...),
+			Sha256:    result.EvidenceBundle.SHA256,
+			MediaType: result.EvidenceBundle.MediaType,
+		}
+	}
 	for _, image := range result.Images {
 		resp.Images = append(resp.Images, &providerv1.RemoteImageRef{
 			Provider:           image.Provider,
@@ -376,6 +383,9 @@ func remoteBuildInputFromProto(req *providerv1.RemoteBuildRequest) RemoteBuildIn
 		Format:             req.GetFormat(),
 		Tags:               cloneStringMap(req.GetTags()),
 		TimeoutSeconds:     req.GetTimeoutSeconds(),
+		ImageVersion:       req.GetImageVersion(),
+
+		EvidenceBundleAcknowledged: req.GetEvidenceBundleAcknowledged(),
 	}
 	if evidence := req.GetEvidence(); evidence != nil {
 		out.Evidence = &RemoteEvidencePolicy{
@@ -384,6 +394,14 @@ func remoteBuildInputFromProto(req *providerv1.RemoteBuildRequest) RemoteBuildIn
 			VulnerabilityScanner: evidence.GetVulnerabilityScanner(),
 			FailOnSeverity:       append([]string(nil), evidence.GetFailOnSeverity()...),
 			RegistryRepository:   evidence.GetRegistryRepository(),
+			Publisher:            evidence.GetPublisher(),
+		}
+		if subject := evidence.GetSubject(); subject != nil {
+			out.Evidence.Subject = &RemoteEvidenceSubject{
+				Name:     subject.GetName(),
+				Version:  subject.GetVersion(),
+				Platform: subject.GetPlatform(),
+			}
 		}
 	}
 	for _, provisioner := range req.GetProvisioners() {

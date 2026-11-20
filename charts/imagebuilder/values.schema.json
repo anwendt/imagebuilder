@@ -2,6 +2,30 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "type": "object",
   "properties": {
+    "evidencePublisher": {
+      "type": "object",
+      "description": "ADR-011 controller evidence publisher (spec.evidence.publisher=controller).",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "orasImage": {"type": "string", "minLength": 1},
+        "cosignImage": {"type": "string", "minLength": 1},
+        "registryCredentialsSecret": {"type": "string", "description": "kubernetes.io/dockerconfigjson Secret in the operator namespace with push credentials."},
+        "cosignKeySecret": {
+          "type": "object",
+          "properties": {
+            "name": {"type": "string"},
+            "keyKey": {"type": "string", "minLength": 1},
+            "passwordKey": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": false
+        },
+        "httpsProxy": {"type": "string"},
+        "noProxy": {"type": "string"},
+        "jobTimeout": {"type": "string", "pattern": "^[0-9]+(s|m|h)$"},
+        "resources": {"type": "object"}
+      },
+      "additionalProperties": false
+    },
     "operator": {
       "type": "object",
       "properties": {

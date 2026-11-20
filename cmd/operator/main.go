@@ -104,7 +104,13 @@ func main() {
 	flag.StringVar(&logLevel, "log-level", "info", "Log level: debug, info, warn, error")
 	flag.StringVar(&watchNamespace, "watch-namespace", os.Getenv("POD_NAMESPACE"), "Namespace watched in namespace-scoped mode")
 	flag.BoolVar(&namespaceScopedMode, "namespace-scoped-mode", false, "Restrict namespaced cache and reconciliation to one namespace")
+	evidenceOptions := registerEvidenceFlags(flag.CommandLine)
 	flag.Parse()
+	evidenceConfig, err := evidenceOptions.config()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid evidence publisher flags: %v\n", err)
+		os.Exit(2)
+	}
 	if namespaceScopedMode && strings.TrimSpace(watchNamespace) == "" {
 		fmt.Fprintln(os.Stderr, "--watch-namespace is required when --namespace-scoped-mode=true")
 		os.Exit(2)
@@ -188,6 +194,7 @@ func main() {
 		MaxConcurrentBuilds: maxConcurrentBuilds,
 		SchedulerNamespace:  schedulerNamespace,
 		ProviderNamespace:   providerNamespace,
+		Evidence:            evidenceConfig,
 	}).SetupWithManager(mgr); err != nil {
 		slog.Error("unable to create VMImage controller", slog.Any("error", err))
 		os.Exit(1)

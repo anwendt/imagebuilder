@@ -23,7 +23,8 @@
     "Microsoft.Compute/galleries/images/versions/delete",
     "Microsoft.Storage/storageAccounts/blobServices/containers/read",
     "Microsoft.Storage/storageAccounts/blobServices/containers/write",
-    "Microsoft.Storage/storageAccounts/blobServices/containers/delete"
+    "Microsoft.Storage/storageAccounts/blobServices/containers/delete",
+    "Microsoft.Storage/storageAccounts/blobServices/generateUserDelegationKey/action"
   ],
   "DataActions": [
     "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read",

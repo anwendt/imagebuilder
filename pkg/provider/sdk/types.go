@@ -136,6 +136,11 @@ type RemoteBuildInput struct {
 	GuestAccess        *RemoteGuestAccess
 	Evidence           *RemoteEvidencePolicy
 	TimeoutSeconds     int64
+	// ImageVersion is the logical image version resolved by the core.
+	ImageVersion string
+	// EvidenceBundleAcknowledged is true once the core stored the evidence
+	// bundle; the provider may delete its persisted copy (ADR-011).
+	EvidenceBundleAcknowledged bool
 }
 
 type RemoteEvidencePolicy struct {
@@ -144,6 +149,23 @@ type RemoteEvidencePolicy struct {
 	VulnerabilityScanner string
 	FailOnSeverity       []string
 	RegistryRepository   string
+	// Publisher is "provider" (ADR-008, also when empty) or "controller" (ADR-011).
+	Publisher string
+	Subject   *RemoteEvidenceSubject
+}
+
+type RemoteEvidenceSubject struct {
+	Name     string
+	Version  string
+	Platform string
+}
+
+// RemoteEvidenceBundle is the gzip-compressed tar of the guest evidence outbox
+// (ADR-011). Content must not exceed 900 KiB.
+type RemoteEvidenceBundle struct {
+	Content   []byte
+	SHA256    string
+	MediaType string
 }
 
 type MarketplaceRef struct {
@@ -210,6 +232,9 @@ type RemoteBuildResult struct {
 	// must be non-secret and safe to copy into Kubernetes status/events.
 	Hygiene  *RemoteHygieneResult
 	Evidence *RemoteEvidenceResult
+	// EvidenceBundle is returned with Done responses for evidence
+	// publisher=controller until the core acknowledged it.
+	EvidenceBundle *RemoteEvidenceBundle
 }
 
 type RemoteHygieneResult struct {

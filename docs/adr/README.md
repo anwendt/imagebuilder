@@ -24,9 +24,10 @@ references the old one.
 | [ADR-005](ADR-005-protobuf-versioned-contract.md) | Protobuf Schema as Versioned and Immutable Provider Contract | Accepted |
 | [ADR-006](ADR-006-no-go-plugin-mechanism.md) | No Go Plugin Mechanism (.so Files) | Accepted |
 | [ADR-007](ADR-007-remote-build-provider-contract.md) | Remote Build as Provider-Owned Execution Mode | Accepted |
-| [ADR-008](ADR-008-vm-image-evidence-contract.md) | Provider-Neutral VM Image Evidence Contract | Accepted |
-| [ADR-009](ADR-009-vsphere-build-vm-guard-and-cloud-image-builds.md) | vSphere Build VM Guard and Cloud-Image Remote Builds | Accepted |
+| [ADR-008](ADR-008-vm-image-evidence-contract.md) | Provider-Neutral VM Image Evidence Contract | Accepted, extended by ADR-011 (publisher=controller) |
+| [ADR-009](ADR-009-vsphere-build-vm-guard-and-cloud-image-builds.md) | vSphere Build VM Guard and Cloud-Image Remote Builds | Accepted; evidence limitation superseded by ADR-011 |
 | [ADR-010](ADR-010-image-derivation-and-immutable-versions.md) | Image Derivation From Published Base Images and Immutable Versions | Accepted |
+| [ADR-011](ADR-011-controller-published-vm-image-evidence.md) | Guest-Collected, Controller-Published VM Image Evidence | Accepted |
 
 ## ADR Status Values
 

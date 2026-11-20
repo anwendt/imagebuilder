@@ -25,7 +25,9 @@ import (
 	"github.com/vmware/govmomi/vim25/types"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
+	"github.com/anwendt/imagebuilder/pkg/evidence"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
+	providererrors "github.com/anwendt/imagebuilder/pkg/provider/errors"
 	provisionersource "github.com/anwendt/imagebuilder/pkg/provisioner/source"
 )
 
@@ -44,6 +46,11 @@ type vsphereRemoteBuildInput struct {
 	ProviderConfigName string
 	Provisioners       []v1alpha1.ProvisionerSpec
 	GuestAccess        *v1alpha1.GuestAccessSpec
+	// Evidence is the VMImage evidence policy; vSphere supports only
+	// publisher=controller (ADR-011).
+	Evidence                   *v1alpha1.EvidenceSpec
+	ImageVersion               string
+	EvidenceBundleAcknowledged bool
 }
 
 type vsphereRemoteBuildState struct {
@@ -53,6 +60,8 @@ type vsphereRemoteBuildState struct {
 	Done         bool
 	Image        *platform.ImageRef
 	Hygiene      *platform.RemoteHygieneResult
+	// EvidenceBundle is returned with Done states for publisher=controller.
+	EvidenceBundle *platform.RemoteEvidenceBundle
 }
 
 func (c *govmomiClient) ReconcileRemoteBuild(ctx context.Context, input vsphereRemoteBuildInput) (*vsphereRemoteBuildState, error) {
@@ -86,14 +95,10 @@ func (c *govmomiClient) ReconcileRemoteBuild(ctx context.Context, input vsphereR
 		return nil, err
 	}
 	if ref.ImageRef != "" {
-		return &vsphereRemoteBuildState{
-			OperationRef: ref.String(),
-			Phase:        platform.RemoteBuildPhaseReady,
-			Message:      "vSphere remote image is ready",
-			Done:         true,
-			Image:        vsphereRemoteImage(input, c.cfg.datacenter, ref.ImageRef),
-			Hygiene:      vsphereRemoteHygiene(input, ref.ImageRef),
-		}, nil
+		if ref.VerifyBoot == verifyBootPending {
+			return c.verifyBootStep(ctx, input, ref)
+		}
+		return c.doneState(input, ref)
 	}
 	if ref.VMRef == "" {
 		return c.cloneRemoteSource(ctx, input)
@@ -117,6 +122,16 @@ func (c *govmomiClient) ReconcileRemoteBuild(ctx context.Context, input vsphereR
 				_ = c.cleanupVSphereRemoteVM(ctx, ref)
 			}
 			return nil, err
+		}
+		if input.Provisioners[ref.ProvisionerIndex].Type == "evidence" {
+			sha, err := c.collectAndPersistEvidence(ctx, vm, input)
+			if err != nil {
+				if !c.cfg.keepFailedBuild {
+					_ = c.cleanupVSphereRemoteVM(ctx, ref)
+				}
+				return nil, providererrors.Terminal(err)
+			}
+			ref.EvidenceSHA256 = sha
 		}
 		ref.ProvisionerIndex++
 		return &vsphereRemoteBuildState{
@@ -288,7 +303,27 @@ func (c *govmomiClient) CleanupRemoteBuild(ctx context.Context, input vsphereRem
 	if ref.VMName == "" && input.BuildID != "" {
 		ref.VMName = buildVMName(input.ImageName, input.BuildID)
 	}
-	return c.cleanupVSphereRemoteVM(ctx, ref)
+	var errs []error
+	if err := c.cleanupVSphereRemoteVM(ctx, ref); err != nil {
+		errs = append(errs, err)
+	}
+	if ref.BuildID != "" {
+		if c.cfg.verifyBoot {
+			if err := c.destroyVerifyVM(ctx, verifyVMName(input.ImageName, ref.BuildID)); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		// An image whose verify boot never passed must not stay consumable.
+		if ref.ImageRef != "" && ref.VerifyBoot == verifyBootPending {
+			if err := c.deleteOwnedLibraryItem(ctx, ref.ImageRef, ref.BuildID); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if err := removeEvidenceBundle(c.cfg.downloadDir, ref.BuildID); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (c *govmomiClient) cloneRemoteSource(ctx context.Context, input vsphereRemoteBuildInput) (*vsphereRemoteBuildState, error) {
@@ -766,6 +801,10 @@ func waitGuestProcess(ctx context.Context, pm *guest.ProcessManager, auth types.
 }
 
 func (c *govmomiClient) finishRemoteVM(ctx context.Context, vm *object.VirtualMachine, input vsphereRemoteBuildInput, ref vsphereRemoteOperationRef) (*vsphereRemoteBuildState, error) {
+	if evidence.IsController(input.Evidence) && ref.EvidenceSHA256 == "" {
+		_ = c.cleanupVSphereRemoteVM(ctx, ref)
+		return nil, providererrors.Terminal(fmt.Errorf("EvidenceBundleMissing: build %s reached publication without retrieving the guest evidence outbox; spec.evidence.publisher controller needs an evidence provisioner", input.BuildID))
+	}
 	credentialRevoked := false
 	if state, err := vmPowerState(ctx, vm); err == nil && state == types.VirtualMachinePowerStatePoweredOn {
 		if c.cfg.revokeBuildCredential && c.usesDerivedGuestCredential(input) {
@@ -809,16 +848,17 @@ func (c *govmomiClient) finishRemoteVM(ctx context.Context, vm *object.VirtualMa
 			return nil, fmt.Errorf("remove build VM after publishing %q: %w", itemID, err)
 		}
 		ref.ImageRef = itemID
-		image := vsphereRemoteImage(input, firstNonEmpty(c.cfg.contentLibrary, c.cfg.contentLibraryID), itemID)
-		image.Tags["imagebuilder.io/registration-mode"] = "content-library-template"
-		return &vsphereRemoteBuildState{
-			OperationRef: ref.String(),
-			Phase:        platform.RemoteBuildPhaseReady,
-			Message:      "vSphere remote image published to the content library",
-			Done:         true,
-			Image:        image,
-			Hygiene:      vsphereRemoteHygieneLibrary(input, itemID, credentialRevoked, templateVerified),
-		}, nil
+		ref.CredentialRevoked = credentialRevoked
+		ref.TemplateVerified = templateVerified
+		if c.cfg.verifyBoot {
+			ref.VerifyBoot = verifyBootPending
+			return &vsphereRemoteBuildState{
+				OperationRef: ref.String(),
+				Phase:        platform.RemoteBuildPhaseRegistering,
+				Message:      "vSphere template published to the content library; verify boot pending",
+			}, nil
+		}
+		return c.doneState(input, ref)
 	}
 	if c.cfg.markAsTemplate {
 		if err := vm.MarkAsTemplate(ctx); err != nil {
@@ -827,15 +867,39 @@ func (c *govmomiClient) finishRemoteVM(ctx context.Context, vm *object.VirtualMa
 		}
 	}
 	ref.ImageRef = firstNonEmpty(ref.VMRef, vm.Reference().Value)
-	image := vsphereRemoteImage(input, c.cfg.datacenter, ref.ImageRef)
-	return &vsphereRemoteBuildState{
-		OperationRef: ref.String(),
-		Phase:        platform.RemoteBuildPhaseReady,
-		Message:      "vSphere remote image registered from cloned VM",
-		Done:         true,
-		Image:        image,
-		Hygiene:      vsphereRemoteHygiene(input, image.ID),
-	}, nil
+	return c.doneState(input, ref)
+}
+
+// doneState is the Done response for a registered image. It is also returned
+// for every later reconcile of the same build.
+func (c *govmomiClient) doneState(input vsphereRemoteBuildInput, ref vsphereRemoteOperationRef) (*vsphereRemoteBuildState, error) {
+	bundle, err := doneEvidenceBundle(c.cfg.downloadDir, input, ref)
+	if err != nil {
+		return nil, err
+	}
+	state := &vsphereRemoteBuildState{
+		OperationRef:   ref.String(),
+		Phase:          platform.RemoteBuildPhaseReady,
+		Done:           true,
+		EvidenceBundle: bundle,
+	}
+	if c.cfg.publishToLibrary {
+		state.Message = "vSphere remote image published to the content library"
+		state.Image = vsphereRemoteImage(input, firstNonEmpty(c.cfg.contentLibrary, c.cfg.contentLibraryID), ref.ImageRef)
+		state.Image.Tags["imagebuilder.io/registration-mode"] = "content-library-template"
+		state.Hygiene = vsphereRemoteHygieneLibrary(input, ref.ImageRef, ref.CredentialRevoked, ref.TemplateVerified)
+	} else {
+		state.Message = "vSphere remote image registered from cloned VM"
+		state.Image = vsphereRemoteImage(input, c.cfg.datacenter, ref.ImageRef)
+		state.Hygiene = vsphereRemoteHygiene(input, ref.ImageRef)
+	}
+	if ref.VerifyBoot == verifyBootPassed {
+		state.Hygiene.Checks = append(state.Hygiene.Checks, verifyBootCheck)
+	}
+	if ref.EvidenceSHA256 != "" {
+		state.Hygiene.Checks = append(state.Hygiene.Checks, "vsphere-evidence-outbox-retrieved")
+	}
+	return state, nil
 }
 
 func (c *govmomiClient) cleanupVSphereRemoteVM(ctx context.Context, ref vsphereRemoteOperationRef) error {
@@ -883,6 +947,13 @@ func validateVSphereRemoteProvisioners(input vsphereRemoteBuildInput) error {
 				return fmt.Errorf("powershell provisioner is not supported for vSphere Linux remote builds; use shell or file")
 			}
 		case "file":
+		case "evidence":
+			if !evidence.IsController(input.Evidence) {
+				return fmt.Errorf("vSphere supports the evidence provisioner only with spec.evidence.publisher controller (ADR-011)")
+			}
+			if input.OSFamily != platform.OSFamilyLinux {
+				return fmt.Errorf("evidence provisioner is not supported for vSphere %s remote builds; only linux guests are supported", input.OSFamily)
+			}
 		default:
 			return fmt.Errorf("provisioner type %q is not supported by vSphere remote build", provisioner.Type)
 		}
@@ -912,6 +983,23 @@ func vsphereGuestProgram(input vsphereRemoteBuildInput, spec v1alpha1.Provisione
 			return "", "", fmt.Errorf("powershell provisioner requires inline content for vSphere remote build")
 		}
 		return "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-NoProfile -ExecutionPolicy Bypass -Command " + powershellQuote(spec.Inline), nil
+	case "evidence":
+		if !evidence.IsController(input.Evidence) {
+			return "", "", fmt.Errorf("vSphere supports the evidence provisioner only with spec.evidence.publisher controller (ADR-011)")
+		}
+		if input.OSFamily != platform.OSFamilyLinux {
+			return "", "", fmt.Errorf("evidence provisioner requires linux OS family for vSphere remote build")
+		}
+		if strings.TrimSpace(spec.Inline) == "" {
+			return "", "", fmt.Errorf("evidence provisioner requires inline content after source expansion")
+		}
+		exports := evidence.GuestEnvExports(evidence.GuestInput{
+			BuildID:   input.BuildID,
+			ImageName: input.ImageName,
+			SourceRef: input.SourceRef,
+			Policy:    input.Evidence,
+		})
+		return "/bin/sh", "-c " + shellQuote("exec >>"+guestProvisionLog+" 2>&1\n"+exports+"\n"+spec.Inline), nil
 	case "file":
 		if strings.TrimSpace(spec.Inline) == "" {
 			return "", "", fmt.Errorf("file provisioner requires inline content for vSphere remote build")
@@ -959,6 +1047,12 @@ type vsphereRemoteOperationRef struct {
 	VMRef            string
 	ImageRef         string
 	ProvisionerIndex int
+	// EvidenceSHA256 is the digest of the retrieved guest evidence bundle.
+	EvidenceSHA256 string
+	// VerifyBoot is "", "pending" or "passed".
+	VerifyBoot        string
+	CredentialRevoked bool
+	TemplateVerified  bool
 }
 
 func (r vsphereRemoteOperationRef) String() string {
@@ -974,6 +1068,18 @@ func (r vsphereRemoteOperationRef) String() string {
 	}
 	if r.ProvisionerIndex > 0 {
 		values.Set("provisionerIndex", strconv.Itoa(r.ProvisionerIndex))
+	}
+	if r.EvidenceSHA256 != "" {
+		values.Set("evidenceSha256", r.EvidenceSHA256)
+	}
+	if r.VerifyBoot != "" {
+		values.Set("verifyBoot", r.VerifyBoot)
+	}
+	if r.CredentialRevoked {
+		values.Set("credentialRevoked", "true")
+	}
+	if r.TemplateVerified {
+		values.Set("templateVerified", "true")
 	}
 	u := url.URL{Scheme: "vsphere", Host: "remote-build", Path: "/" + r.BuildID, RawQuery: values.Encode()}
 	return u.String()
@@ -1004,6 +1110,11 @@ func parseVSphereRemoteOperationRef(value string) (vsphereRemoteOperationRef, er
 		VMRef:            u.Query().Get("vmRef"),
 		ImageRef:         u.Query().Get("imageRef"),
 		ProvisionerIndex: index,
+		EvidenceSHA256:   u.Query().Get("evidenceSha256"),
+		VerifyBoot:       u.Query().Get("verifyBoot"),
+
+		CredentialRevoked: u.Query().Get("credentialRevoked") == "true",
+		TemplateVerified:  u.Query().Get("templateVerified") == "true",
 	}, nil
 }
 

@@ -354,6 +354,9 @@ func (c config) validate() error {
 	if c.storageContainer == "" {
 		return fmt.Errorf("azure plugin: storageContainer is required")
 	}
+	if strings.EqualFold(strings.TrimSpace(c.extraConfig["remote.verifyBoot"]), "true") && c.osState == armcompute.OperatingSystemStateTypesSpecialized {
+		return fmt.Errorf("azure plugin: remote.verifyBoot requires a generalized image (osState generalized) because the verify VM receives customData")
+	}
 	if (c.galleryName == "") != (c.galleryImageName == "") {
 		return fmt.Errorf("azure plugin: galleryName and galleryImageName must be set together")
 	}
@@ -536,6 +539,9 @@ func (p *Plugin) ReconcileRemoteBuild(ctx context.Context, req *platform.RemoteB
 			Provisioners:       req.Provisioners,
 			GuestAccess:        req.GuestAccess,
 			Evidence:           req.Evidence,
+			ImageVersion:       req.ImageVersion,
+
+			EvidenceBundleAcknowledged: req.EvidenceBundleAcknowledged,
 		})
 		if err != nil {
 			return nil, classifyAzureRemoteError(err)
@@ -547,6 +553,8 @@ func (p *Plugin) ReconcileRemoteBuild(ctx context.Context, req *platform.RemoteB
 			Done:         state.Done,
 			Hygiene:      state.Hygiene,
 			Evidence:     state.Evidence,
+
+			EvidenceBundle: state.EvidenceBundle,
 		}
 		if state.Done {
 			if state.Image == nil || state.Image.ID == "" {
@@ -562,6 +570,10 @@ func (p *Plugin) ReconcileRemoteBuild(ctx context.Context, req *platform.RemoteB
 		}
 		return result, nil
 	}
+	galleryVersion, err := resolveAzureGalleryVersion(p.config.galleryName, p.config.galleryVersion, req.ImageVersion)
+	if err != nil {
+		return nil, err
+	}
 	input := registerInput{
 		ResourceGroup:      p.config.resourceGroup,
 		Location:           p.config.location,
@@ -575,7 +587,7 @@ func (p *Plugin) ReconcileRemoteBuild(ctx context.Context, req *platform.RemoteB
 		StorageAccountType: p.config.storageAccountType,
 		GalleryName:        p.config.galleryName,
 		GalleryImageName:   p.config.galleryImageName,
-		GalleryVersion:     p.config.galleryVersion,
+		GalleryVersion:     galleryVersion,
 		ReplicaCount:       p.config.replicaCount,
 		TargetRegions:      p.config.targetRegions,
 	}
@@ -619,6 +631,10 @@ func classifyAzureRemoteError(err error) error {
 	if err == nil {
 		return nil
 	}
+	var classified interface{ Transient() bool }
+	if errors.As(err, &classified) {
+		return err
+	}
 	var responseError *azcore.ResponseError
 	if errors.As(err, &responseError) && (responseError.StatusCode == http.StatusRequestTimeout || responseError.StatusCode == http.StatusTooManyRequests || responseError.StatusCode >= 500) {
 		return providererrors.Transient(err, 0)
@@ -648,12 +664,16 @@ func (p *Plugin) CleanupRemoteBuild(ctx context.Context, req *platform.RemoteBui
 		})
 	}
 	imageName := firstNonEmpty(req.ImageName, "imagebuilder-"+sanitizeName(req.BuildID))
+	galleryVersion, err := resolveAzureGalleryVersion(p.config.galleryName, p.config.galleryVersion, req.ImageVersion)
+	if err != nil {
+		galleryVersion = p.config.galleryVersion
+	}
 	return p.client.Cleanup(ctx, map[string]string{
 		"resourceGroup":     p.config.resourceGroup,
 		"imageName":         imageName,
 		"galleryName":       p.config.galleryName,
 		"galleryImageName":  p.config.galleryImageName,
-		"galleryVersion":    p.config.galleryVersion,
+		"galleryVersion":    galleryVersion,
 		"azure.cleanupMode": "remote",
 	})
 }
@@ -669,6 +689,11 @@ type sdkClient struct {
 	sharedKey       *azblob.SharedKeyCredential
 	storageURL      string
 	httpClient      *http.Client
+	// Optional seams for ADR-011 evidence and verify boot; nil uses the SDK.
+	evidence azureEvidenceStore
+	runner   azureShellRunner
+	verify   azureVerifyCompute
+	owner    azureImageOwner
 }
 
 func newAzureClient(ctx context.Context, cfg config) (client, error) {

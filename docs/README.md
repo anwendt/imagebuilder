@@ -32,12 +32,14 @@ All documents are intended to support ISAE audit requirements.
 |---|---|
 | [VMImage Authoring Guide](user-guide/vmimage.md) | Source, guest access, provisioners, targets, and artifact storage |
 | [Git-backed Provisioner Scripts](user-guide/git-provisioners.md) | Use Git repositories with ordered shell scripts for image customization |
+| [VM Image Evidence](user-guide/evidence.md) | Guest evidence outbox, controller-published and signed VM image descriptors, verify boot (ADR-011) |
 
 ## Operations
 
 | Document | Description |
 |---|---|
 | [Operator Operations Guide](operations/operator.md) | Deployment, flags, scheduling, metrics, webhooks, cleanup |
+| [Evidence Publisher](operations/evidence-publisher.md) | Chart values, flags, secrets, RBAC, troubleshooting of the ADR-011 publication Job |
 | [Production Readiness](operations/production-readiness.md) | Release images, policy flags, CI gates, and rollout checklist |
 | [AWS Remote Build](operations/aws-remote-build.md) | AWS remote build configuration, IAM, SSM provisioning, cleanup |
 | [vSphere Provider Operations](operations/vsphere-provider.md) | vSphere OVA/OVF import, Content Library publishing, and validation |

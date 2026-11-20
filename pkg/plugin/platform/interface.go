@@ -252,6 +252,12 @@ type RemoteBuildRequest struct {
 	GuestAccess       *v1alpha1.GuestAccessSpec
 	Evidence          *v1alpha1.EvidenceSpec
 	Timeout           time.Duration
+	// ImageVersion is the logical image version (spec.evidence.subject.version
+	// or the imagebuilder.io/image-version annotation), empty when unknown.
+	ImageVersion string
+	// EvidenceBundleAcknowledged tells the provider that the core durably
+	// stored the evidence bundle of this build (ADR-011).
+	EvidenceBundleAcknowledged bool
 }
 
 type RemoteBuildPhase string
@@ -274,7 +280,17 @@ type RemoteBuildResult struct {
 	Artifact     *BuildArtifact
 	Hygiene      *RemoteHygieneResult
 	Evidence     *RemoteEvidenceResult
-	Done         bool
+	// EvidenceBundle is the guest evidence outbox retrieved by the provider for
+	// evidence publisher=controller (ADR-011).
+	EvidenceBundle *RemoteEvidenceBundle
+	Done           bool
+}
+
+// RemoteEvidenceBundle is the gzip-compressed tar of the guest evidence outbox.
+type RemoteEvidenceBundle struct {
+	Content   []byte
+	SHA256    string
+	MediaType string
 }
 
 type RemoteHygieneResult struct {

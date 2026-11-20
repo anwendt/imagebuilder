@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"path"
 	"reflect"
+	"regexp"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -315,6 +316,17 @@ func validateEvidence(evidence *EvidenceSpec, provisioners []ProvisionerSpec, bu
 	if strings.Contains(evidence.RegistryRepository, "@sha256:") || strings.Contains(evidence.RegistryRepository, "://") && !strings.HasPrefix(evidence.RegistryRepository, "oci://") {
 		return fmt.Errorf("spec.evidence.registryRepository must be an oci:// repository prefix without a digest")
 	}
+	publisher := strings.TrimSpace(evidence.Publisher)
+	switch publisher {
+	case "", EvidencePublisherProvider, EvidencePublisherController:
+	default:
+		return fmt.Errorf("spec.evidence.publisher must be provider or controller, got %q", evidence.Publisher)
+	}
+	if publisher == EvidencePublisherController {
+		if err := validateControllerEvidence(evidence, provisioners, evidenceIndexes); err != nil {
+			return err
+		}
+	}
 	if evidence.Required {
 		if source.MarketplaceRef != nil && strings.EqualFold(strings.TrimSpace(source.MarketplaceRef.Version), "latest") {
 			return fmt.Errorf("spec.source.marketplaceRef.version must be immutable when spec.evidence.required is true")
@@ -322,7 +334,10 @@ func validateEvidence(evidence *EvidenceSpec, provisioners []ProvisionerSpec, bu
 		if len(evidenceIndexes) != 1 {
 			return fmt.Errorf("spec.evidence.required requires exactly one evidence provisioner")
 		}
-		if evidenceIndexes[0] != len(provisioners)-1 {
+		// ADR-008: the guest publishes, so nothing may change the image after
+		// the evidence was collected. ADR-011 (publisher=controller) allows
+		// later steps such as a scheduled deprovision that must run last.
+		if publisher != EvidencePublisherController && evidenceIndexes[0] != len(provisioners)-1 {
 			return fmt.Errorf("the evidence provisioner must be the final spec.provisioners entry")
 		}
 	}
@@ -333,6 +348,71 @@ func validateEvidence(evidence *EvidenceSpec, provisioners []ProvisionerSpec, bu
 		}
 	}
 	return nil
+}
+
+var (
+	evidenceSubjectNamePattern    = regexp.MustCompile(`^[a-z0-9]+([._-][a-z0-9]+)*$`)
+	evidenceSubjectVersionPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$`)
+	evidenceCredentialEnvPattern  = regexp.MustCompile(`(?i)(PASSWORD|PASSWD|SECRET|TOKEN|CREDENTIAL|PRIVATE_?KEY|ACCESS_?KEY|API_?KEY|COSIGN_KEY|SAS)`)
+	evidenceCredentialURLPattern  = regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@`)
+	evidenceSubjectPlatformMaxLen = 63
+	evidenceSubjectNameMaxLen     = 128
+)
+
+// validateControllerEvidence enforces the ADR-011 contract: the guest only
+// collects evidence into its outbox, so the evidence provisioner must not
+// carry credentials, and the controller needs a complete subject.
+func validateControllerEvidence(evidence *EvidenceSpec, provisioners []ProvisionerSpec, evidenceIndexes []int) error {
+	if !evidence.Required {
+		return fmt.Errorf("spec.evidence.publisher controller requires spec.evidence.required true")
+	}
+	if evidence.SBOMFormat != "cyclonedx-json" {
+		return fmt.Errorf("spec.evidence.publisher controller requires spec.evidence.sbomFormat cyclonedx-json, got %q", evidence.SBOMFormat)
+	}
+	if scanner := strings.TrimSpace(evidence.VulnerabilityScanner); scanner != "" && scanner != "trivy" {
+		return fmt.Errorf("spec.evidence.publisher controller requires spec.evidence.vulnerabilityScanner trivy")
+	}
+	subject := evidence.Subject
+	if subject == nil {
+		return fmt.Errorf("spec.evidence.subject is required for spec.evidence.publisher controller")
+	}
+	if len(subject.Name) > evidenceSubjectNameMaxLen || !evidenceSubjectNamePattern.MatchString(subject.Name) {
+		return fmt.Errorf("spec.evidence.subject.name %q must be a lowercase OCI repository name component", subject.Name)
+	}
+	if !evidenceSubjectVersionPattern.MatchString(subject.Version) {
+		return fmt.Errorf("spec.evidence.subject.version %q must be a valid OCI tag", subject.Version)
+	}
+	if len(subject.Platform) > evidenceSubjectPlatformMaxLen || !evidenceSubjectPlatformPattern(subject.Platform) {
+		return fmt.Errorf("spec.evidence.subject.platform %q must be a lowercase name such as azure or vsphere-fci-c042", subject.Platform)
+	}
+	if len(evidenceIndexes) != 1 {
+		return fmt.Errorf("spec.evidence.publisher controller requires exactly one evidence provisioner")
+	}
+	provisioner := provisioners[evidenceIndexes[0]]
+	for _, env := range provisioner.Env {
+		if env.ValueFrom != nil || evidenceCredentialEnvPattern.MatchString(env.Name) {
+			return fmt.Errorf("spec.provisioners[%d] evidence provisioner must not carry credentials (env %q); with publisher controller the guest only collects evidence", evidenceIndexes[0], env.Name)
+		}
+	}
+	if evidenceCredentialURLPattern.MatchString(provisioner.Inline) {
+		return fmt.Errorf("spec.provisioners[%d] evidence provisioner must not carry credentials (URL with user information)", evidenceIndexes[0])
+	}
+	return nil
+}
+
+func evidenceSubjectPlatformPattern(platform string) bool {
+	return evidenceSubjectNamePattern.MatchString(platform)
+}
+
+// ImageVersion returns the logical image version: spec.evidence.subject.version
+// when set, otherwise the imagebuilder.io/image-version annotation.
+func (r *VMImage) ImageVersion() string {
+	if r.Spec.Evidence != nil && r.Spec.Evidence.Subject != nil {
+		if version := strings.TrimSpace(r.Spec.Evidence.Subject.Version); version != "" {
+			return version
+		}
+	}
+	return strings.TrimSpace(r.Annotations[ImageVersionAnnotation])
 }
 
 func validateProvisionerImagePolicy(provisioners []ProvisionerSpec, security *BuildSecuritySpec) error {

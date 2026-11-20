@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -17,7 +18,9 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
+	"github.com/anwendt/imagebuilder/pkg/evidence"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
+	providererrors "github.com/anwendt/imagebuilder/pkg/provider/errors"
 	provisionersource "github.com/anwendt/imagebuilder/pkg/provisioner/source"
 )
 
@@ -37,6 +40,10 @@ type azureRemoteBuildInput struct {
 	GuestAccess        *v1alpha1.GuestAccessSpec
 	Evidence           *v1alpha1.EvidenceSpec
 	EvidenceCosignKey  string
+	// ImageVersion is the logical image version from the core (ADR-011).
+	ImageVersion string
+	// EvidenceBundleAcknowledged is set once the core stored the bundle.
+	EvidenceBundleAcknowledged bool
 }
 
 type azureRemoteBuildState struct {
@@ -47,6 +54,8 @@ type azureRemoteBuildState struct {
 	Image        *platform.ImageRef
 	Hygiene      *platform.RemoteHygieneResult
 	Evidence     *platform.RemoteEvidenceResult
+	// EvidenceBundle is returned with Done states for publisher=controller.
+	EvidenceBundle *platform.RemoteEvidenceBundle
 }
 
 const azureRemoteBuildPublicKey = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDDzch/BPwsvvCVPklQJaRRO7gsqw4mLjnJiLHTQ5o0mBi7BLInDe12I5C9Qw2QU+mh46eaDzqa9vggfoZxWCENfhJ7zsdYReh27XzmpFD36THxci5awdPVmiF+kQ0LlxGZgtkf11lLt9hpSSqeXcIsnQRO9LAEXqBtMAR50zSBgeHcyXRNxeiR4D1c/FtsGcm+6GJu4eL+T1GPvNTr77dhVaOAYfba0QUTfnDOW3j0A8YqtH+0Aagzh6w2yAxP//NV1TtL0g1l0PTa8jTqjvBi13PI6RgpHP5HDsxyQPj7UoNiHLP2no/X3MguOYoqPZWDRdOzsAbL4+ufCOJu41bN imagebuilder-azure-remote-build"
@@ -86,32 +95,38 @@ func (c *sdkClient) ReconcileRemoteBuild(ctx context.Context, input azureRemoteB
 		return nil, err
 	}
 	if ref.ImageID != "" {
-		return &azureRemoteBuildState{
-			OperationRef: ref.String(),
-			Phase:        platform.RemoteBuildPhaseReady,
-			Message:      "Azure remote image is ready",
-			Done:         true,
-			Image: &platform.ImageRef{
-				ID:       ref.ImageID,
-				Name:     input.ImageName,
-				Location: c.cfg.location,
-				Tags:     input.Tags,
-			},
-			Hygiene:  azureRemoteHygiene(input, ref.ImageID),
-			Evidence: ref.evidence(),
-		}, nil
+		if ref.VerifyBoot == verifyBootPending {
+			return c.reconcileVerifyBoot(ctx, input, ref, settings)
+		}
+		image := &platform.ImageRef{
+			ID:       ref.ImageID,
+			Name:     input.ImageName,
+			Location: c.cfg.location,
+			Tags:     input.Tags,
+		}
+		return azureDoneState(ctx, c.evidenceStore(), input, ref, image, "Azure remote image is ready")
 	}
 	if ref.VMName == "" {
 		return c.startRemoteBuildVM(ctx, input, settings)
 	}
 	if ref.ProvisionerIndex < len(input.Provisioners) {
-		evidence, err := c.runAzureProvisioner(ctx, input, ref, input.Provisioners[ref.ProvisionerIndex])
+		spec := input.Provisioners[ref.ProvisionerIndex]
+		result, err := c.runAzureProvisioner(ctx, input, ref, spec)
 		if err != nil {
 			_ = c.cleanupAzureRemoteResources(ctx, ref)
 			return nil, err
 		}
-		if evidence != nil {
-			ref.setEvidence(evidence)
+		if result != nil {
+			ref.setEvidence(result)
+		}
+		if spec.Type == "evidence" && evidence.IsController(input.Evidence) {
+			blobName := azureEvidenceBlobName(c.cfg.blobPrefix, input.BuildID)
+			sha, err := collectAzureEvidence(ctx, c.shellRunner(), c.evidenceStore(), ref.VMName, blobName, settings.HTTPSProxy)
+			if err != nil {
+				_ = c.cleanupAzureRemoteResources(ctx, ref)
+				return nil, fmt.Errorf("azure evidence outbox (provisioner %d): %w", ref.ProvisionerIndex, err)
+			}
+			ref.EvidenceBlob, ref.EvidenceSHA256 = blobName, sha
 		}
 		ref.ProvisionerIndex++
 		return &azureRemoteBuildState{
@@ -121,7 +136,7 @@ func (c *sdkClient) ReconcileRemoteBuild(ctx context.Context, input azureRemoteB
 			Evidence:     ref.evidence(),
 		}, nil
 	}
-	return c.finishRemoteBuildVM(ctx, input, ref)
+	return c.finishRemoteBuildVM(ctx, input, ref, settings)
 }
 
 func expandAzureRemoteProvisioners(ctx context.Context, input azureRemoteBuildInput, extra map[string]string) (azureRemoteBuildInput, func(), error) {
@@ -158,7 +173,15 @@ func (c *sdkClient) CleanupRemoteBuild(ctx context.Context, input azureRemoteBui
 		ref.VMName = azureRemoteVMName(input.BuildID)
 		ref.DiskName = azureRemoteDiskName(input.BuildID)
 	}
-	return c.cleanupAzureRemoteResources(ctx, ref)
+	errs := []error{c.cleanupAzureRemoteResources(ctx, ref)}
+	if ref.BuildID != "" {
+		errs = append(errs, cleanupAzureVerifyVM(ctx, c.verifyCompute(), azureVerifyVMName(ref.BuildID), azureVerifyDiskName(ref.BuildID)))
+		blobName := firstNonEmpty(ref.EvidenceBlob, azureEvidenceBlobName(c.cfg.blobPrefix, ref.BuildID))
+		if err := c.evidenceStore().DeleteBlob(ctx, blobName); err != nil {
+			errs = append(errs, fmt.Errorf("delete evidence bundle blob: %w", err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (c *sdkClient) startRemoteBuildVM(ctx context.Context, input azureRemoteBuildInput, settings azureRemoteSettings) (*azureRemoteBuildState, error) {
@@ -298,18 +321,23 @@ func (c *sdkClient) runAzureProvisioner(ctx context.Context, input azureRemoteBu
 	if err := azureRunCommandError(result.Value); err != nil {
 		return nil, fmt.Errorf("azure Run Command provisioner %d failed: %w", ref.ProvisionerIndex, err)
 	}
-	if spec.Type != "evidence" {
+	if spec.Type != "evidence" || evidence.IsController(input.Evidence) {
 		return nil, nil
 	}
-	evidence, err := azureEvidenceFromRunCommand(result.Value)
+	marker, err := azureEvidenceFromRunCommand(result.Value)
 	if err != nil {
 		return nil, fmt.Errorf("azure evidence provisioner %d: %w", ref.ProvisionerIndex, err)
 	}
-	return evidence, nil
+	return marker, nil
 }
 
-func (c *sdkClient) finishRemoteBuildVM(ctx context.Context, input azureRemoteBuildInput, ref azureRemoteOperationRef) (*azureRemoteBuildState, error) {
-	if input.Evidence != nil && input.Evidence.Required {
+func (c *sdkClient) finishRemoteBuildVM(ctx context.Context, input azureRemoteBuildInput, ref azureRemoteOperationRef, settings azureRemoteSettings) (*azureRemoteBuildState, error) {
+	if evidence.IsController(input.Evidence) {
+		if ref.EvidenceBlob == "" || ref.EvidenceSHA256 == "" {
+			_ = c.cleanupAzureRemoteResources(ctx, ref)
+			return nil, providererrors.Terminal(errors.New(evidenceBundleMissing + "the build finished without a collected evidence outbox; the evidence provisioner must run"))
+		}
+	} else if input.Evidence != nil && input.Evidence.Required {
 		if err := validateAzureEvidence(input.Evidence, ref.evidence()); err != nil {
 			_ = c.cleanupAzureRemoteResources(ctx, ref)
 			return nil, err
@@ -331,6 +359,17 @@ func (c *sdkClient) finishRemoteBuildVM(ctx context.Context, input azureRemoteBu
 		}
 	}
 	vmID := firstNonEmpty(ref.VMID, virtualMachineID(c.cfg.subscriptionID, c.cfg.resourceGroup, ref.VMName))
+	galleryVersion, err := resolveAzureGalleryVersion(c.cfg.galleryName, c.cfg.galleryVersion, input.ImageVersion)
+	if err != nil {
+		_ = c.cleanupAzureRemoteResources(ctx, ref)
+		return nil, err
+	}
+	if settings.VerifyBoot {
+		if err := recordOwnedAzureImages(ctx, c.imageOwner(), &ref, input.ImageName, c.cfg.galleryName, galleryVersion); err != nil {
+			_ = c.cleanupAzureRemoteResources(ctx, ref)
+			return nil, err
+		}
+	}
 	image, err := c.RegisterImage(ctx, registerInput{
 		ResourceGroup:          c.cfg.resourceGroup,
 		Location:               c.cfg.location,
@@ -345,7 +384,7 @@ func (c *sdkClient) finishRemoteBuildVM(ctx context.Context, input azureRemoteBu
 		StorageAccountType:     c.cfg.storageAccountType,
 		GalleryName:            c.cfg.galleryName,
 		GalleryImageName:       c.cfg.galleryImageName,
-		GalleryVersion:         c.cfg.galleryVersion,
+		GalleryVersion:         galleryVersion,
 		ReplicaCount:           c.cfg.replicaCount,
 		TargetRegions:          c.cfg.targetRegions,
 		SourceVirtualMachineID: vmID,
@@ -358,16 +397,89 @@ func (c *sdkClient) finishRemoteBuildVM(ctx context.Context, input azureRemoteBu
 	if err := c.cleanupAzureRemoteResources(ctx, ref); err != nil {
 		return nil, fmt.Errorf("cleanup Azure remote build resources after image registration: %w", err)
 	}
-	return &azureRemoteBuildState{
+	if settings.VerifyBoot {
+		ref.VerifyBoot = verifyBootPending
+		return &azureRemoteBuildState{
+			OperationRef: ref.String(),
+			Phase:        platform.RemoteBuildPhaseRegistering,
+			Message:      "Azure remote image registered; verify boot pending",
+		}, nil
+	}
+	return azureDoneState(ctx, c.evidenceStore(), input, ref, image, "Azure remote image registered from provisioned VM")
+}
+
+// azureDoneState builds the Done state and, for publisher=controller, attaches
+// the persisted evidence bundle (or deletes it once acknowledged).
+func azureDoneState(ctx context.Context, store azureEvidenceStore, input azureRemoteBuildInput, ref azureRemoteOperationRef, image *platform.ImageRef, message string) (*azureRemoteBuildState, error) {
+	state := &azureRemoteBuildState{
 		OperationRef: ref.String(),
 		Phase:        platform.RemoteBuildPhaseReady,
-		Message:      "Azure remote image registered from provisioned VM",
+		Message:      message,
 		Done:         true,
 		Image:        image,
-		Hygiene:      azureRemoteHygiene(input, image.ID),
+		Hygiene:      azureRemoteHygieneFor(input, ref, image.ID),
 		Evidence:     ref.evidence(),
-	}, nil
+	}
+	if evidence.IsController(input.Evidence) {
+		bundle, err := azureDoneEvidenceBundle(ctx, store, ref, input.EvidenceBundleAcknowledged)
+		if err != nil {
+			return nil, providererrors.Terminal(err)
+		}
+		state.EvidenceBundle = bundle
+	}
+	return state, nil
 }
+
+// reconcileVerifyBoot runs the opt-in verify boot of the published image.
+func (c *sdkClient) reconcileVerifyBoot(ctx context.Context, input azureRemoteBuildInput, ref azureRemoteOperationRef, settings azureRemoteSettings) (*azureRemoteBuildState, error) {
+	nonce, err := newVerifyNonce()
+	if err != nil {
+		return nil, err
+	}
+	spec := azureVerifySpec{
+		BuildID:            firstNonEmpty(ref.BuildID, input.BuildID),
+		Location:           c.cfg.location,
+		VMSize:             settings.VMSize,
+		NetworkInterfaceID: settings.NetworkInterfaceID,
+		ImageID:            ref.ImageID,
+		OSFamily:           input.OSFamily,
+		StorageAccountType: c.cfg.storageAccountType,
+		Tags:               input.Tags,
+	}
+	return finishAzureVerifyBoot(ctx, c.verifyCompute(), c.shellRunner(), c.imageOwner(), c.evidenceStore(), spec, nonce, input, ref, c.cfg.location)
+}
+
+// finishAzureVerifyBoot runs the verify boot and turns its outcome into the
+// Done state or a terminal VerifyBootFailed error after deleting the images
+// this build created.
+func finishAzureVerifyBoot(ctx context.Context, compute azureVerifyCompute, runner azureShellRunner, owner azureImageOwner, store azureEvidenceStore, spec azureVerifySpec, nonce string, input azureRemoteBuildInput, ref azureRemoteOperationRef, location string) (*azureRemoteBuildState, error) {
+	if err := runAzureVerifyBoot(ctx, compute, runner, spec, nonce); err != nil {
+		if !strings.HasPrefix(err.Error(), verifyBootFailedText) {
+			return nil, err
+		}
+		if cleanupErr := deleteOwnedAzureImages(ctx, owner, ref); cleanupErr != nil {
+			err = errors.Join(err, fmt.Errorf("remove images of the failed build: %w", cleanupErr))
+		}
+		return nil, providererrors.Terminal(err)
+	}
+	ref.VerifyBoot = verifyBootPassed
+	image := &platform.ImageRef{ID: ref.ImageID, Name: input.ImageName, Location: location, Tags: input.Tags}
+	return azureDoneState(ctx, store, input, ref, image, "Azure remote image registered and verify boot passed")
+}
+
+// resolveAzureGalleryVersion uses the ProviderConfig galleryVersion and falls
+// back to the logical image version from the core (ADR-011).
+func resolveAzureGalleryVersion(galleryName, configured, imageVersion string) (string, error) {
+	if configured != "" || galleryName == "" || imageVersion == "" {
+		return configured, nil
+	}
+	if !azureGalleryVersionPattern.MatchString(imageVersion) {
+		return "", providererrors.Terminal(fmt.Errorf("image version %q is not a valid Azure Compute Gallery version (Major.Minor.Patch); set ProviderConfig extra galleryVersion", imageVersion))
+	}
+	return imageVersion, nil
+}
+
+var azureGalleryVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
 
 func (c *sdkClient) cleanupAzureRemoteResources(ctx context.Context, ref azureRemoteOperationRef) error {
 	var errs []error
@@ -399,6 +511,11 @@ type azureRemoteSettings struct {
 	NetworkInterfaceID string
 	ManagedIdentityID  string
 	EvidenceCosignKey  string
+	// VerifyBoot boots the published image once after registration (ADR-011).
+	VerifyBoot bool
+	// HTTPSProxy is tried by the guest for the evidence upload when the
+	// direct upload fails.
+	HTTPSProxy string
 }
 
 func azureRemoteSettingsFromExtra(extra map[string]string) azureRemoteSettings {
@@ -407,6 +524,8 @@ func azureRemoteSettingsFromExtra(extra map[string]string) azureRemoteSettings {
 		NetworkInterfaceID: firstNonEmpty(extra["remote.networkInterfaceId"], extra["networkInterfaceId"]),
 		ManagedIdentityID:  strings.TrimSpace(extra["remote.managedIdentityId"]),
 		EvidenceCosignKey:  strings.TrimSpace(extra["remote.evidence.cosignKeyRef"]),
+		VerifyBoot:         strings.EqualFold(strings.TrimSpace(extra["remote.verifyBoot"]), "true"),
+		HTTPSProxy:         strings.TrimSpace(extra["httpsProxy"]),
 	}
 }
 
@@ -419,6 +538,18 @@ func (s azureRemoteSettings) validate(input azureRemoteBuildInput) error {
 	}
 	if input.BuildID == "" {
 		return fmt.Errorf("azure remote build requires build ID")
+	}
+	if s.VerifyBoot && s.NetworkInterfaceID == "" {
+		return fmt.Errorf("azure remote.verifyBoot requires ProviderConfig extra remote.networkInterfaceId")
+	}
+	if s.VerifyBoot && input.OSFamily == platform.OSFamilyWindows {
+		return fmt.Errorf("azure remote.verifyBoot supports Linux images only")
+	}
+	if evidence.IsController(input.Evidence) {
+		if input.OSFamily != platform.OSFamilyLinux {
+			return fmt.Errorf("azure evidence publisher controller supports Linux images only")
+		}
+		return nil
 	}
 	if input.Evidence != nil && input.Evidence.Required {
 		if s.ManagedIdentityID == "" {
@@ -485,6 +616,8 @@ func azureRemoteOSProfile(input azureRemoteBuildInput) *armcompute.OSProfile {
 }
 
 func validateAzureRemoteProvisioners(input azureRemoteBuildInput) error {
+	controller := evidence.IsController(input.Evidence)
+	evidenceCount := 0
 	for index, provisioner := range input.Provisioners {
 		switch provisioner.Type {
 		case "shell":
@@ -497,6 +630,16 @@ func validateAzureRemoteProvisioners(input azureRemoteBuildInput) error {
 			}
 		case "file":
 		case "evidence":
+			evidenceCount++
+			if controller {
+				if evidenceCount > 1 {
+					return fmt.Errorf("evidence publisher controller allows exactly one evidence provisioner")
+				}
+				if input.OSFamily != platform.OSFamilyLinux {
+					return fmt.Errorf("evidence publisher controller supports Linux Azure remote builds only")
+				}
+				continue
+			}
 			if index != len(input.Provisioners)-1 {
 				return fmt.Errorf("evidence provisioner must be the final Azure remote provisioner")
 			}
@@ -542,6 +685,17 @@ func azureRunCommand(input azureRemoteBuildInput, spec v1alpha1.ProvisionerSpec)
 		}
 		if input.Evidence == nil {
 			return "", nil, fmt.Errorf("evidence provisioner requires evidence policy")
+		}
+		if evidence.IsController(input.Evidence) {
+			if input.OSFamily != platform.OSFamilyLinux {
+				return "", nil, fmt.Errorf("evidence publisher controller supports Linux Azure remote builds only")
+			}
+			return "RunShellScript", []string{evidence.GuestEnvExports(evidence.GuestInput{
+				BuildID:   input.BuildID,
+				ImageName: input.ImageName,
+				SourceRef: azureEvidenceSourceRef(input),
+				Policy:    input.Evidence,
+			}) + "\n" + spec.Inline}, nil
 		}
 		if input.OSFamily == platform.OSFamilyLinux {
 			return "RunShellScript", []string{azureLinuxEvidenceCommand(input, spec.Inline)}, nil
@@ -754,6 +908,12 @@ type azureRemoteOperationRef struct {
 	VulnerabilityRef string
 	ProvenanceRef    string
 	SignatureRef     string
+	// ADR-011 fields.
+	EvidenceBlob        string
+	EvidenceSHA256      string
+	VerifyBoot          string
+	OwnedImage          string
+	OwnedGalleryVersion string
 }
 
 func (r azureRemoteOperationRef) String() string {
@@ -781,6 +941,16 @@ func (r azureRemoteOperationRef) String() string {
 		values.Set("provenanceRef", r.ProvenanceRef)
 		values.Set("signatureRef", r.SignatureRef)
 	}
+	setIf := func(key, value string) {
+		if value != "" {
+			values.Set(key, value)
+		}
+	}
+	setIf("evidenceBlob", r.EvidenceBlob)
+	setIf("evidenceSha256", r.EvidenceSHA256)
+	setIf("verifyBoot", r.VerifyBoot)
+	setIf("ownedImage", r.OwnedImage)
+	setIf("ownedGalleryVersion", r.OwnedGalleryVersion)
 	u := url.URL{Scheme: "azure", Host: "remote-build", Path: "/" + r.BuildID, RawQuery: values.Encode()}
 	return u.String()
 }
@@ -817,6 +987,12 @@ func parseAzureRemoteOperationRef(value string) (azureRemoteOperationRef, error)
 		VulnerabilityRef: u.Query().Get("vulnerabilityRef"),
 		ProvenanceRef:    u.Query().Get("provenanceRef"),
 		SignatureRef:     u.Query().Get("signatureRef"),
+
+		EvidenceBlob:        u.Query().Get("evidenceBlob"),
+		EvidenceSHA256:      u.Query().Get("evidenceSha256"),
+		VerifyBoot:          u.Query().Get("verifyBoot"),
+		OwnedImage:          u.Query().Get("ownedImage"),
+		OwnedGalleryVersion: u.Query().Get("ownedGalleryVersion"),
 	}, nil
 }
 
@@ -881,6 +1057,17 @@ func azureRemoteHygiene(input azureRemoteBuildInput, resultRef string) *platform
 		Checks:    checks,
 		ResultRef: resultRef,
 	}
+}
+
+func azureRemoteHygieneFor(input azureRemoteBuildInput, ref azureRemoteOperationRef, resultRef string) *platform.RemoteHygieneResult {
+	hygiene := azureRemoteHygiene(input, resultRef)
+	if ref.VerifyBoot == verifyBootPassed {
+		hygiene.Checks = append(hygiene.Checks, verifyBootCheck)
+	}
+	if ref.EvidenceSHA256 != "" {
+		hygiene.Checks = append(hygiene.Checks, "azure-evidence-outbox-retrieved")
+	}
+	return hygiene
 }
 
 func stringPtrs(values []string) []*string {

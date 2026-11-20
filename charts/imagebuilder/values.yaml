@@ -176,6 +176,38 @@ nodeSelector: {}
 tolerations: []
 affinity: {}
 
+# ADR-011: controller evidence publisher for VMImages with
+# spec.evidence.publisher=controller. The guest only collects SBOM and Trivy
+# report; the provider retrieves them and the controller publishes the VM image
+# descriptor to OCI, signs it with cosign (key, no transparency log) and
+# attaches SLSA provenance, CycloneDX SBOM and Trivy report as attestations.
+# Disabled unless configured; VMImages in controller mode fail fast with
+# EvidencePublisherNotConfigured while it is disabled.
+evidencePublisher:
+  enabled: false
+  # Step images (both need a POSIX shell); same digests as the ImageFactory.
+  orasImage: ghcr.io/oras-project/oras:v1.3.0@sha256:6ce045ce069a89934d6666b8b49f9c4c0145201bd6de6dbe2aee267814c55468
+  cosignImage: cgr.dev/chainguard/cosign:latest-dev@sha256:a790a4f273f25d95e3a1df67a48b792f92a75ca230f31d2cea95371401fe40e1
+  # kubernetes.io/dockerconfigjson Secret in the operator namespace with push
+  # credentials for spec.evidence.registryRepository.
+  registryCredentialsSecret: ""
+  # Secret in the operator namespace with the cosign private key and password.
+  cosignKeySecret:
+    name: ""
+    keyKey: cosign.key
+    passwordKey: cosign.password
+  # Optional egress proxy for the publication Job.
+  httpsProxy: ""
+  noProxy: ""
+  jobTimeout: 30m
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
 networkPolicy:
   enabled: true
   proxy:
