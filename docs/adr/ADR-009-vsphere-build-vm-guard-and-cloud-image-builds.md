@@ -5,7 +5,7 @@ status: Accepted
 date: 2026-11-12
 deciders: Platform Engineering
 supersedes: —
-superseded-by: —
+superseded-by: ADR-011 (in part: vSphere evidence limitation)
 classification: Internal
 ---
 
@@ -131,7 +131,12 @@ accepted by the vSphere remote build:
 - Cloud-image builds keep the image's single-root-disk layout; partition layouts of
   installer-based images (separate `/var`, `/tmp`, `/var/log`) are not reproduced.
 - VM-side evidence (ADR-008) is not available for vSphere: the guest has no managed
-  identity for registry access.
+  identity for registry access. **Superseded by
+  [ADR-011](ADR-011-controller-published-vm-image-evidence.md):** with
+  `spec.evidence.publisher: controller` the vSphere provider retrieves the guest
+  evidence outbox through Guest Operations and the core controller publishes and
+  signs it; `remote.verifyBoot` additionally boots a clone of the published
+  template with Aria-style vApp user-data.
 
 ## Related Documents
 

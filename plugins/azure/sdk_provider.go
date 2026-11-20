@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
+	"github.com/anwendt/imagebuilder/pkg/evidence"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
 	"github.com/anwendt/imagebuilder/pkg/provider/sdk"
 )
@@ -326,16 +327,10 @@ func platformRemoteBuildRequest(input sdk.RemoteBuildInput) *platform.RemoteBuil
 			Format:            input.Format,
 			Tags:              cloneStringMap(input.Tags),
 		},
-		Timeout: time.Duration(input.TimeoutSeconds) * time.Second,
-	}
-	if input.Evidence != nil {
-		req.Evidence = &v1alpha1.EvidenceSpec{
-			Required:             input.Evidence.Required,
-			SBOMFormat:           input.Evidence.SBOMFormat,
-			VulnerabilityScanner: input.Evidence.VulnerabilityScanner,
-			FailOnSeverity:       append([]string(nil), input.Evidence.FailOnSeverity...),
-			RegistryRepository:   input.Evidence.RegistryRepository,
-		}
+		Timeout:                    time.Duration(input.TimeoutSeconds) * time.Second,
+		Evidence:                   evidence.SpecFromSDK(input.Evidence),
+		ImageVersion:               input.ImageVersion,
+		EvidenceBundleAcknowledged: input.EvidenceBundleAcknowledged,
 	}
 	for _, provisioner := range input.Provisioners {
 		req.Provisioners = append(req.Provisioners, v1alpha1.ProvisionerSpec{
@@ -401,6 +396,8 @@ func sdkRemoteBuildResult(result *platform.RemoteBuildResult) sdk.RemoteBuildRes
 		Phase:        string(result.Phase),
 		Message:      result.Message,
 		Done:         result.Done,
+
+		EvidenceBundle: evidence.SDKBundle(result.EvidenceBundle),
 	}
 	if result.Hygiene != nil {
 		out.Hygiene = &sdk.RemoteHygieneResult{

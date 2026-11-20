@@ -404,12 +404,25 @@ spec:
                     minItems: 1
                     type: array
                     x-kubernetes-list-type: set
+                  publisher:
+                    default: provider
+                    description: |-
+                      Publisher selects who publishes and signs the evidence. "provider"
+                      (default, ADR-008) lets the guest publish through its own identity.
+                      "controller" (ADR-011) lets the guest only collect the evidence outbox;
+                      the provider retrieves it and the core controller publishes the VM image
+                      descriptor, signs it and attaches SBOM, vulnerability report and SLSA
+                      provenance as attestations.
+                    enum:
+                    - provider
+                    - controller
+                    type: string
                   registryRepository:
                     description: |-
                       RegistryRepository is the OCI repository prefix used by the evidence
                       provisioner, for example oci://registry.example.com/platform/evidence.
                       Published status references must additionally be pinned by sha256 digest.
-                    pattern: ^oci://[^\\s]+$
+                    pattern: ^oci://[^[:space:]]+$
                     type: string
                   required:
                     default: true
@@ -419,10 +432,41 @@ spec:
                     type: boolean
                   sbomFormat:
                     default: spdx-json
-                    description: SBOMFormat selects the required SBOM document format.
+                    description: |-
+                      SBOMFormat selects the required SBOM document format. publisher=controller
+                      requires cyclonedx-json.
                     enum:
                     - spdx-json
+                    - cyclonedx-json
                     type: string
+                  subject:
+                    description: |-
+                      Subject names the logical VM image the evidence describes. Required for
+                      publisher=controller.
+                    properties:
+                      name:
+                        description: |-
+                          Name of the logical image, used as OCI repository name below
+                          registryRepository.
+                        maxLength: 128
+                        pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$
+                        type: string
+                      platform:
+                        description: |-
+                          Platform identifies the target platform of this build, for example
+                          azure or vsphere-fci-c042.
+                        maxLength: 63
+                        pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$
+                        type: string
+                      version:
+                        description: Version of the logical image, used as OCI tag.
+                        pattern: ^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$
+                        type: string
+                    required:
+                    - name
+                    - platform
+                    - version
+                    type: object
                   vulnerabilityScanner:
                     default: trivy
                     description: VulnerabilityScanner identifies the report schema
@@ -962,10 +1006,25 @@ spec:
                   document contents and signing material are never stored in Kubernetes
                   status.
                 properties:
+                  bundleDigest:
+                    description: |-
+                      BundleDigest is the sha256 digest of the guest evidence bundle retrieved
+                      by the provider (publisher=controller).
+                    type: string
+                  descriptorRef:
+                    description: |-
+                      DescriptorRef is the immutable OCI reference of the VM image descriptor
+                      published by the controller (publisher=controller).
+                    type: string
                   generatedAt:
                     description: GeneratedAt records when the provider completed evidence
                       publication.
                     format: date-time
+                    type: string
+                  indexRef:
+                    description: |-
+                      IndexRef is the immutable OCI reference of the image index version that
+                      contained this platform descriptor when the controller published it.
                     type: string
                   message:
                     description: Message is a non-sensitive summary.
@@ -974,9 +1033,20 @@ spec:
                     description: ProvenanceRef is an immutable OCI reference to SLSA
                       provenance.
                     type: string
+                  publishJobRef:
+                    description: |-
+                      PublishJobRef names the controller-namespace Job that publishes and
+                      signs the evidence (publisher=controller).
+                    type: string
+                  publisher:
+                    description: 'Publisher records who published the evidence: provider
+                      or controller.'
+                    type: string
                   sbomRef:
-                    description: SBOMRef is an immutable OCI reference to an SPDX
-                      JSON document.
+                    description: |-
+                      SBOMRef is an immutable OCI reference to the SBOM: an SPDX JSON document
+                      (publisher=provider) or the CycloneDX attestation bundle referring to the
+                      VM image descriptor (publisher=controller).
                     type: string
                   signatureRef:
                     description: SignatureRef is an immutable OCI reference to the

@@ -335,3 +335,41 @@ func TestPluginReconcileRemoteBuildReturnsImage(t *testing.T) {
 		t.Fatalf("remote result = %#v, want ready image", result)
 	}
 }
+
+func TestPluginReconcileRemoteBuildCarriesEvidence(t *testing.T) {
+	p, client := newInitializedPlugin(t)
+	client.remoteState = &vsphereRemoteBuildState{
+		OperationRef:   "vsphere://remote-build/build-123?imageRef=vm-123",
+		Phase:          platform.RemoteBuildPhaseReady,
+		Done:           true,
+		Image:          &platform.ImageRef{ID: "vm-123"},
+		EvidenceBundle: &platform.RemoteEvidenceBundle{SHA256: "abc"},
+	}
+	policy := &v1alpha1.EvidenceSpec{Publisher: v1alpha1.EvidencePublisherController}
+	req := &platform.RemoteBuildRequest{
+		BuildID:                    "build-123",
+		OSFamily:                   platform.OSFamilyLinux,
+		SourceProviderRef:          "vm-100",
+		Evidence:                   policy,
+		ImageVersion:               "1.2.0",
+		EvidenceBundleAcknowledged: true,
+		Target:                     v1alpha1.TargetSpec{ProviderConfigRef: v1alpha1.ProviderConfigRef{Name: "vsphere-prod"}, Format: "ova"},
+	}
+	result, err := p.ReconcileRemoteBuild(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.EvidenceBundle == nil || result.EvidenceBundle.SHA256 != "abc" {
+		t.Fatalf("result bundle = %+v", result.EvidenceBundle)
+	}
+	in := client.remoteInput
+	if in.Evidence != policy || in.ImageVersion != "1.2.0" || !in.EvidenceBundleAcknowledged {
+		t.Fatalf("remote input = %+v", in)
+	}
+	if err := p.CleanupRemoteBuild(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if client.remoteCleanup.Evidence != policy {
+		t.Fatalf("cleanup input evidence = %+v", client.remoteCleanup.Evidence)
+	}
+}

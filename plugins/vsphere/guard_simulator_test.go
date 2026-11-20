@@ -21,6 +21,7 @@ func newGuardSimulatorClient(t *testing.T, extra map[string]string) (*govmomiCli
 	if err := model.Create(); err != nil {
 		t.Fatalf("create simulator model: %v", err)
 	}
+	model.Service.RegisterEndpoints = true
 	server := model.Service.NewServer()
 	cfg := config{
 		endpoint:       server.URL.String(),

@@ -5,7 +5,7 @@ status: Accepted
 date: 2026-08-22
 deciders: Platform Engineering
 supersedes: —
-superseded-by: —
+superseded-by: ADR-011 (in part: publisher and signing for spec.evidence.publisher=controller)
 classification: Internal
 ---
 
@@ -13,7 +13,12 @@ classification: Internal
 
 ## Status
 
-**Accepted**
+**Accepted**, extended by [ADR-011](ADR-011-controller-published-vm-image-evidence.md).
+This ADR describes `spec.evidence.publisher: provider` (the default), where the
+guest publishes and signs. With `publisher: controller` the guest only collects
+an evidence outbox, the provider retrieves it and the core controller publishes
+and signs with the ImageFactory cosign key; there, provisioners may follow the
+evidence provisioner and the guest needs no registry or KMS access.
 
 ## Context
 

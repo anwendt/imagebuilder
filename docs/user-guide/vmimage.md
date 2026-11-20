@@ -314,6 +314,18 @@ Sigstore Policy Controller.
 
 ## Golden-image evidence
 
+There are two evidence publishers:
+
+- `spec.evidence.publisher: controller` (recommended, Azure and vSphere,
+  [ADR-011](../adr/ADR-011-controller-published-vm-image-evidence.md)): the
+  guest only collects SBOM and Trivy report into an outbox, the provider
+  retrieves it and the imagebuilder controller publishes and signs a VM image
+  descriptor in the ImageFactory format. See
+  [VM Image Evidence (controller publisher)](evidence.md).
+- `spec.evidence.publisher: provider` (default, Azure only,
+  [ADR-008](../adr/ADR-008-vm-image-evidence-contract.md)): the guest publishes
+  and signs itself, described below.
+
 Remote builds can require promotion evidence before the provider registers the
 image. The final `evidence` provisioner must publish an SPDX JSON SBOM, a Trivy
 JSON vulnerability report, SLSA provenance, and its Cosign verification bundle

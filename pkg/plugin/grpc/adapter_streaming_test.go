@@ -177,6 +177,7 @@ func (s *streamingFakeServer) ReconcileRemoteBuild(_ context.Context, req *provi
 			ProvenanceRef:          "oci://registry.example.com/evidence/provenance@sha256:" + strings.Repeat("a", 64),
 			SignatureRef:           "oci://registry.example.com/evidence/signature@sha256:" + strings.Repeat("a", 64),
 		},
+		EvidenceBundle: &providerv1.RemoteEvidenceBundle{Content: []byte("bundle"), Sha256: strings.Repeat("b", 64), MediaType: "application/x-test"},
 		Images: []*providerv1.RemoteImageRef{
 			{
 				Provider:           "stream-provider",
@@ -489,13 +490,23 @@ func TestAdapter_ReconcileRemoteBuild_MapsEvidencePolicyAndResult(t *testing.T) 
 			VulnerabilityScanner: "trivy",
 			FailOnSeverity:       []string{"HIGH", "CRITICAL"},
 			RegistryRepository:   "oci://registry.example.com/evidence",
+			Publisher:            v1alpha1.EvidencePublisherController,
+			Subject:              &v1alpha1.EvidenceSubject{Name: "ubuntu-2604-base", Version: "1.2.0", Platform: "azure"},
 		},
+		ImageVersion:               "1.2.0",
+		EvidenceBundleAcknowledged: true,
 	})
 	if err != nil {
 		t.Fatalf("ReconcileRemoteBuild returned error: %v", err)
 	}
 	if server.remoteReq == nil || server.remoteReq.GetEvidence() == nil || !server.remoteReq.GetEvidence().GetRequired() {
 		t.Fatalf("remote evidence request = %#v, want required policy", server.remoteReq)
+	}
+	if got := server.remoteReq.GetEvidence(); got.GetPublisher() != "controller" || got.GetSubject().GetPlatform() != "azure" || server.remoteReq.GetImageVersion() != "1.2.0" || !server.remoteReq.GetEvidenceBundleAcknowledged() {
+		t.Fatalf("ADR-011 request fields not mapped: %#v", server.remoteReq)
+	}
+	if result.EvidenceBundle == nil || string(result.EvidenceBundle.Content) != "bundle" || result.EvidenceBundle.SHA256 != strings.Repeat("b", 64) || result.EvidenceBundle.MediaType != "application/x-test" {
+		t.Fatalf("evidence bundle not mapped: %#v", result.EvidenceBundle)
 	}
 	if result.Evidence == nil || result.Evidence.Status != "passed" || result.Evidence.SignatureRef == "" {
 		t.Fatalf("remote evidence result = %#v, want passed immutable references", result.Evidence)

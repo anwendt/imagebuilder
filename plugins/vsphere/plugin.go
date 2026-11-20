@@ -87,6 +87,7 @@ type config struct {
 	buildDiskGiB            int
 	publishToLibrary        bool
 	keepFailedBuild         bool
+	verifyBoot              bool
 	buildNet                *buildNetwork
 	buildCPUs               int32
 	buildMemoryMiB          int
@@ -186,6 +187,7 @@ func (p *Plugin) Init(ctx context.Context, cfg platform.PluginConfig) error {
 		buildDiskGiB:            intFromExtra(cfg.Extra, "buildDiskGiB", 0),
 		publishToLibrary:        strings.EqualFold(strings.TrimSpace(cfg.Extra["remote.publishTo"]), "content-library"),
 		keepFailedBuild:         boolFromExtra(cfg.Extra, "keepFailedBuild", false),
+		verifyBoot:              boolFromExtra(cfg.Extra, "remote.verifyBoot", false),
 		buildCPUs:               int32FromExtra(cfg.Extra, "buildCPUs"),
 		buildMemoryMiB:          intFromExtra(cfg.Extra, "buildMemoryMiB", 0),
 		extraConfig:             cloneStringMap(cfg.Extra),
@@ -230,6 +232,9 @@ func (c config) validate() error {
 	}
 	if c.publishToLibrary && c.contentLibrary == "" && c.contentLibraryID == "" {
 		return fmt.Errorf("vsphere plugin: remote.publishTo content-library requires ProviderConfig extra contentLibrary or contentLibraryID")
+	}
+	if c.verifyBoot && !c.publishToLibrary {
+		return fmt.Errorf("vsphere plugin: remote.verifyBoot requires remote.publishTo content-library")
 	}
 	if c.publishToLibrary {
 		if err := checkTemplateFolderPath(c.templateFolder, c.buildFolder, c.protectedNames); err != nil {
@@ -462,16 +467,21 @@ func (p *Plugin) ReconcileRemoteBuild(ctx context.Context, req *platform.RemoteB
 		ProviderConfigName: req.Target.ProviderConfigRef.Name,
 		Provisioners:       req.Provisioners,
 		GuestAccess:        req.GuestAccess,
+
+		Evidence:                   req.Evidence,
+		ImageVersion:               req.ImageVersion,
+		EvidenceBundleAcknowledged: req.EvidenceBundleAcknowledged,
 	})
 	if err != nil {
 		return nil, providererrors.Classify(err)
 	}
 	result := &platform.RemoteBuildResult{
-		OperationRef: state.OperationRef,
-		Phase:        state.Phase,
-		Message:      state.Message,
-		Done:         state.Done,
-		Hygiene:      state.Hygiene,
+		OperationRef:   state.OperationRef,
+		Phase:          state.Phase,
+		Message:        state.Message,
+		Done:           state.Done,
+		Hygiene:        state.Hygiene,
+		EvidenceBundle: state.EvidenceBundle,
 	}
 	if state.Done {
 		if state.Image == nil || state.Image.ID == "" {
@@ -506,6 +516,7 @@ func (p *Plugin) CleanupRemoteBuild(ctx context.Context, req *platform.RemoteBui
 		Tags:              req.Target.Tags,
 		Provisioners:      req.Provisioners,
 		GuestAccess:       req.GuestAccess,
+		Evidence:          req.Evidence,
 	})
 }
 

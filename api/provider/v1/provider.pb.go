@@ -201,8 +201,16 @@ type RemoteBuildRequest struct {
 	SourceProviderRef string                `protobuf:"bytes,18,opt,name=source_provider_ref,json=sourceProviderRef,proto3" json:"source_provider_ref,omitempty"`
 	SourceMarketplace *MarketplaceRef       `protobuf:"bytes,19,opt,name=source_marketplace,json=sourceMarketplace,proto3" json:"source_marketplace,omitempty"`
 	Evidence          *RemoteEvidencePolicy `protobuf:"bytes,20,opt,name=evidence,proto3" json:"evidence,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// evidence_bundle_acknowledged is set by the core after it durably stored
+	// the evidence bundle of a completed build (ADR-011). The provider may then
+	// delete its own persisted copy and stop returning the bundle.
+	EvidenceBundleAcknowledged bool `protobuf:"varint,21,opt,name=evidence_bundle_acknowledged,json=evidenceBundleAcknowledged,proto3" json:"evidence_bundle_acknowledged,omitempty"`
+	// image_version is the logical image version resolved by the core from
+	// spec.evidence.subject.version or the imagebuilder.io/image-version
+	// annotation. Providers may use it for platform version names (ADR-011).
+	ImageVersion  string `protobuf:"bytes,22,opt,name=image_version,json=imageVersion,proto3" json:"image_version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RemoteBuildRequest) Reset() {
@@ -375,6 +383,20 @@ func (x *RemoteBuildRequest) GetEvidence() *RemoteEvidencePolicy {
 	return nil
 }
 
+func (x *RemoteBuildRequest) GetEvidenceBundleAcknowledged() bool {
+	if x != nil {
+		return x.EvidenceBundleAcknowledged
+	}
+	return false
+}
+
+func (x *RemoteBuildRequest) GetImageVersion() string {
+	if x != nil {
+		return x.ImageVersion
+	}
+	return ""
+}
+
 type RemoteEvidencePolicy struct {
 	state                protoimpl.MessageState `protogen:"open.v1"`
 	Required             bool                   `protobuf:"varint,1,opt,name=required,proto3" json:"required,omitempty"`
@@ -382,8 +404,13 @@ type RemoteEvidencePolicy struct {
 	VulnerabilityScanner string                 `protobuf:"bytes,3,opt,name=vulnerability_scanner,json=vulnerabilityScanner,proto3" json:"vulnerability_scanner,omitempty"`
 	FailOnSeverity       []string               `protobuf:"bytes,4,rep,name=fail_on_severity,json=failOnSeverity,proto3" json:"fail_on_severity,omitempty"`
 	RegistryRepository   string                 `protobuf:"bytes,5,opt,name=registry_repository,json=registryRepository,proto3" json:"registry_repository,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// publisher is "provider" (ADR-008, default when empty) or "controller"
+	// (ADR-011: the guest only collects, the provider retrieves the outbox and
+	// the core controller publishes and signs).
+	Publisher     string                 `protobuf:"bytes,6,opt,name=publisher,proto3" json:"publisher,omitempty"`
+	Subject       *RemoteEvidenceSubject `protobuf:"bytes,7,opt,name=subject,proto3" json:"subject,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RemoteEvidencePolicy) Reset() {
@@ -451,6 +478,80 @@ func (x *RemoteEvidencePolicy) GetRegistryRepository() string {
 	return ""
 }
 
+func (x *RemoteEvidencePolicy) GetPublisher() string {
+	if x != nil {
+		return x.Publisher
+	}
+	return ""
+}
+
+func (x *RemoteEvidencePolicy) GetSubject() *RemoteEvidenceSubject {
+	if x != nil {
+		return x.Subject
+	}
+	return nil
+}
+
+type RemoteEvidenceSubject struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Version       string                 `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
+	Platform      string                 `protobuf:"bytes,3,opt,name=platform,proto3" json:"platform,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoteEvidenceSubject) Reset() {
+	*x = RemoteEvidenceSubject{}
+	mi := &file_provider_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoteEvidenceSubject) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoteEvidenceSubject) ProtoMessage() {}
+
+func (x *RemoteEvidenceSubject) ProtoReflect() protoreflect.Message {
+	mi := &file_provider_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoteEvidenceSubject.ProtoReflect.Descriptor instead.
+func (*RemoteEvidenceSubject) Descriptor() ([]byte, []int) {
+	return file_provider_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *RemoteEvidenceSubject) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *RemoteEvidenceSubject) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+func (x *RemoteEvidenceSubject) GetPlatform() string {
+	if x != nil {
+		return x.Platform
+	}
+	return ""
+}
+
 type MarketplaceRef struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Publisher     string                 `protobuf:"bytes,1,opt,name=publisher,proto3" json:"publisher,omitempty"`
@@ -463,7 +564,7 @@ type MarketplaceRef struct {
 
 func (x *MarketplaceRef) Reset() {
 	*x = MarketplaceRef{}
-	mi := &file_provider_proto_msgTypes[4]
+	mi := &file_provider_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -475,7 +576,7 @@ func (x *MarketplaceRef) String() string {
 func (*MarketplaceRef) ProtoMessage() {}
 
 func (x *MarketplaceRef) ProtoReflect() protoreflect.Message {
-	mi := &file_provider_proto_msgTypes[4]
+	mi := &file_provider_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -488,7 +589,7 @@ func (x *MarketplaceRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MarketplaceRef.ProtoReflect.Descriptor instead.
 func (*MarketplaceRef) Descriptor() ([]byte, []int) {
-	return file_provider_proto_rawDescGZIP(), []int{4}
+	return file_provider_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *MarketplaceRef) GetPublisher() string {
@@ -536,7 +637,7 @@ type RemoteProvisioner struct {
 
 func (x *RemoteProvisioner) Reset() {
 	*x = RemoteProvisioner{}
-	mi := &file_provider_proto_msgTypes[5]
+	mi := &file_provider_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -548,7 +649,7 @@ func (x *RemoteProvisioner) String() string {
 func (*RemoteProvisioner) ProtoMessage() {}
 
 func (x *RemoteProvisioner) ProtoReflect() protoreflect.Message {
-	mi := &file_provider_proto_msgTypes[5]
+	mi := &file_provider_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -561,7 +662,7 @@ func (x *RemoteProvisioner) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoteProvisioner.ProtoReflect.Descriptor instead.
 func (*RemoteProvisioner) Descriptor() ([]byte, []int) {
-	return file_provider_proto_rawDescGZIP(), []int{5}
+	return file_provider_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *RemoteProvisioner) GetType() string {
@@ -629,7 +730,7 @@ type RemoteProvisionerSource struct {
 
 func (x *RemoteProvisionerSource) Reset() {
 	*x = RemoteProvisionerSource{}
-	mi := &file_provider_proto_msgTypes[6]
+	mi := &file_provider_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -641,7 +742,7 @@ func (x *RemoteProvisionerSource) String() string {
 func (*RemoteProvisionerSource) ProtoMessage() {}
 
 func (x *RemoteProvisionerSource) ProtoReflect() protoreflect.Message {
-	mi := &file_provider_proto_msgTypes[6]
+	mi := &file_provider_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -654,7 +755,7 @@ func (x *RemoteProvisionerSource) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoteProvisionerSource.ProtoReflect.Descriptor instead.
 func (*RemoteProvisionerSource) Descriptor() ([]byte, []int) {
-	return file_provider_proto_rawDescGZIP(), []int{6}
+	return file_provider_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *RemoteProvisionerSource) GetGit() *RemoteGitProvisionerSource {
@@ -676,7 +777,7 @@ type RemoteGitProvisionerSource struct {
 
 func (x *RemoteGitProvisionerSource) Reset() {
 	*x = RemoteGitProvisionerSource{}
-	mi := &file_provider_proto_msgTypes[7]
+	mi := &file_provider_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -688,7 +789,7 @@ func (x *RemoteGitProvisionerSource) String() string {
 func (*RemoteGitProvisionerSource) ProtoMessage() {}
 
 func (x *RemoteGitProvisionerSource) ProtoReflect() protoreflect.Message {
-	mi := &file_provider_proto_msgTypes[7]
+	mi := &file_provider_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -701,7 +802,7 @@ func (x *RemoteGitProvisionerSource) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoteGitProvisionerSource.ProtoReflect.Descriptor instead.
 func (*RemoteGitProvisionerSource) Descriptor() ([]byte, []int) {
-	return file_provider_proto_rawDescGZIP(), []int{7}
+	return file_provider_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *RemoteGitProvisionerSource) GetUrl() string {
@@ -743,7 +844,7 @@ type RemoteGitProvisionerAuth struct {
 
 func (x *RemoteGitProvisionerAuth) Reset() {
 	*x = RemoteGitProvisionerAuth{}
-	mi := &file_provider_proto_msgTypes[8]
+	mi := &file_provider_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -755,7 +856,7 @@ func (x *RemoteGitProvisionerAuth) String() string {
 func (*RemoteGitProvisionerAuth) ProtoMessage() {}
 
 func (x *RemoteGitProvisionerAuth) ProtoReflect() protoreflect.Message {
-	mi := &file_provider_proto_msgTypes[8]
+	mi := &file_provider_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -768,7 +869,7 @@ func (x *RemoteGitProvisionerAuth) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoteGitProvisionerAuth.ProtoReflect.Descriptor instead.
 func (*RemoteGitProvisionerAuth) Descriptor() ([]byte, []int) {
-	return file_provider_proto_rawDescGZIP(), []int{8}
+	return file_provider_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *RemoteGitProvisionerAuth) GetToken() string {
@@ -806,7 +907,7 @@ type RemoteGuestAccess struct {
 
 func (x *RemoteGuestAccess) Reset() {
 	*x = RemoteGuestAccess{}
-	mi := &file_provider_proto_msgTypes[9]
+	mi := &file_provider_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -818,7 +919,7 @@ func (x *RemoteGuestAccess) String() string {
 func (*RemoteGuestAccess) ProtoMessage() {}
 
 func (x *RemoteGuestAccess) ProtoReflect() protoreflect.Message {
-	mi := &file_provider_proto_msgTypes[9]
+	mi := &file_provider_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -831,7 +932,7 @@ func (x *RemoteGuestAccess) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoteGuestAccess.ProtoReflect.Descriptor instead.
 func (*RemoteGuestAccess) Descriptor() ([]byte, []int) {
-	return file_provider_proto_rawDescGZIP(), []int{9}
+	return file_provider_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *RemoteGuestAccess) GetProtocol() string {
@@ -877,22 +978,26 @@ func (x *RemoteGuestAccess) GetInjectionMethod() string {
 }
 
 type RemoteBuildResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	OperationRef  string                 `protobuf:"bytes,1,opt,name=operation_ref,json=operationRef,proto3" json:"operation_ref,omitempty"`
-	Phase         string                 `protobuf:"bytes,2,opt,name=phase,proto3" json:"phase,omitempty"`
-	Message       string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
-	Done          bool                   `protobuf:"varint,4,opt,name=done,proto3" json:"done,omitempty"`
-	Images        []*RemoteImageRef      `protobuf:"bytes,5,rep,name=images,proto3" json:"images,omitempty"`
-	Artifact      *RemoteArtifact        `protobuf:"bytes,6,opt,name=artifact,proto3" json:"artifact,omitempty"`
-	Hygiene       *RemoteHygieneResult   `protobuf:"bytes,7,opt,name=hygiene,proto3" json:"hygiene,omitempty"`
-	Evidence      *RemoteEvidenceResult  `protobuf:"bytes,8,opt,name=evidence,proto3" json:"evidence,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	OperationRef string                 `protobuf:"bytes,1,opt,name=operation_ref,json=operationRef,proto3" json:"operation_ref,omitempty"`
+	Phase        string                 `protobuf:"bytes,2,opt,name=phase,proto3" json:"phase,omitempty"`
+	Message      string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	Done         bool                   `protobuf:"varint,4,opt,name=done,proto3" json:"done,omitempty"`
+	Images       []*RemoteImageRef      `protobuf:"bytes,5,rep,name=images,proto3" json:"images,omitempty"`
+	Artifact     *RemoteArtifact        `protobuf:"bytes,6,opt,name=artifact,proto3" json:"artifact,omitempty"`
+	Hygiene      *RemoteHygieneResult   `protobuf:"bytes,7,opt,name=hygiene,proto3" json:"hygiene,omitempty"`
+	Evidence     *RemoteEvidenceResult  `protobuf:"bytes,8,opt,name=evidence,proto3" json:"evidence,omitempty"`
+	// evidence_bundle carries the guest evidence outbox (ADR-011) for
+	// publisher=controller. Providers return it with every Done response until
+	// the core acknowledged it or the build was cleaned up.
+	EvidenceBundle *RemoteEvidenceBundle `protobuf:"bytes,9,opt,name=evidence_bundle,json=evidenceBundle,proto3" json:"evidence_bundle,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *RemoteBuildResponse) Reset() {
 	*x = RemoteBuildResponse{}
-	mi := &file_provider_proto_msgTypes[10]
+	mi := &file_provider_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -904,7 +1009,7 @@ func (x *RemoteBuildResponse) String() string {
 func (*RemoteBuildResponse) ProtoMessage() {}
 
 func (x *RemoteBuildResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_provider_proto_msgTypes[10]
+	mi := &file_provider_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -917,7 +1022,7 @@ func (x *RemoteBuildResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoteBuildResponse.ProtoReflect.Descriptor instead.
 func (*RemoteBuildResponse) Descriptor() ([]byte, []int) {
-	return file_provider_proto_rawDescGZIP(), []int{10}
+	return file_provider_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *RemoteBuildResponse) GetOperationRef() string {
@@ -976,6 +1081,76 @@ func (x *RemoteBuildResponse) GetEvidence() *RemoteEvidenceResult {
 	return nil
 }
 
+func (x *RemoteBuildResponse) GetEvidenceBundle() *RemoteEvidenceBundle {
+	if x != nil {
+		return x.EvidenceBundle
+	}
+	return nil
+}
+
+type RemoteEvidenceBundle struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// content is the gzip-compressed tar of the guest outbox directory
+	// "evidence/" (at most 900 KiB).
+	Content []byte `protobuf:"bytes,1,opt,name=content,proto3" json:"content,omitempty"`
+	// sha256 is the lowercase hex SHA-256 of content.
+	Sha256        string `protobuf:"bytes,2,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	MediaType     string `protobuf:"bytes,3,opt,name=media_type,json=mediaType,proto3" json:"media_type,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoteEvidenceBundle) Reset() {
+	*x = RemoteEvidenceBundle{}
+	mi := &file_provider_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoteEvidenceBundle) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoteEvidenceBundle) ProtoMessage() {}
+
+func (x *RemoteEvidenceBundle) ProtoReflect() protoreflect.Message {
+	mi := &file_provider_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoteEvidenceBundle.ProtoReflect.Descriptor instead.
+func (*RemoteEvidenceBundle) Descriptor() ([]byte, []int) {
+	return file_provider_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *RemoteEvidenceBundle) GetContent() []byte {
+	if x != nil {
+		return x.Content
+	}
+	return nil
+}
+
+func (x *RemoteEvidenceBundle) GetSha256() string {
+	if x != nil {
+		return x.Sha256
+	}
+	return ""
+}
+
+func (x *RemoteEvidenceBundle) GetMediaType() string {
+	if x != nil {
+		return x.MediaType
+	}
+	return ""
+}
+
 type RemoteEvidenceResult struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// status is provider-neutral and should be "passed", "failed", or "unknown".
@@ -991,7 +1166,7 @@ type RemoteEvidenceResult struct {
 
 func (x *RemoteEvidenceResult) Reset() {
 	*x = RemoteEvidenceResult{}
-	mi := &file_provider_proto_msgTypes[11]
+	mi := &file_provider_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1003,7 +1178,7 @@ func (x *RemoteEvidenceResult) String() string {
 func (*RemoteEvidenceResult) ProtoMessage() {}
 
 func (x *RemoteEvidenceResult) ProtoReflect() protoreflect.Message {
-	mi := &file_provider_proto_msgTypes[11]
+	mi := &file_provider_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1016,7 +1191,7 @@ func (x *RemoteEvidenceResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoteEvidenceResult.ProtoReflect.Descriptor instead.
 func (*RemoteEvidenceResult) Descriptor() ([]byte, []int) {
-	return file_provider_proto_rawDescGZIP(), []int{11}
+	return file_provider_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *RemoteEvidenceResult) GetStatus() string {
@@ -1079,7 +1254,7 @@ type RemoteHygieneResult struct {
 
 func (x *RemoteHygieneResult) Reset() {
 	*x = RemoteHygieneResult{}
-	mi := &file_provider_proto_msgTypes[12]
+	mi := &file_provider_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1091,7 +1266,7 @@ func (x *RemoteHygieneResult) String() string {
 func (*RemoteHygieneResult) ProtoMessage() {}
 
 func (x *RemoteHygieneResult) ProtoReflect() protoreflect.Message {
-	mi := &file_provider_proto_msgTypes[12]
+	mi := &file_provider_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1104,7 +1279,7 @@ func (x *RemoteHygieneResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoteHygieneResult.ProtoReflect.Descriptor instead.
 func (*RemoteHygieneResult) Descriptor() ([]byte, []int) {
-	return file_provider_proto_rawDescGZIP(), []int{12}
+	return file_provider_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *RemoteHygieneResult) GetStatus() string {
@@ -1151,7 +1326,7 @@ type RemoteImageRef struct {
 
 func (x *RemoteImageRef) Reset() {
 	*x = RemoteImageRef{}
-	mi := &file_provider_proto_msgTypes[13]
+	mi := &file_provider_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1163,7 +1338,7 @@ func (x *RemoteImageRef) String() string {
 func (*RemoteImageRef) ProtoMessage() {}
 
 func (x *RemoteImageRef) ProtoReflect() protoreflect.Message {
-	mi := &file_provider_proto_msgTypes[13]
+	mi := &file_provider_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1176,7 +1351,7 @@ func (x *RemoteImageRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoteImageRef.ProtoReflect.Descriptor instead.
 func (*RemoteImageRef) Descriptor() ([]byte, []int) {
-	return file_provider_proto_rawDescGZIP(), []int{13}
+	return file_provider_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *RemoteImageRef) GetProvider() string {
@@ -1249,7 +1424,7 @@ type RemoteArtifact struct {
 
 func (x *RemoteArtifact) Reset() {
 	*x = RemoteArtifact{}
-	mi := &file_provider_proto_msgTypes[14]
+	mi := &file_provider_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1261,7 +1436,7 @@ func (x *RemoteArtifact) String() string {
 func (*RemoteArtifact) ProtoMessage() {}
 
 func (x *RemoteArtifact) ProtoReflect() protoreflect.Message {
-	mi := &file_provider_proto_msgTypes[14]
+	mi := &file_provider_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1274,7 +1449,7 @@ func (x *RemoteArtifact) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoteArtifact.ProtoReflect.Descriptor instead.
 func (*RemoteArtifact) Descriptor() ([]byte, []int) {
-	return file_provider_proto_rawDescGZIP(), []int{14}
+	return file_provider_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *RemoteArtifact) GetPath() string {
@@ -1329,7 +1504,7 @@ type RemoteBuildCleanupResponse struct {
 
 func (x *RemoteBuildCleanupResponse) Reset() {
 	*x = RemoteBuildCleanupResponse{}
-	mi := &file_provider_proto_msgTypes[15]
+	mi := &file_provider_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1341,7 +1516,7 @@ func (x *RemoteBuildCleanupResponse) String() string {
 func (*RemoteBuildCleanupResponse) ProtoMessage() {}
 
 func (x *RemoteBuildCleanupResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_provider_proto_msgTypes[15]
+	mi := &file_provider_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1354,7 +1529,7 @@ func (x *RemoteBuildCleanupResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoteBuildCleanupResponse.ProtoReflect.Descriptor instead.
 func (*RemoteBuildCleanupResponse) Descriptor() ([]byte, []int) {
-	return file_provider_proto_rawDescGZIP(), []int{15}
+	return file_provider_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *RemoteBuildCleanupResponse) GetCleaned() bool {
@@ -1393,7 +1568,7 @@ type ValidateConfigRequest struct {
 
 func (x *ValidateConfigRequest) Reset() {
 	*x = ValidateConfigRequest{}
-	mi := &file_provider_proto_msgTypes[16]
+	mi := &file_provider_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1405,7 +1580,7 @@ func (x *ValidateConfigRequest) String() string {
 func (*ValidateConfigRequest) ProtoMessage() {}
 
 func (x *ValidateConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_provider_proto_msgTypes[16]
+	mi := &file_provider_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1418,7 +1593,7 @@ func (x *ValidateConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateConfigRequest.ProtoReflect.Descriptor instead.
 func (*ValidateConfigRequest) Descriptor() ([]byte, []int) {
-	return file_provider_proto_rawDescGZIP(), []int{16}
+	return file_provider_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ValidateConfigRequest) GetProviderConfigName() string {
@@ -1487,7 +1662,7 @@ type ValidateConfigResponse struct {
 
 func (x *ValidateConfigResponse) Reset() {
 	*x = ValidateConfigResponse{}
-	mi := &file_provider_proto_msgTypes[17]
+	mi := &file_provider_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1499,7 +1674,7 @@ func (x *ValidateConfigResponse) String() string {
 func (*ValidateConfigResponse) ProtoMessage() {}
 
 func (x *ValidateConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_provider_proto_msgTypes[17]
+	mi := &file_provider_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1512,7 +1687,7 @@ func (x *ValidateConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateConfigResponse.ProtoReflect.Descriptor instead.
 func (*ValidateConfigResponse) Descriptor() ([]byte, []int) {
-	return file_provider_proto_rawDescGZIP(), []int{17}
+	return file_provider_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ValidateConfigResponse) GetValid() bool {
@@ -1556,7 +1731,7 @@ type UploadChunk struct {
 
 func (x *UploadChunk) Reset() {
 	*x = UploadChunk{}
-	mi := &file_provider_proto_msgTypes[18]
+	mi := &file_provider_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1568,7 +1743,7 @@ func (x *UploadChunk) String() string {
 func (*UploadChunk) ProtoMessage() {}
 
 func (x *UploadChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_provider_proto_msgTypes[18]
+	mi := &file_provider_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1581,7 +1756,7 @@ func (x *UploadChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadChunk.ProtoReflect.Descriptor instead.
 func (*UploadChunk) Descriptor() ([]byte, []int) {
-	return file_provider_proto_rawDescGZIP(), []int{18}
+	return file_provider_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *UploadChunk) GetData() []byte {
@@ -1690,7 +1865,7 @@ type UploadProgress struct {
 
 func (x *UploadProgress) Reset() {
 	*x = UploadProgress{}
-	mi := &file_provider_proto_msgTypes[19]
+	mi := &file_provider_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1702,7 +1877,7 @@ func (x *UploadProgress) String() string {
 func (*UploadProgress) ProtoMessage() {}
 
 func (x *UploadProgress) ProtoReflect() protoreflect.Message {
-	mi := &file_provider_proto_msgTypes[19]
+	mi := &file_provider_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1715,7 +1890,7 @@ func (x *UploadProgress) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadProgress.ProtoReflect.Descriptor instead.
 func (*UploadProgress) Descriptor() ([]byte, []int) {
-	return file_provider_proto_rawDescGZIP(), []int{19}
+	return file_provider_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *UploadProgress) GetBytesWritten() int64 {
@@ -1796,7 +1971,7 @@ type RegisterRequest struct {
 
 func (x *RegisterRequest) Reset() {
 	*x = RegisterRequest{}
-	mi := &file_provider_proto_msgTypes[20]
+	mi := &file_provider_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1808,7 +1983,7 @@ func (x *RegisterRequest) String() string {
 func (*RegisterRequest) ProtoMessage() {}
 
 func (x *RegisterRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_provider_proto_msgTypes[20]
+	mi := &file_provider_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1821,7 +1996,7 @@ func (x *RegisterRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterRequest.ProtoReflect.Descriptor instead.
 func (*RegisterRequest) Descriptor() ([]byte, []int) {
-	return file_provider_proto_rawDescGZIP(), []int{20}
+	return file_provider_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *RegisterRequest) GetProviderRef() string {
@@ -1878,7 +2053,7 @@ type ImageRef struct {
 
 func (x *ImageRef) Reset() {
 	*x = ImageRef{}
-	mi := &file_provider_proto_msgTypes[21]
+	mi := &file_provider_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1890,7 +2065,7 @@ func (x *ImageRef) String() string {
 func (*ImageRef) ProtoMessage() {}
 
 func (x *ImageRef) ProtoReflect() protoreflect.Message {
-	mi := &file_provider_proto_msgTypes[21]
+	mi := &file_provider_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1903,7 +2078,7 @@ func (x *ImageRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImageRef.ProtoReflect.Descriptor instead.
 func (*ImageRef) Descriptor() ([]byte, []int) {
-	return file_provider_proto_rawDescGZIP(), []int{21}
+	return file_provider_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ImageRef) GetId() string {
@@ -1944,7 +2119,7 @@ type DeleteRequest struct {
 
 func (x *DeleteRequest) Reset() {
 	*x = DeleteRequest{}
-	mi := &file_provider_proto_msgTypes[22]
+	mi := &file_provider_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1956,7 +2131,7 @@ func (x *DeleteRequest) String() string {
 func (*DeleteRequest) ProtoMessage() {}
 
 func (x *DeleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_provider_proto_msgTypes[22]
+	mi := &file_provider_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1969,7 +2144,7 @@ func (x *DeleteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteRequest.ProtoReflect.Descriptor instead.
 func (*DeleteRequest) Descriptor() ([]byte, []int) {
-	return file_provider_proto_rawDescGZIP(), []int{22}
+	return file_provider_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *DeleteRequest) GetProviderRef() string {
@@ -1996,7 +2171,7 @@ type DeleteResponse struct {
 
 func (x *DeleteResponse) Reset() {
 	*x = DeleteResponse{}
-	mi := &file_provider_proto_msgTypes[23]
+	mi := &file_provider_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2008,7 +2183,7 @@ func (x *DeleteResponse) String() string {
 func (*DeleteResponse) ProtoMessage() {}
 
 func (x *DeleteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_provider_proto_msgTypes[23]
+	mi := &file_provider_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2021,7 +2196,7 @@ func (x *DeleteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteResponse.ProtoReflect.Descriptor instead.
 func (*DeleteResponse) Descriptor() ([]byte, []int) {
-	return file_provider_proto_rawDescGZIP(), []int{23}
+	return file_provider_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *DeleteResponse) GetDeleted() bool {
@@ -2048,7 +2223,7 @@ type HealthResponse struct {
 
 func (x *HealthResponse) Reset() {
 	*x = HealthResponse{}
-	mi := &file_provider_proto_msgTypes[24]
+	mi := &file_provider_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2060,7 +2235,7 @@ func (x *HealthResponse) String() string {
 func (*HealthResponse) ProtoMessage() {}
 
 func (x *HealthResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_provider_proto_msgTypes[24]
+	mi := &file_provider_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2073,7 +2248,7 @@ func (x *HealthResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthResponse.ProtoReflect.Descriptor instead.
 func (*HealthResponse) Descriptor() ([]byte, []int) {
-	return file_provider_proto_rawDescGZIP(), []int{24}
+	return file_provider_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *HealthResponse) GetHealthy() bool {
@@ -2105,7 +2280,7 @@ const file_provider_proto_rawDesc = "" +
 	"\x10protocol_version\x18\x05 \x01(\tR\x0fprotocolVersion\x12\x1f\n" +
 	"\vbuild_modes\x18\x06 \x03(\tR\n" +
 	"buildModes\x12,\n" +
-	"\x12upload_resume_mode\x18\x14 \x01(\tR\x10uploadResumeMode\"\xe6\a\n" +
+	"\x12upload_resume_mode\x18\x14 \x01(\tR\x10uploadResumeMode\"\xcd\b\n" +
 	"\x12RemoteBuildRequest\x12\x19\n" +
 	"\bbuild_id\x18\x01 \x01(\tR\abuildId\x12#\n" +
 	"\roperation_ref\x18\x02 \x01(\tR\foperationRef\x12\x1d\n" +
@@ -2131,17 +2306,25 @@ const file_provider_proto_rawDesc = "" +
 	"\x0ftimeout_seconds\x18\x11 \x01(\x03R\x0etimeoutSeconds\x12.\n" +
 	"\x13source_provider_ref\x18\x12 \x01(\tR\x11sourceProviderRef\x12W\n" +
 	"\x12source_marketplace\x18\x13 \x01(\v2(.imagebuilder.provider.v1.MarketplaceRefR\x11sourceMarketplace\x12J\n" +
-	"\bevidence\x18\x14 \x01(\v2..imagebuilder.provider.v1.RemoteEvidencePolicyR\bevidence\x1a7\n" +
+	"\bevidence\x18\x14 \x01(\v2..imagebuilder.provider.v1.RemoteEvidencePolicyR\bevidence\x12@\n" +
+	"\x1cevidence_bundle_acknowledged\x18\x15 \x01(\bR\x1aevidenceBundleAcknowledged\x12#\n" +
+	"\rimage_version\x18\x16 \x01(\tR\fimageVersion\x1a7\n" +
 	"\tTagsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xe3\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcc\x02\n" +
 	"\x14RemoteEvidencePolicy\x12\x1a\n" +
 	"\brequired\x18\x01 \x01(\bR\brequired\x12\x1f\n" +
 	"\vsbom_format\x18\x02 \x01(\tR\n" +
 	"sbomFormat\x123\n" +
 	"\x15vulnerability_scanner\x18\x03 \x01(\tR\x14vulnerabilityScanner\x12(\n" +
 	"\x10fail_on_severity\x18\x04 \x03(\tR\x0efailOnSeverity\x12/\n" +
-	"\x13registry_repository\x18\x05 \x01(\tR\x12registryRepository\"p\n" +
+	"\x13registry_repository\x18\x05 \x01(\tR\x12registryRepository\x12\x1c\n" +
+	"\tpublisher\x18\x06 \x01(\tR\tpublisher\x12I\n" +
+	"\asubject\x18\a \x01(\v2/.imagebuilder.provider.v1.RemoteEvidenceSubjectR\asubject\"a\n" +
+	"\x15RemoteEvidenceSubject\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
+	"\aversion\x18\x02 \x01(\tR\aversion\x12\x1a\n" +
+	"\bplatform\x18\x03 \x01(\tR\bplatform\"p\n" +
 	"\x0eMarketplaceRef\x12\x1c\n" +
 	"\tpublisher\x18\x01 \x01(\tR\tpublisher\x12\x14\n" +
 	"\x05offer\x18\x02 \x01(\tR\x05offer\x12\x10\n" +
@@ -2181,7 +2364,7 @@ const file_provider_proto_rawDesc = "" +
 	"guest_port\x18\x03 \x01(\x05R\tguestPort\x12*\n" +
 	"\x11generated_ssh_key\x18\x04 \x01(\bR\x0fgeneratedSshKey\x12-\n" +
 	"\x12generated_password\x18\x05 \x01(\bR\x11generatedPassword\x12)\n" +
-	"\x10injection_method\x18\x06 \x01(\tR\x0finjectionMethod\"\x9b\x03\n" +
+	"\x10injection_method\x18\x06 \x01(\tR\x0finjectionMethod\"\xf4\x03\n" +
 	"\x13RemoteBuildResponse\x12#\n" +
 	"\roperation_ref\x18\x01 \x01(\tR\foperationRef\x12\x14\n" +
 	"\x05phase\x18\x02 \x01(\tR\x05phase\x12\x18\n" +
@@ -2190,7 +2373,13 @@ const file_provider_proto_rawDesc = "" +
 	"\x06images\x18\x05 \x03(\v2(.imagebuilder.provider.v1.RemoteImageRefR\x06images\x12D\n" +
 	"\bartifact\x18\x06 \x01(\v2(.imagebuilder.provider.v1.RemoteArtifactR\bartifact\x12G\n" +
 	"\ahygiene\x18\a \x01(\v2-.imagebuilder.provider.v1.RemoteHygieneResultR\ahygiene\x12J\n" +
-	"\bevidence\x18\b \x01(\v2..imagebuilder.provider.v1.RemoteEvidenceResultR\bevidence\"\xe9\x01\n" +
+	"\bevidence\x18\b \x01(\v2..imagebuilder.provider.v1.RemoteEvidenceResultR\bevidence\x12W\n" +
+	"\x0fevidence_bundle\x18\t \x01(\v2..imagebuilder.provider.v1.RemoteEvidenceBundleR\x0eevidenceBundle\"g\n" +
+	"\x14RemoteEvidenceBundle\x12\x18\n" +
+	"\acontent\x18\x01 \x01(\fR\acontent\x12\x16\n" +
+	"\x06sha256\x18\x02 \x01(\tR\x06sha256\x12\x1d\n" +
+	"\n" +
+	"media_type\x18\x03 \x01(\tR\tmediaType\"\xe9\x01\n" +
 	"\x14RemoteEvidenceResult\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x19\n" +
@@ -2328,87 +2517,91 @@ func file_provider_proto_rawDescGZIP() []byte {
 	return file_provider_proto_rawDescData
 }
 
-var file_provider_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
+var file_provider_proto_msgTypes = make([]protoimpl.MessageInfo, 37)
 var file_provider_proto_goTypes = []any{
 	(*Empty)(nil),                      // 0: imagebuilder.provider.v1.Empty
 	(*CapabilitiesResponse)(nil),       // 1: imagebuilder.provider.v1.CapabilitiesResponse
 	(*RemoteBuildRequest)(nil),         // 2: imagebuilder.provider.v1.RemoteBuildRequest
 	(*RemoteEvidencePolicy)(nil),       // 3: imagebuilder.provider.v1.RemoteEvidencePolicy
-	(*MarketplaceRef)(nil),             // 4: imagebuilder.provider.v1.MarketplaceRef
-	(*RemoteProvisioner)(nil),          // 5: imagebuilder.provider.v1.RemoteProvisioner
-	(*RemoteProvisionerSource)(nil),    // 6: imagebuilder.provider.v1.RemoteProvisionerSource
-	(*RemoteGitProvisionerSource)(nil), // 7: imagebuilder.provider.v1.RemoteGitProvisionerSource
-	(*RemoteGitProvisionerAuth)(nil),   // 8: imagebuilder.provider.v1.RemoteGitProvisionerAuth
-	(*RemoteGuestAccess)(nil),          // 9: imagebuilder.provider.v1.RemoteGuestAccess
-	(*RemoteBuildResponse)(nil),        // 10: imagebuilder.provider.v1.RemoteBuildResponse
-	(*RemoteEvidenceResult)(nil),       // 11: imagebuilder.provider.v1.RemoteEvidenceResult
-	(*RemoteHygieneResult)(nil),        // 12: imagebuilder.provider.v1.RemoteHygieneResult
-	(*RemoteImageRef)(nil),             // 13: imagebuilder.provider.v1.RemoteImageRef
-	(*RemoteArtifact)(nil),             // 14: imagebuilder.provider.v1.RemoteArtifact
-	(*RemoteBuildCleanupResponse)(nil), // 15: imagebuilder.provider.v1.RemoteBuildCleanupResponse
-	(*ValidateConfigRequest)(nil),      // 16: imagebuilder.provider.v1.ValidateConfigRequest
-	(*ValidateConfigResponse)(nil),     // 17: imagebuilder.provider.v1.ValidateConfigResponse
-	(*UploadChunk)(nil),                // 18: imagebuilder.provider.v1.UploadChunk
-	(*UploadProgress)(nil),             // 19: imagebuilder.provider.v1.UploadProgress
-	(*RegisterRequest)(nil),            // 20: imagebuilder.provider.v1.RegisterRequest
-	(*ImageRef)(nil),                   // 21: imagebuilder.provider.v1.ImageRef
-	(*DeleteRequest)(nil),              // 22: imagebuilder.provider.v1.DeleteRequest
-	(*DeleteResponse)(nil),             // 23: imagebuilder.provider.v1.DeleteResponse
-	(*HealthResponse)(nil),             // 24: imagebuilder.provider.v1.HealthResponse
-	nil,                                // 25: imagebuilder.provider.v1.RemoteBuildRequest.TagsEntry
-	nil,                                // 26: imagebuilder.provider.v1.RemoteProvisioner.ExtraVarsEntry
-	nil,                                // 27: imagebuilder.provider.v1.RemoteProvisioner.EnvEntry
-	nil,                                // 28: imagebuilder.provider.v1.RemoteImageRef.TagsEntry
-	nil,                                // 29: imagebuilder.provider.v1.RemoteArtifact.MetadataEntry
-	nil,                                // 30: imagebuilder.provider.v1.ValidateConfigRequest.CredentialsEntry
-	nil,                                // 31: imagebuilder.provider.v1.ValidateConfigRequest.ExtraEntry
-	nil,                                // 32: imagebuilder.provider.v1.UploadChunk.MetadataEntry
-	nil,                                // 33: imagebuilder.provider.v1.RegisterRequest.TagsEntry
-	nil,                                // 34: imagebuilder.provider.v1.ImageRef.TagsEntry
+	(*RemoteEvidenceSubject)(nil),      // 4: imagebuilder.provider.v1.RemoteEvidenceSubject
+	(*MarketplaceRef)(nil),             // 5: imagebuilder.provider.v1.MarketplaceRef
+	(*RemoteProvisioner)(nil),          // 6: imagebuilder.provider.v1.RemoteProvisioner
+	(*RemoteProvisionerSource)(nil),    // 7: imagebuilder.provider.v1.RemoteProvisionerSource
+	(*RemoteGitProvisionerSource)(nil), // 8: imagebuilder.provider.v1.RemoteGitProvisionerSource
+	(*RemoteGitProvisionerAuth)(nil),   // 9: imagebuilder.provider.v1.RemoteGitProvisionerAuth
+	(*RemoteGuestAccess)(nil),          // 10: imagebuilder.provider.v1.RemoteGuestAccess
+	(*RemoteBuildResponse)(nil),        // 11: imagebuilder.provider.v1.RemoteBuildResponse
+	(*RemoteEvidenceBundle)(nil),       // 12: imagebuilder.provider.v1.RemoteEvidenceBundle
+	(*RemoteEvidenceResult)(nil),       // 13: imagebuilder.provider.v1.RemoteEvidenceResult
+	(*RemoteHygieneResult)(nil),        // 14: imagebuilder.provider.v1.RemoteHygieneResult
+	(*RemoteImageRef)(nil),             // 15: imagebuilder.provider.v1.RemoteImageRef
+	(*RemoteArtifact)(nil),             // 16: imagebuilder.provider.v1.RemoteArtifact
+	(*RemoteBuildCleanupResponse)(nil), // 17: imagebuilder.provider.v1.RemoteBuildCleanupResponse
+	(*ValidateConfigRequest)(nil),      // 18: imagebuilder.provider.v1.ValidateConfigRequest
+	(*ValidateConfigResponse)(nil),     // 19: imagebuilder.provider.v1.ValidateConfigResponse
+	(*UploadChunk)(nil),                // 20: imagebuilder.provider.v1.UploadChunk
+	(*UploadProgress)(nil),             // 21: imagebuilder.provider.v1.UploadProgress
+	(*RegisterRequest)(nil),            // 22: imagebuilder.provider.v1.RegisterRequest
+	(*ImageRef)(nil),                   // 23: imagebuilder.provider.v1.ImageRef
+	(*DeleteRequest)(nil),              // 24: imagebuilder.provider.v1.DeleteRequest
+	(*DeleteResponse)(nil),             // 25: imagebuilder.provider.v1.DeleteResponse
+	(*HealthResponse)(nil),             // 26: imagebuilder.provider.v1.HealthResponse
+	nil,                                // 27: imagebuilder.provider.v1.RemoteBuildRequest.TagsEntry
+	nil,                                // 28: imagebuilder.provider.v1.RemoteProvisioner.ExtraVarsEntry
+	nil,                                // 29: imagebuilder.provider.v1.RemoteProvisioner.EnvEntry
+	nil,                                // 30: imagebuilder.provider.v1.RemoteImageRef.TagsEntry
+	nil,                                // 31: imagebuilder.provider.v1.RemoteArtifact.MetadataEntry
+	nil,                                // 32: imagebuilder.provider.v1.ValidateConfigRequest.CredentialsEntry
+	nil,                                // 33: imagebuilder.provider.v1.ValidateConfigRequest.ExtraEntry
+	nil,                                // 34: imagebuilder.provider.v1.UploadChunk.MetadataEntry
+	nil,                                // 35: imagebuilder.provider.v1.RegisterRequest.TagsEntry
+	nil,                                // 36: imagebuilder.provider.v1.ImageRef.TagsEntry
 }
 var file_provider_proto_depIdxs = []int32{
-	25, // 0: imagebuilder.provider.v1.RemoteBuildRequest.tags:type_name -> imagebuilder.provider.v1.RemoteBuildRequest.TagsEntry
-	5,  // 1: imagebuilder.provider.v1.RemoteBuildRequest.provisioners:type_name -> imagebuilder.provider.v1.RemoteProvisioner
-	9,  // 2: imagebuilder.provider.v1.RemoteBuildRequest.guest_access:type_name -> imagebuilder.provider.v1.RemoteGuestAccess
-	4,  // 3: imagebuilder.provider.v1.RemoteBuildRequest.source_marketplace:type_name -> imagebuilder.provider.v1.MarketplaceRef
+	27, // 0: imagebuilder.provider.v1.RemoteBuildRequest.tags:type_name -> imagebuilder.provider.v1.RemoteBuildRequest.TagsEntry
+	6,  // 1: imagebuilder.provider.v1.RemoteBuildRequest.provisioners:type_name -> imagebuilder.provider.v1.RemoteProvisioner
+	10, // 2: imagebuilder.provider.v1.RemoteBuildRequest.guest_access:type_name -> imagebuilder.provider.v1.RemoteGuestAccess
+	5,  // 3: imagebuilder.provider.v1.RemoteBuildRequest.source_marketplace:type_name -> imagebuilder.provider.v1.MarketplaceRef
 	3,  // 4: imagebuilder.provider.v1.RemoteBuildRequest.evidence:type_name -> imagebuilder.provider.v1.RemoteEvidencePolicy
-	26, // 5: imagebuilder.provider.v1.RemoteProvisioner.extra_vars:type_name -> imagebuilder.provider.v1.RemoteProvisioner.ExtraVarsEntry
-	6,  // 6: imagebuilder.provider.v1.RemoteProvisioner.source:type_name -> imagebuilder.provider.v1.RemoteProvisionerSource
-	27, // 7: imagebuilder.provider.v1.RemoteProvisioner.env:type_name -> imagebuilder.provider.v1.RemoteProvisioner.EnvEntry
-	7,  // 8: imagebuilder.provider.v1.RemoteProvisionerSource.git:type_name -> imagebuilder.provider.v1.RemoteGitProvisionerSource
-	8,  // 9: imagebuilder.provider.v1.RemoteGitProvisionerSource.auth:type_name -> imagebuilder.provider.v1.RemoteGitProvisionerAuth
-	13, // 10: imagebuilder.provider.v1.RemoteBuildResponse.images:type_name -> imagebuilder.provider.v1.RemoteImageRef
-	14, // 11: imagebuilder.provider.v1.RemoteBuildResponse.artifact:type_name -> imagebuilder.provider.v1.RemoteArtifact
-	12, // 12: imagebuilder.provider.v1.RemoteBuildResponse.hygiene:type_name -> imagebuilder.provider.v1.RemoteHygieneResult
-	11, // 13: imagebuilder.provider.v1.RemoteBuildResponse.evidence:type_name -> imagebuilder.provider.v1.RemoteEvidenceResult
-	28, // 14: imagebuilder.provider.v1.RemoteImageRef.tags:type_name -> imagebuilder.provider.v1.RemoteImageRef.TagsEntry
-	29, // 15: imagebuilder.provider.v1.RemoteArtifact.metadata:type_name -> imagebuilder.provider.v1.RemoteArtifact.MetadataEntry
-	30, // 16: imagebuilder.provider.v1.ValidateConfigRequest.credentials:type_name -> imagebuilder.provider.v1.ValidateConfigRequest.CredentialsEntry
-	31, // 17: imagebuilder.provider.v1.ValidateConfigRequest.extra:type_name -> imagebuilder.provider.v1.ValidateConfigRequest.ExtraEntry
-	32, // 18: imagebuilder.provider.v1.UploadChunk.metadata:type_name -> imagebuilder.provider.v1.UploadChunk.MetadataEntry
-	33, // 19: imagebuilder.provider.v1.RegisterRequest.tags:type_name -> imagebuilder.provider.v1.RegisterRequest.TagsEntry
-	34, // 20: imagebuilder.provider.v1.ImageRef.tags:type_name -> imagebuilder.provider.v1.ImageRef.TagsEntry
-	0,  // 21: imagebuilder.provider.v1.PlatformProvider.GetCapabilities:input_type -> imagebuilder.provider.v1.Empty
-	16, // 22: imagebuilder.provider.v1.PlatformProvider.ValidateConfig:input_type -> imagebuilder.provider.v1.ValidateConfigRequest
-	18, // 23: imagebuilder.provider.v1.PlatformProvider.UploadArtifact:input_type -> imagebuilder.provider.v1.UploadChunk
-	20, // 24: imagebuilder.provider.v1.PlatformProvider.RegisterImage:input_type -> imagebuilder.provider.v1.RegisterRequest
-	22, // 25: imagebuilder.provider.v1.PlatformProvider.DeleteArtifact:input_type -> imagebuilder.provider.v1.DeleteRequest
-	0,  // 26: imagebuilder.provider.v1.PlatformProvider.HealthCheck:input_type -> imagebuilder.provider.v1.Empty
-	2,  // 27: imagebuilder.provider.v1.PlatformProvider.ReconcileRemoteBuild:input_type -> imagebuilder.provider.v1.RemoteBuildRequest
-	2,  // 28: imagebuilder.provider.v1.PlatformProvider.CleanupRemoteBuild:input_type -> imagebuilder.provider.v1.RemoteBuildRequest
-	1,  // 29: imagebuilder.provider.v1.PlatformProvider.GetCapabilities:output_type -> imagebuilder.provider.v1.CapabilitiesResponse
-	17, // 30: imagebuilder.provider.v1.PlatformProvider.ValidateConfig:output_type -> imagebuilder.provider.v1.ValidateConfigResponse
-	19, // 31: imagebuilder.provider.v1.PlatformProvider.UploadArtifact:output_type -> imagebuilder.provider.v1.UploadProgress
-	21, // 32: imagebuilder.provider.v1.PlatformProvider.RegisterImage:output_type -> imagebuilder.provider.v1.ImageRef
-	23, // 33: imagebuilder.provider.v1.PlatformProvider.DeleteArtifact:output_type -> imagebuilder.provider.v1.DeleteResponse
-	24, // 34: imagebuilder.provider.v1.PlatformProvider.HealthCheck:output_type -> imagebuilder.provider.v1.HealthResponse
-	10, // 35: imagebuilder.provider.v1.PlatformProvider.ReconcileRemoteBuild:output_type -> imagebuilder.provider.v1.RemoteBuildResponse
-	15, // 36: imagebuilder.provider.v1.PlatformProvider.CleanupRemoteBuild:output_type -> imagebuilder.provider.v1.RemoteBuildCleanupResponse
-	29, // [29:37] is the sub-list for method output_type
-	21, // [21:29] is the sub-list for method input_type
-	21, // [21:21] is the sub-list for extension type_name
-	21, // [21:21] is the sub-list for extension extendee
-	0,  // [0:21] is the sub-list for field type_name
+	4,  // 5: imagebuilder.provider.v1.RemoteEvidencePolicy.subject:type_name -> imagebuilder.provider.v1.RemoteEvidenceSubject
+	28, // 6: imagebuilder.provider.v1.RemoteProvisioner.extra_vars:type_name -> imagebuilder.provider.v1.RemoteProvisioner.ExtraVarsEntry
+	7,  // 7: imagebuilder.provider.v1.RemoteProvisioner.source:type_name -> imagebuilder.provider.v1.RemoteProvisionerSource
+	29, // 8: imagebuilder.provider.v1.RemoteProvisioner.env:type_name -> imagebuilder.provider.v1.RemoteProvisioner.EnvEntry
+	8,  // 9: imagebuilder.provider.v1.RemoteProvisionerSource.git:type_name -> imagebuilder.provider.v1.RemoteGitProvisionerSource
+	9,  // 10: imagebuilder.provider.v1.RemoteGitProvisionerSource.auth:type_name -> imagebuilder.provider.v1.RemoteGitProvisionerAuth
+	15, // 11: imagebuilder.provider.v1.RemoteBuildResponse.images:type_name -> imagebuilder.provider.v1.RemoteImageRef
+	16, // 12: imagebuilder.provider.v1.RemoteBuildResponse.artifact:type_name -> imagebuilder.provider.v1.RemoteArtifact
+	14, // 13: imagebuilder.provider.v1.RemoteBuildResponse.hygiene:type_name -> imagebuilder.provider.v1.RemoteHygieneResult
+	13, // 14: imagebuilder.provider.v1.RemoteBuildResponse.evidence:type_name -> imagebuilder.provider.v1.RemoteEvidenceResult
+	12, // 15: imagebuilder.provider.v1.RemoteBuildResponse.evidence_bundle:type_name -> imagebuilder.provider.v1.RemoteEvidenceBundle
+	30, // 16: imagebuilder.provider.v1.RemoteImageRef.tags:type_name -> imagebuilder.provider.v1.RemoteImageRef.TagsEntry
+	31, // 17: imagebuilder.provider.v1.RemoteArtifact.metadata:type_name -> imagebuilder.provider.v1.RemoteArtifact.MetadataEntry
+	32, // 18: imagebuilder.provider.v1.ValidateConfigRequest.credentials:type_name -> imagebuilder.provider.v1.ValidateConfigRequest.CredentialsEntry
+	33, // 19: imagebuilder.provider.v1.ValidateConfigRequest.extra:type_name -> imagebuilder.provider.v1.ValidateConfigRequest.ExtraEntry
+	34, // 20: imagebuilder.provider.v1.UploadChunk.metadata:type_name -> imagebuilder.provider.v1.UploadChunk.MetadataEntry
+	35, // 21: imagebuilder.provider.v1.RegisterRequest.tags:type_name -> imagebuilder.provider.v1.RegisterRequest.TagsEntry
+	36, // 22: imagebuilder.provider.v1.ImageRef.tags:type_name -> imagebuilder.provider.v1.ImageRef.TagsEntry
+	0,  // 23: imagebuilder.provider.v1.PlatformProvider.GetCapabilities:input_type -> imagebuilder.provider.v1.Empty
+	18, // 24: imagebuilder.provider.v1.PlatformProvider.ValidateConfig:input_type -> imagebuilder.provider.v1.ValidateConfigRequest
+	20, // 25: imagebuilder.provider.v1.PlatformProvider.UploadArtifact:input_type -> imagebuilder.provider.v1.UploadChunk
+	22, // 26: imagebuilder.provider.v1.PlatformProvider.RegisterImage:input_type -> imagebuilder.provider.v1.RegisterRequest
+	24, // 27: imagebuilder.provider.v1.PlatformProvider.DeleteArtifact:input_type -> imagebuilder.provider.v1.DeleteRequest
+	0,  // 28: imagebuilder.provider.v1.PlatformProvider.HealthCheck:input_type -> imagebuilder.provider.v1.Empty
+	2,  // 29: imagebuilder.provider.v1.PlatformProvider.ReconcileRemoteBuild:input_type -> imagebuilder.provider.v1.RemoteBuildRequest
+	2,  // 30: imagebuilder.provider.v1.PlatformProvider.CleanupRemoteBuild:input_type -> imagebuilder.provider.v1.RemoteBuildRequest
+	1,  // 31: imagebuilder.provider.v1.PlatformProvider.GetCapabilities:output_type -> imagebuilder.provider.v1.CapabilitiesResponse
+	19, // 32: imagebuilder.provider.v1.PlatformProvider.ValidateConfig:output_type -> imagebuilder.provider.v1.ValidateConfigResponse
+	21, // 33: imagebuilder.provider.v1.PlatformProvider.UploadArtifact:output_type -> imagebuilder.provider.v1.UploadProgress
+	23, // 34: imagebuilder.provider.v1.PlatformProvider.RegisterImage:output_type -> imagebuilder.provider.v1.ImageRef
+	25, // 35: imagebuilder.provider.v1.PlatformProvider.DeleteArtifact:output_type -> imagebuilder.provider.v1.DeleteResponse
+	26, // 36: imagebuilder.provider.v1.PlatformProvider.HealthCheck:output_type -> imagebuilder.provider.v1.HealthResponse
+	11, // 37: imagebuilder.provider.v1.PlatformProvider.ReconcileRemoteBuild:output_type -> imagebuilder.provider.v1.RemoteBuildResponse
+	17, // 38: imagebuilder.provider.v1.PlatformProvider.CleanupRemoteBuild:output_type -> imagebuilder.provider.v1.RemoteBuildCleanupResponse
+	31, // [31:39] is the sub-list for method output_type
+	23, // [23:31] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_provider_proto_init() }
@@ -2422,7 +2615,7 @@ func file_provider_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_provider_proto_rawDesc), len(file_provider_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   35,
+			NumMessages:   37,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

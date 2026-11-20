@@ -54,6 +54,20 @@ type VMImageSpec struct {
 	Evidence *EvidenceSpec `json:"evidence,omitempty"`
 }
 
+const (
+	// EvidencePublisherProvider keeps the ADR-008 behaviour: the guest publishes
+	// and signs its evidence and the provider returns OCI references.
+	EvidencePublisherProvider = "provider"
+	// EvidencePublisherController selects ADR-011: the guest only collects the
+	// evidence outbox, the provider retrieves it and the core controller
+	// publishes and signs the VM image descriptor and its attestations.
+	EvidencePublisherController = "controller"
+
+	// ImageVersionAnnotation carries the logical image version when
+	// spec.evidence.subject.version is not set.
+	ImageVersionAnnotation = "imagebuilder.io/image-version"
+)
+
 type EvidenceSpec struct {
 	// Required fails the build closed when complete, immutable evidence is not
 	// returned by the builder/provider.
@@ -61,8 +75,25 @@ type EvidenceSpec struct {
 	// +optional
 	Required bool `json:"required,omitempty"`
 
-	// SBOMFormat selects the required SBOM document format.
-	// +kubebuilder:validation:Enum=spdx-json
+	// Publisher selects who publishes and signs the evidence. "provider"
+	// (default, ADR-008) lets the guest publish through its own identity.
+	// "controller" (ADR-011) lets the guest only collect the evidence outbox;
+	// the provider retrieves it and the core controller publishes the VM image
+	// descriptor, signs it and attaches SBOM, vulnerability report and SLSA
+	// provenance as attestations.
+	// +kubebuilder:validation:Enum=provider;controller
+	// +kubebuilder:default=provider
+	// +optional
+	Publisher string `json:"publisher,omitempty"`
+
+	// Subject names the logical VM image the evidence describes. Required for
+	// publisher=controller.
+	// +optional
+	Subject *EvidenceSubject `json:"subject,omitempty"`
+
+	// SBOMFormat selects the required SBOM document format. publisher=controller
+	// requires cyclonedx-json.
+	// +kubebuilder:validation:Enum=spdx-json;cyclonedx-json
 	// +kubebuilder:default=spdx-json
 	// +optional
 	SBOMFormat string `json:"sbomFormat,omitempty"`
@@ -86,6 +117,28 @@ type EvidenceSpec struct {
 	// Published status references must additionally be pinned by sha256 digest.
 	// +kubebuilder:validation:Pattern=`^oci://[^[:space:]]+$`
 	RegistryRepository string `json:"registryRepository"`
+}
+
+// EvidenceSubject identifies one platform build of a logical VM image, for
+// example ubuntu-2604-base 1.2.0 on azure. The controller publishes the
+// descriptor as <registryRepository>/<name>:<version>-<platform> and merges it
+// into the OCI index <registryRepository>/<name>:<version>.
+type EvidenceSubject struct {
+	// Name of the logical image, used as OCI repository name below
+	// registryRepository.
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]+([._-][a-z0-9]+)*$`
+	// +kubebuilder:validation:MaxLength=128
+	Name string `json:"name"`
+
+	// Version of the logical image, used as OCI tag.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$`
+	Version string `json:"version"`
+
+	// Platform identifies the target platform of this build, for example
+	// azure or vsphere-fci-c042.
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]+([._-][a-z0-9]+)*$`
+	// +kubebuilder:validation:MaxLength=63
+	Platform string `json:"platform"`
 }
 
 type OSSpec struct {
@@ -897,7 +950,9 @@ type EvidenceStatus struct {
 	// +optional
 	Message string `json:"message,omitempty"`
 
-	// SBOMRef is an immutable OCI reference to an SPDX JSON document.
+	// SBOMRef is an immutable OCI reference to the SBOM: an SPDX JSON document
+	// (publisher=provider) or the CycloneDX attestation bundle referring to the
+	// VM image descriptor (publisher=controller).
 	// +optional
 	SBOMRef string `json:"sbomRef,omitempty"`
 
@@ -916,6 +971,30 @@ type EvidenceStatus struct {
 	// GeneratedAt records when the provider completed evidence publication.
 	// +optional
 	GeneratedAt *metav1.Time `json:"generatedAt,omitempty"`
+
+	// Publisher records who published the evidence: provider or controller.
+	// +optional
+	Publisher string `json:"publisher,omitempty"`
+
+	// DescriptorRef is the immutable OCI reference of the VM image descriptor
+	// published by the controller (publisher=controller).
+	// +optional
+	DescriptorRef string `json:"descriptorRef,omitempty"`
+
+	// IndexRef is the immutable OCI reference of the image index version that
+	// contained this platform descriptor when the controller published it.
+	// +optional
+	IndexRef string `json:"indexRef,omitempty"`
+
+	// BundleDigest is the sha256 digest of the guest evidence bundle retrieved
+	// by the provider (publisher=controller).
+	// +optional
+	BundleDigest string `json:"bundleDigest,omitempty"`
+
+	// PublishJobRef names the controller-namespace Job that publishes and
+	// signs the evidence (publisher=controller).
+	// +optional
+	PublishJobRef string `json:"publishJobRef,omitempty"`
 }
 
 type ArtifactStatus struct {

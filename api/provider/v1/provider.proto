@@ -126,6 +126,14 @@ message RemoteBuildRequest {
   string source_provider_ref = 18;
   MarketplaceRef source_marketplace = 19;
   RemoteEvidencePolicy evidence = 20;
+  // evidence_bundle_acknowledged is set by the core after it durably stored
+  // the evidence bundle of a completed build (ADR-011). The provider may then
+  // delete its own persisted copy and stop returning the bundle.
+  bool evidence_bundle_acknowledged = 21;
+  // image_version is the logical image version resolved by the core from
+  // spec.evidence.subject.version or the imagebuilder.io/image-version
+  // annotation. Providers may use it for platform version names (ADR-011).
+  string image_version = 22;
 }
 
 message RemoteEvidencePolicy {
@@ -134,6 +142,17 @@ message RemoteEvidencePolicy {
   string vulnerability_scanner = 3;
   repeated string fail_on_severity = 4;
   string registry_repository = 5;
+  // publisher is "provider" (ADR-008, default when empty) or "controller"
+  // (ADR-011: the guest only collects, the provider retrieves the outbox and
+  // the core controller publishes and signs).
+  string publisher = 6;
+  RemoteEvidenceSubject subject = 7;
+}
+
+message RemoteEvidenceSubject {
+  string name = 1;
+  string version = 2;
+  string platform = 3;
 }
 
 message MarketplaceRef {
@@ -190,6 +209,19 @@ message RemoteBuildResponse {
   RemoteArtifact artifact = 6;
   RemoteHygieneResult hygiene = 7;
   RemoteEvidenceResult evidence = 8;
+  // evidence_bundle carries the guest evidence outbox (ADR-011) for
+  // publisher=controller. Providers return it with every Done response until
+  // the core acknowledged it or the build was cleaned up.
+  RemoteEvidenceBundle evidence_bundle = 9;
+}
+
+message RemoteEvidenceBundle {
+  // content is the gzip-compressed tar of the guest outbox directory
+  // "evidence/" (at most 900 KiB).
+  bytes content = 1;
+  // sha256 is the lowercase hex SHA-256 of content.
+  string sha256 = 2;
+  string media_type = 3;
 }
 
 message RemoteEvidenceResult {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
+	"github.com/anwendt/imagebuilder/pkg/evidence"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
 	"github.com/anwendt/imagebuilder/pkg/provider/sdk"
 )
@@ -362,7 +363,10 @@ func vspherePlatformRemoteBuildRequest(input sdk.RemoteBuildInput) *platform.Rem
 			Format:            input.Format,
 			Tags:              cloneStringMap(input.Tags),
 		},
-		Timeout: time.Duration(input.TimeoutSeconds) * time.Second,
+		Timeout:                    time.Duration(input.TimeoutSeconds) * time.Second,
+		Evidence:                   evidence.SpecFromSDK(input.Evidence),
+		ImageVersion:               input.ImageVersion,
+		EvidenceBundleAcknowledged: input.EvidenceBundleAcknowledged,
 	}
 	for _, provisioner := range input.Provisioners {
 		req.Provisioners = append(req.Provisioners, v1alpha1.ProvisionerSpec{
@@ -429,6 +433,8 @@ func vsphereSDKRemoteBuildResult(result *platform.RemoteBuildResult) sdk.RemoteB
 		Phase:        string(result.Phase),
 		Message:      result.Message,
 		Done:         result.Done,
+
+		EvidenceBundle: evidence.SDKBundle(result.EvidenceBundle),
 	}
 	if result.Hygiene != nil {
 		out.Hygiene = &sdk.RemoteHygieneResult{

@@ -39,8 +39,10 @@ import (
 
 	"github.com/anwendt/imagebuilder/api/v1alpha1"
 	"github.com/anwendt/imagebuilder/pkg/controller/buildpod"
+	"github.com/anwendt/imagebuilder/pkg/controller/evidencejob"
 	"github.com/anwendt/imagebuilder/pkg/controller/revision"
 	"github.com/anwendt/imagebuilder/pkg/controller/uploadpod"
+	"github.com/anwendt/imagebuilder/pkg/evidence"
 	"github.com/anwendt/imagebuilder/pkg/observability"
 	"github.com/anwendt/imagebuilder/pkg/plugin"
 	"github.com/anwendt/imagebuilder/pkg/plugin/platform"
@@ -79,7 +81,9 @@ type VMImageReconciler struct {
 	MaxConcurrentBuilds int
 	SchedulerNamespace  string
 	ProviderNamespace   string
-	log                 *slog.Logger
+	// Evidence configures the ADR-011 controller evidence publisher.
+	Evidence evidencejob.Config
+	log      *slog.Logger
 }
 
 func (r *VMImageReconciler) directReader() client.Reader {
@@ -147,6 +151,9 @@ func (r *VMImageReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 		return r.reconcileBuilding(ctx, img, log)
 	case v1alpha1.PhaseUploading:
+		if buildMode(img) == v1alpha1.BuildModeRemote {
+			return r.reconcileEvidencePublication(ctx, img, log)
+		}
 		return r.reconcileUploading(ctx, img, log)
 	case v1alpha1.PhaseReady, v1alpha1.PhaseFailed:
 		// Terminal states remain stable until spec.build.revision changes.
@@ -527,6 +534,11 @@ func (r *VMImageReconciler) reconcileRemoteBuild(ctx context.Context, img *v1alp
 		return r.setFailedWithReason(ctx, img, "RemoteBuildUnsupported", fmt.Sprintf("provider %q does not advertise remote build support", providerName))
 	}
 	if img.Status.StartTime == nil {
+		if evidence.IsController(img.Spec.Evidence) {
+			if err := r.Evidence.Validate(); err != nil {
+				return r.setFailedWithReason(ctx, img, "EvidencePublisherNotConfigured", err.Error())
+			}
+		}
 		now := metav1.Now()
 		img.Status.Phase = v1alpha1.PhaseBuilding
 		img.Status.StartTime = &now
@@ -583,12 +595,13 @@ func (r *VMImageReconciler) reconcileRemoteBuild(ctx context.Context, img *v1alp
 		if providererrors.IsTransient(err) {
 			return r.retryRemoteBuild(ctx, img, providerName, err, timeout, log)
 		}
-		setRemoteFailureSteps(img, "RemoteBuildFailed", err.Error())
-		observability.FailuresTotal.WithLabelValues("RemoteBuild", "RemoteBuildFailed", providerName).Inc()
+		reason := remoteFailureReason(err)
+		setRemoteFailureSteps(img, reason, err.Error())
+		observability.FailuresTotal.WithLabelValues("RemoteBuild", reason, providerName).Inc()
 		if cleanupErr := r.cleanupRemoteBuild(ctx, img); cleanupErr != nil {
 			return ctrl.Result{}, fmt.Errorf("cleanup remote build after provider failure: %w", cleanupErr)
 		}
-		return r.setFailedWithReason(ctx, img, "RemoteBuildFailed", fmt.Sprintf("provider %q remote build failed: %v", providerName, err))
+		return r.setFailedWithReason(ctx, img, reason, fmt.Sprintf("provider %q remote build failed: %v", providerName, err))
 	}
 	if img.Status.RemoteRetryCount > 0 || img.Status.NextRemoteRetryTime != nil {
 		img.Status.RemoteRetryCount = 0
@@ -628,9 +641,12 @@ func (r *VMImageReconciler) reconcileRemoteBuild(ctx context.Context, img *v1alp
 		}
 		return r.setFailedWithReason(ctx, img, "RemoteHygieneFailed", hygiene.Message)
 	}
-	evidence := remoteEvidenceStatus(result.Evidence)
-	if err := validateRemoteEvidence(img.Spec.Evidence, evidence); err != nil {
-		img.Status.Evidence = &evidence
+	if evidence.IsController(img.Spec.Evidence) {
+		return r.startEvidencePublication(ctx, img, req, result, remotePlugin, images, hygiene, providerName, log)
+	}
+	evidenceStatus := remoteEvidenceStatus(result.Evidence)
+	if err := validateRemoteEvidence(img.Spec.Evidence, evidenceStatus); err != nil {
+		img.Status.Evidence = &evidenceStatus
 		setStep(img, "Evidence", "Failed", "RemoteEvidenceRejected", err.Error(), "")
 		observability.FailuresTotal.WithLabelValues("RemoteBuild", "RemoteEvidenceRejected", providerName).Inc()
 		if cleanupErr := r.cleanupRemoteBuild(ctx, img); cleanupErr != nil {
@@ -644,7 +660,7 @@ func (r *VMImageReconciler) reconcileRemoteBuild(ctx context.Context, img *v1alp
 	img.Status.Images = images
 	img.Status.HygieneResult = &hygiene
 	if img.Spec.Evidence != nil || result.Evidence != nil {
-		img.Status.Evidence = &evidence
+		img.Status.Evidence = &evidenceStatus
 	}
 	if result.Artifact != nil {
 		img.Status.BuildArtifact = &v1alpha1.ArtifactStatus{
@@ -669,8 +685,8 @@ func (r *VMImageReconciler) reconcileRemoteBuild(ctx context.Context, img *v1alp
 	} else {
 		setStep(img, "Sanitization", "Succeeded", "RemoteHygieneUnknown", hygiene.Message, hygiene.ResultRef)
 	}
-	if result.Evidence != nil && evidence.Status == "passed" {
-		setStep(img, "Evidence", "Succeeded", "RemoteEvidencePassed", evidence.Message, evidence.ProvenanceRef)
+	if result.Evidence != nil && evidenceStatus.Status == "passed" {
+		setStep(img, "Evidence", "Succeeded", "RemoteEvidencePassed", evidenceStatus.Message, evidenceStatus.ProvenanceRef)
 	} else if img.Spec.Evidence != nil && img.Spec.Evidence.Required {
 		setStep(img, "Evidence", "Failed", "RemoteEvidenceMissing", "Required remote evidence was not returned", "")
 	} else {
@@ -702,18 +718,18 @@ func remoteEvidenceStatus(result *platform.RemoteEvidenceResult) v1alpha1.Eviden
 	}
 }
 
-func validateRemoteEvidence(policy *v1alpha1.EvidenceSpec, evidence v1alpha1.EvidenceStatus) error {
+func validateRemoteEvidence(policy *v1alpha1.EvidenceSpec, status v1alpha1.EvidenceStatus) error {
 	if policy == nil || !policy.Required {
 		return nil
 	}
-	if evidence.Status != "passed" {
-		return fmt.Errorf("required provider evidence status is %q, want passed", evidence.Status)
+	if status.Status != "passed" {
+		return fmt.Errorf("required provider evidence status is %q, want passed", status.Status)
 	}
 	refs := map[string]string{
-		"sbomRef":                evidence.SBOMRef,
-		"vulnerabilityReportRef": evidence.VulnerabilityReportRef,
-		"provenanceRef":          evidence.ProvenanceRef,
-		"signatureRef":           evidence.SignatureRef,
+		"sbomRef":                status.SBOMRef,
+		"vulnerabilityReportRef": status.VulnerabilityReportRef,
+		"provenanceRef":          status.ProvenanceRef,
+		"signatureRef":           status.SignatureRef,
 	}
 	for field, ref := range refs {
 		if !immutableOCIReference(ref) {
@@ -1594,6 +1610,7 @@ func (r *VMImageReconciler) reconcileDelete(ctx context.Context, img *v1alpha1.V
 	log.Info("reconciling deletion")
 
 	if buildMode(img) == v1alpha1.BuildModeRemote {
+		r.cleanupEvidencePublication(ctx, img)
 		if err := r.cleanupRemoteBuild(ctx, img); err != nil {
 			return ctrl.Result{}, fmt.Errorf("cleanup remote build during deletion: %w", err)
 		}
@@ -1868,6 +1885,7 @@ func remoteBuildRequest(img *v1alpha1.VMImage, target v1alpha1.TargetSpec) *plat
 		GuestAccess:       img.Spec.Build.GuestAccess,
 		Evidence:          img.Spec.Evidence,
 		Timeout:           timeout,
+		ImageVersion:      img.ImageVersion(),
 	}
 }
 
