@@ -151,7 +151,8 @@ func azureVerifyVirtualMachine(spec azureVerifySpec, hostname, customData string
 	if tags == nil {
 		tags = map[string]string{}
 	}
-	tags["imagebuilder.io/purpose"] = "verify-boot"
+	// Azure tag names must not contain "/" (InvalidTagNameCharacters).
+	tags["imagebuilder-purpose"] = "verify-boot"
 	osDisk := &armcompute.OSDisk{
 		Name:         to.Ptr(azureVerifyDiskName(spec.BuildID)),
 		CreateOption: to.Ptr(armcompute.DiskCreateOptionTypesFromImage),

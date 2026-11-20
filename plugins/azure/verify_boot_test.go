@@ -159,7 +159,7 @@ func TestAzureVerifyVirtualMachine(t *testing.T) {
 	if *props.OSProfile.ComputerName != hostname || props.OSProfile.AdminPassword != nil || !*props.OSProfile.LinuxConfiguration.DisablePasswordAuthentication {
 		t.Fatal("verify VM must use key-only login and the expected hostname")
 	}
-	if string(*props.HardwareProfile.VMSize) != spec.VMSize || *vm.Tags["imagebuilder.io/purpose"] != "verify-boot" || *vm.Tags["team"] != "platform" {
+	if string(*props.HardwareProfile.VMSize) != spec.VMSize || *vm.Tags["imagebuilder-purpose"] != "verify-boot" || *vm.Tags["team"] != "platform" {
 		t.Fatalf("size/tags = %v %v", *props.HardwareProfile.VMSize, vm.Tags)
 	}
 	decoded, _ := base64.StdEncoding.DecodeString(*props.OSProfile.CustomData)
@@ -260,3 +260,12 @@ func TestFinishAzureVerifyBoot(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+func TestAzureVerifyVirtualMachineTagNamesAreValid(t *testing.T) {
+	vm := azureVerifyVirtualMachine(azureVerifySpec{BuildID: "b1", Tags: map[string]string{"managed-by": "imagebuilder"}}, "host", "")
+	for name := range vm.Tags {
+		if strings.ContainsAny(name, "<>%&\\?/") {
+			t.Fatalf("Azure rejects tag name %q (InvalidTagNameCharacters)", name)
+		}
+	}
+}
