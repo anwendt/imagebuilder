@@ -307,6 +307,12 @@ func (c *sdkClient) runAzureProvisioner(ctx context.Context, input azureRemoteBu
 	if err != nil {
 		return nil, err
 	}
+	wrapped := commandID == "RunShellScript" && len(script) == 1
+	if wrapped {
+		if script[0], err = wrapAzureLinuxScript(script[0]); err != nil {
+			return nil, err
+		}
+	}
 	poller, err := c.vms.BeginRunCommand(ctx, c.cfg.resourceGroup, ref.VMName, armcompute.RunCommandInput{
 		CommandID: to.Ptr(commandID),
 		Script:    stringPtrs(script),
@@ -320,6 +326,11 @@ func (c *sdkClient) runAzureProvisioner(ctx context.Context, input azureRemoteBu
 	}
 	if err := azureRunCommandError(result.Value); err != nil {
 		return nil, fmt.Errorf("azure Run Command provisioner %d failed: %w", ref.ProvisionerIndex, err)
+	}
+	if wrapped {
+		if err := azureRunCommandExitError(result.Value); err != nil {
+			return nil, fmt.Errorf("azure Run Command provisioner %d failed: %w", ref.ProvisionerIndex, err)
+		}
 	}
 	if spec.Type != "evidence" || evidence.IsController(input.Evidence) {
 		return nil, nil
