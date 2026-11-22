@@ -136,3 +136,14 @@ func TestInitRequiresTemplateFolderForLibraryPublishing(t *testing.T) {
 		t.Fatal("revokeBuildCredential=false must disable the step")
 	}
 }
+
+func TestRevokeDiagnosticsScriptCollectsNoSecrets(t *testing.T) {
+	for _, forbidden := range []string{"cat /etc/shadow", "getent shadow", "chpasswd"} {
+		if strings.Contains(revokeDiagnosticsScript, forbidden) {
+			t.Fatalf("diagnostics must not read secrets: %q", forbidden)
+		}
+	}
+	if !strings.Contains(revokeDiagnosticsScript, "passwd -S root") || !strings.Contains(revokeDiagnosticsScript, guestProvisionLog) {
+		t.Fatal("diagnostics must report the account status into the provisioning log")
+	}
+}

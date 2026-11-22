@@ -85,6 +85,10 @@ func revokeScript(user string, delay time.Duration) (string, error) {
 		int(delay.Seconds()), user), nil
 }
 
+// revokeDiagnosticsScript collects why a scheduled lock did not take effect.
+// passwd -S prints the account status, never the hash.
+const revokeDiagnosticsScript = `{ echo '--- revoke diagnostics'; systemctl status --no-pager imagebuilder-revoke-login.timer imagebuilder-revoke-login.service 2>&1 | tail -n 20; journalctl --no-pager -u imagebuilder-revoke-login 2>&1 | tail -n 10; passwd -S root 2>&1; ls -l /etc/shadow; cat /etc/pam.d/vmtoolsd 2>&1; systemctl is-active vgauth open-vm-tools 2>&1; } > ` + guestProvisionLog + ` 2>&1`
+
 func sleepCtx(ctx context.Context, d time.Duration) error {
 	select {
 	case <-ctx.Done():
