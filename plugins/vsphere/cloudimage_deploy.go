@@ -546,5 +546,26 @@ func (c *govmomiClient) revokeBuildLogin(ctx context.Context, vm *object.Virtual
 	if err != nil {
 		return false, fmt.Errorf("create vSphere guest process manager: %w", err)
 	}
-	return revokeBuildCredential(ctx, &vsphereGuestCredential{pm: pm, auth: auth}, sleepCtx, revokeDelay)
+	revoked, err := revokeBuildCredential(ctx, &vsphereGuestCredential{pm: pm, auth: auth}, sleepCtx, revokeDelay)
+	if errors.Is(err, errBuildCredentialNotRevoked) {
+		// The login still works, so it can describe why the lock did not take
+		// effect (timer, account status, PAM stack); no secrets are collected.
+		if diag := c.revokeDiagnostics(ctx, vm, pm, auth); diag != "" {
+			return false, fmt.Errorf("%w; guest diagnostics:\n%s", err, diag)
+		}
+	}
+	return revoked, err
+}
+
+// revokeDiagnostics writes non-secret state of the scheduled lock into the
+// provisioning log and returns its tail.
+func (c *govmomiClient) revokeDiagnostics(ctx context.Context, vm *object.VirtualMachine, pm *guest.ProcessManager, auth types.BaseGuestAuthentication) string {
+	pid, err := pm.StartProgram(ctx, auth, &types.GuestProgramSpec{ProgramPath: "/bin/sh", Arguments: "-c " + shellQuote(revokeDiagnosticsScript)})
+	if err != nil {
+		return ""
+	}
+	if err := waitGuestProcess(ctx, pm, auth, pid, -1); err != nil {
+		return ""
+	}
+	return c.guestLogTail(ctx, vm, auth)
 }
